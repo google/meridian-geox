@@ -1,0 +1,685 @@
+# Copyright 2026 The Meridian GeoX Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""TBR methodology implementation."""
+
+import dataclasses
+import functools
+from typing import Optional
+
+import jax
+import jax.numpy as jnp
+from jax.scipy import stats
+from meridian_geox import api
+from meridian_geox.methodology import util as methodology_util
+import numpy as np
+
+
+@dataclasses.dataclass
+class MdeResults:
+  """Results of the MDE calculation.
+
+  Attributes:
+    mde_abs: (N_designs,) Absolute MDE.
+    mde_pct: (N_designs,) Relative MDE (percentage).
+    p_value: (N_designs,) The AA p-value.
+  """
+
+  mde_abs: jnp.ndarray
+  mde_pct: jnp.ndarray
+  p_value: jnp.ndarray
+
+
+jax.tree_util.register_pytree_node(
+    MdeResults,
+    lambda node: ((node.mde_abs, node.mde_pct, node.p_value), None),
+    lambda _, children: MdeResults(*children),
+)
+
+
+@dataclasses.dataclass
+class IcpdResults:
+  """Results of the ICPD calculation.
+
+  Attributes:
+    cumulative_icpd: (T,) Cumulative ICPD.
+    lower_bound: (T,) Lower bound of the cumulative ICPD.
+    upper_bound: (T,) Upper bound of the cumulative ICPD.
+  """
+
+  cumulative_icpd: jnp.ndarray
+  lower_bound: jnp.ndarray
+  upper_bound: jnp.ndarray
+
+
+jax.tree_util.register_pytree_node(
+    IcpdResults,
+    lambda node: (
+        (node.cumulative_icpd, node.lower_bound, node.upper_bound),
+        None,
+    ),
+    lambda _, children: IcpdResults(*children),
+)
+
+
+@dataclasses.dataclass
+class TbrAnalysisResult:
+  """Results of the TBR analysis.
+
+  Attributes:
+    lift: The incremental lift estimate.
+    cumulative_lift_with_cis: (T, 3) Cumulative lift estimates with CIs.
+    percent_lift: The relative lift estimate.
+    icpd: The incremental cost per dollar estimate.
+    cumulative_icpd_with_cis: (T, 3) Cumulative ICPD estimates with CIs.
+  """
+
+  lift: api.Estimate
+  cumulative_lift_with_cis: np.ndarray
+  percent_lift: api.Estimate
+  icpd: Optional[api.Estimate] = None
+  cumulative_icpd_with_cis: Optional[np.ndarray] = None
+
+
+@jax.jit
+def _fit_linear_regression(
+    x: jnp.ndarray, y: jnp.ndarray
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+  """Fits a simple linear regression y ~ alpha + beta * x.
+
+  Args:
+    x: (T,) Independent variable.
+    y: (T,) Dependent variable.
+
+  Returns:
+    alpha: Intercept.
+    beta: Slope.
+  """
+  # Stack a column of ones for the intercept.
+  design_matrix = jnp.column_stack([jnp.ones_like(x), x])
+  coeffs, _, _, _ = jnp.linalg.lstsq(design_matrix, y, rcond=None)
+  return coeffs[0], coeffs[1]
+
+
+@jax.jit
+def _compute_group_means(
+    data: jnp.ndarray, mask: jnp.ndarray
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+  """Computes mean time series for treated and control groups.
+
+  Args:
+    data: (T, N) Time series data.
+    mask: (N,) Binary treatment mask (1.0 for treated, 0.0 for control).
+
+  Returns:
+    y_mean: (T,) Average time series for treated group.
+    x_mean: (T,) Average time series for control group.
+  """
+  n_treated = jnp.sum(mask)
+  n_control = jnp.sum(1.0 - mask)
+
+  # Avoid division by zero.
+  y_mean = jnp.dot(data, mask) / jnp.maximum(n_treated, 1.0)
+  x_mean = jnp.dot(data, 1.0 - mask) / jnp.maximum(n_control, 1.0)
+
+  return y_mean, x_mean
+
+
+# TODO: Decouple methodology-specific estimation from the general
+# placebo inference framework to enhance modularity as new methods are
+# integrated.
+def _compute_placebo_effect_from_mask(
+    data_pretest: jnp.ndarray,
+    data_test: jnp.ndarray,
+    mask: jnp.ndarray,
+    p_mask: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+  """Computes the effect for a single placebo simulation.
+
+  Args:
+    data_pretest: (T_pre, Geos) Pre-period data.
+    data_test: (T_val, Geos) Test-period data.
+    mask: (Geos,) Treatment mask (1.0 for treated, 0.0 for control).
+    p_mask: (Geos,) Placebo treatment mask (1.0 for placebo treated, 0.0 for
+      control).
+
+  Returns:
+    Placebo cumulative treatment response, Placebo cumulative predicted
+    response, Placebo RMSE, Placebo log RMSE.
+  """
+  # Create a mask for valid control units (excluding original treated units).
+  # p_mask is 1.0 for placebo treated, 0.0 otherwise.
+  # mask is 1.0 for original treated, 0.0 otherwise.
+  # We want placebo controls to be: (1 - p_mask) * (1 - mask).
+  valid_control_mask = (1.0 - p_mask) * (1.0 - mask)
+
+  def _compute_placebo_means(data, t_mask, c_mask):
+    n_t = jnp.sum(t_mask)
+    n_c = jnp.sum(c_mask)
+    y_m = jnp.dot(data, t_mask) / jnp.maximum(n_t, 1.0)
+    x_m = jnp.dot(data, c_mask) / jnp.maximum(n_c, 1.0)
+    return y_m, x_m
+
+  # Fit on pre.
+  py_pretest, px_pretest = _compute_placebo_means(
+      data_pretest, p_mask, valid_control_mask
+  )
+  p_alpha, p_beta = _fit_linear_regression(px_pretest, py_pretest)
+
+  # RMSE on pre.
+  py_pred_pre = p_alpha + p_beta * px_pretest
+  p_rmse = jnp.sqrt(jnp.mean((py_pretest - py_pred_pre) ** 2))
+
+  # Log RMSE on pre for computing relative lift.
+  p_log_errors = jnp.log(py_pretest) - jnp.log(py_pred_pre)
+  p_log_rmse = jnp.sqrt(jnp.mean(p_log_errors**2))
+
+  # Predict on val.
+  py_test, px_test = _compute_placebo_means(
+      data_test, p_mask, valid_control_mask
+  )
+  # We want cumulative results so that we can obtain a cumulative analysis times
+  # series with CIs.
+  py_pred = p_alpha + p_beta * px_test
+  py_pred_cumul = jnp.cumsum(py_pred)
+  py_test_cumul = jnp.cumsum(py_test)
+
+  return py_test_cumul, py_pred_cumul, p_rmse, p_log_rmse
+
+
+@jax.jit
+def get_r2(
+    data_pre: jnp.ndarray, data_val: jnp.ndarray, treatment_masks: jnp.ndarray
+) -> jnp.ndarray:
+  """Calculates validation R-squared for a batch of designs.
+
+  Args:
+    data_pre: (T_pre, Geos) Pre-period data.
+    data_val: (T_val, Geos) Validation-period data.
+    treatment_masks: (N_designs, Geos) Batch of treatment masks.
+
+  Returns:
+    r2_vals: (N_designs,) Out-of-sample R-squared on validation period.
+  """
+  # TODO: Add multicell support.
+
+  def _get_one_r2(mask):
+    # Ensure mask is float.
+    mask = mask.astype(jnp.float32)
+
+    # Calculate means for treated and control groups in pre-period.
+    y_pre, x_pre = _compute_group_means(data_pre, mask)
+
+    # Simple Linear Regression: y_pre ~ alpha + beta * x_pre.
+    alpha, beta = _fit_linear_regression(x_pre, y_pre)
+
+    # Validation period.
+    y_val, x_val = _compute_group_means(data_val, mask)
+
+    # Predict.
+    y_pred = alpha + beta * x_val
+
+    # Calculate R2.
+    residuals = y_val - y_pred
+    mse = jnp.mean(residuals**2)
+    var_y = jnp.var(y_val)
+
+    # Avoid division by zero.
+    r2 = jnp.where(var_y > 1e-10, 1.0 - (mse / var_y), 0.0)
+
+    # Return nan if invalid design (no treated or no control).
+    n_treated = jnp.sum(mask)
+    n_control = jnp.sum(1.0 - mask)
+    is_valid = (n_treated > 0) & (n_control > 0)
+    return jnp.where(is_valid, r2, jnp.nan)
+
+  return jax.vmap(_get_one_r2)(treatment_masks)
+
+
+@jax.jit
+def _compute_placebo_effect_with_random_design(
+    key: jax.Array,
+    data_pre: jnp.ndarray,
+    data_val: jnp.ndarray,
+    mask: jnp.ndarray,
+    n_treated: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+  """Computes the effect for a single placebo simulation.
+
+  Args:
+    key: Random key.
+    data_pre: (T_pre, Geos) Pre-period data.
+    data_val: (T_val, Geos) Validation-period data.
+    mask: (Geos,) Treatment mask (1.0 for treated, 0.0 for control).
+    n_treated: Number of treated units.
+
+  Returns:
+    Placebo effect and Placebo RMSE.
+  """
+  n_geos = data_pre.shape[1]
+
+  # Sample placebo units from the CONTROL pool only.
+  # 1. Generate random scores for all units.
+  scores = jax.random.uniform(key, shape=(n_geos,))
+
+  # 2. Penalize units that are already treated in the main design so they
+  # appear at the bottom of the ranking.
+  # mask is 1.0 for treated, 0.0 for control.
+  scores = jnp.where(mask > 0.5, -1.0, scores)
+
+  # 3. Select the top n_treated units from the control pool.
+  # Calling argsort twice produces the rank of each element in the original
+  # array.
+  # - First argsort: returns indices that sort the array.
+  # - Second argsort: returns the rank (0 to n-1) for each original index.
+  #   If ranks[i] == k, then scores[i] is the k-th smallest element.
+  ranks = jnp.argsort(jnp.argsort(scores))
+
+  # We want the top n_treated elements, so we select indices with
+  # rank >= (n_total - n_treated).
+  p_mask = jnp.where(ranks >= (n_geos - n_treated), 1.0, 0.0)
+
+  # Create a mask for valid control units (excluding original treated units).
+  # p_mask is 1.0 for placebo treated, 0.0 otherwise.
+  # mask is 1.0 for original treated, 0.0 otherwise.
+  # We want placebo controls to be: (1 - p_mask) * (1 - mask).
+  valid_control_mask = (1.0 - p_mask) * (1.0 - mask)
+
+  def _compute_placebo_means(data, t_mask, c_mask):
+    n_t = jnp.sum(t_mask)
+    n_c = jnp.sum(c_mask)
+    y_m = jnp.dot(data, t_mask) / jnp.maximum(n_t, 1.0)
+    x_m = jnp.dot(data, c_mask) / jnp.maximum(n_c, 1.0)
+    return y_m, x_m
+
+  # Fit on pre.
+  py_pre, px_pre = _compute_placebo_means(data_pre, p_mask, valid_control_mask)
+  p_alpha, p_beta = _fit_linear_regression(px_pre, py_pre)
+
+  # RMSE on pre.
+  py_pred_pre = p_alpha + p_beta * px_pre
+  p_rmse = jnp.sqrt(jnp.mean((py_pre - py_pred_pre) ** 2))
+
+  # Predict on val.
+  py_val, px_val = _compute_placebo_means(data_val, p_mask, valid_control_mask)
+  py_pred = p_alpha + p_beta * px_val
+
+  return jnp.mean(py_val - py_pred), p_rmse
+
+
+@functools.partial(jax.jit, static_argnames=['test_type'])
+def _get_mde_simplified_design_aware_placebo(
+    data_pre: jnp.ndarray,
+    data_val: jnp.ndarray,
+    treatment_masks: jnp.ndarray,
+    z_score_sum: float,
+    test_type: api.TestType = api.TestType.TWO_SIDED,
+) -> MdeResults:
+  """Calculates MDE using simplified design aware placebo method."""
+
+  def _get_effect(mask):
+    y_pre, x_pre = _compute_group_means(data_pre, mask)
+    alpha, beta = _fit_linear_regression(x_pre, y_pre)
+    y_val, x_val = _compute_group_means(data_val, mask)
+    y_pred = alpha + beta * x_val
+
+    real_effect = jnp.mean(y_val - y_pred)
+    baseline = jnp.mean(y_val)
+    return real_effect, baseline
+
+  effects, baselines = jax.vmap(_get_effect)(treatment_masks)
+
+  se = jnp.std(effects)
+  mde_abs_val = se * z_score_sum
+
+  # Broadcast to shape (N_designs,).
+  mde_abs = jnp.full_like(effects, mde_abs_val)
+  mde_pct = jnp.where(baselines > 1e-9, mde_abs / baselines, jnp.nan)
+
+  # P-values.
+  z_scores = effects / jnp.maximum(se, 1e-10)
+  if test_type == api.TestType.TWO_SIDED:
+    p_values = 2.0 * (1.0 - stats.norm.cdf(jnp.abs(z_scores)))
+  else:
+    # One-sided: Upper tail.
+    p_values = 1.0 - stats.norm.cdf(z_scores)
+  p_values = jnp.where(se > 1e-10, p_values, 1.0)
+
+  return MdeResults(mde_abs=mde_abs, mde_pct=mde_pct, p_value=p_values)
+
+
+@functools.partial(jax.jit, static_argnames=['n_permutations', 'test_type'])
+def _get_mde_placebo(
+    data_pre: jnp.ndarray,
+    data_val: jnp.ndarray,
+    treatment_masks: jnp.ndarray,
+    random_keys: jnp.ndarray,
+    n_permutations: int,
+    z_score_sum: float,
+    test_type: api.TestType = api.TestType.TWO_SIDED,
+) -> MdeResults:
+  """Calculates MDE using placebo method."""
+  n_geos = data_pre.shape[1]
+
+  def _get_one_mde(mask, key):
+    # Calculate n_treated and n_control.
+    n_treated = jnp.sum(mask)
+    n_control = n_geos - n_treated
+
+    # Calculate n_placebo_treated.
+    # If treatment size is smaller than control size, we use the same size for
+    # placebo. Otherwise, we scale it down proportionally.
+    ratio = n_treated / n_geos
+    scaled_size = jnp.floor(n_control * ratio)
+    n_placebo_treated = jnp.where(n_treated < n_control, n_treated, scaled_size)
+
+    # Ensure at least one treated unit and one control unit remain for placebo.
+    n_placebo_treated = jnp.minimum(n_placebo_treated, n_control - 1.0)
+    n_placebo_treated = jnp.maximum(1.0, n_placebo_treated)
+
+    # 1. Real Effect.
+    y_pre, x_pre = _compute_group_means(data_pre, mask)
+    alpha, beta = _fit_linear_regression(x_pre, y_pre)
+
+    # RMSE on pre.
+    y_pred_pre = alpha + beta * x_pre
+    real_rmse = jnp.sqrt(jnp.mean((y_pre - y_pred_pre) ** 2))
+
+    y_val, x_val = _compute_group_means(data_val, mask)
+    y_pred = alpha + beta * x_val
+
+    # Effect is the mean difference in the validation period.
+    real_effect = jnp.mean(y_val - y_pred)
+    baseline = jnp.mean(y_val)
+
+    # 2. Placebo Simulation.
+    keys = jax.random.split(key, n_permutations)
+
+    placebo_effects, placebo_rmses = jax.vmap(
+        _compute_placebo_effect_with_random_design,
+        in_axes=(0, None, None, None, None),
+    )(keys, data_pre, data_val, mask, n_placebo_treated)
+
+    # 3. MDE & P-value.
+    t_placebo = placebo_effects / jnp.maximum(placebo_rmses, 1e-9)
+    se = methodology_util.compute_se(real_rmse, t_placebo)
+    mde_abs = se * z_score_sum
+
+    mde_pct = jnp.where(baseline > 1e-9, mde_abs / baseline, jnp.nan)
+
+    # Studentized P-value (Placebo Adjusted).
+    p_value = methodology_util.compute_studentized_p_value(
+        real_effect, real_rmse, t_placebo, test_type
+    )
+
+    return mde_abs, mde_pct, p_value
+
+  # Vmap over designs.
+  mde_abs, mde_pct, p_values = jax.vmap(_get_one_mde)(
+      treatment_masks, random_keys
+  )
+
+  return MdeResults(mde_abs=mde_abs, mde_pct=mde_pct, p_value=p_values)
+
+
+@jax.jit
+def check_slope_similarity(
+    candidates: jnp.ndarray,
+    conversion_data: jnp.ndarray,
+    spend_data: jnp.ndarray,
+    tolerance: float,
+) -> jnp.ndarray:
+  """Checks if the slope between conversion and spend is similar.
+
+  Args:
+    candidates: (N_designs, N_geos) Treatment masks (1 for treated, 0 for
+      control).
+    conversion_data: (T, N_geos) Conversion time series data.
+    spend_data: (T, N_geos) Spend time series data.
+    tolerance: Maximum allowed symmetric difference.
+
+  Returns:
+    mask: (N_designs,) Boolean mask where True indicates the design passed the
+      check.
+  """
+  # TODO: Add multicell support.
+  def _get_single_slope_diff(mask):
+    # 1. Conversion slope.
+    # y = treated, x = control.
+    y_conv, x_conv = _compute_group_means(conversion_data, mask)
+    _, b_conv = _fit_linear_regression(x_conv, y_conv)
+
+    # 2. Spend slope.
+    y_spend, x_spend = _compute_group_means(spend_data, mask)
+    _, b_spend = _fit_linear_regression(x_spend, y_spend)
+
+    # 3. Calculate symmetric percentage difference.
+    # diff = 2 * |b1 - b2| / (|b1| + |b2|)
+    denom = jnp.abs(b_conv) + jnp.abs(b_spend)
+    is_zero = (jnp.abs(b_conv) < 1e-10) | (jnp.abs(b_spend) < 1e-10)
+
+    diff = jnp.where(
+        is_zero,
+        jnp.inf,
+        2.0 * jnp.abs(b_conv - b_spend) / denom,
+    )
+
+    return diff <= tolerance
+
+  return jax.vmap(_get_single_slope_diff)(candidates)
+
+
+def get_mde(
+    data_pre: jnp.ndarray,
+    data_val: jnp.ndarray,
+    treatment_masks: jnp.ndarray,
+    random_keys: jnp.ndarray,
+    n_permutations: int,
+    z_score_sum: float,
+    test_type: api.TestType = api.TestType.TWO_SIDED,
+    se_method: api.SeMethod = api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO,
+) -> MdeResults:
+  """Runs placebo check and calculates MDE for a batch of designs.
+
+  Args:
+    data_pre: (T_pre, Geos) Pre-period data.
+    data_val: (T_val, Geos) Validation-period data.
+    treatment_masks: (N_designs, Geos) Batch of treatment masks.
+    random_keys: (N_designs, 2) Batch of JAX PRNG keys.
+    n_permutations: Number of permutations.
+    z_score_sum: z_alpha + z_power.
+    test_type: Type of test (one-sided or two-sided).
+    se_method: Method to calculate standard error. 'placebo' uses placebo
+      simulations for each design. 'simplified_design_aware_placebo' calculates
+      SE based on the distribution of effects across the provided treatment
+      masks.
+
+  Returns:
+    MdeResults object.
+  """
+  # TODO: Add multicell support.
+  if se_method == api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO:
+    return _get_mde_simplified_design_aware_placebo(
+        data_pre, data_val, treatment_masks, z_score_sum, test_type
+    )
+
+  return _get_mde_placebo(
+      data_pre,
+      data_val,
+      treatment_masks,
+      random_keys,
+      n_permutations,
+      z_score_sum,
+      test_type,
+  )
+
+
+@jax.jit
+def _compute_icpd(
+    pretest_spend: jnp.ndarray,
+    test_spend: jnp.ndarray,
+    treatment_mask: jnp.ndarray,
+    total_cumul_effect: jnp.ndarray,
+    total_lower_cis: jnp.ndarray,
+    total_upper_cis: jnp.ndarray,
+    incremental_spend_sign: float,
+):
+  """Computes ICPD metrics using JAX arrays."""
+  y_spend_pre, x_spend_pre = _compute_group_means(pretest_spend, treatment_mask)
+  pred_alpha_spend, pred_beta_spend = _fit_linear_regression(
+      x_spend_pre, y_spend_pre
+  )
+
+  y_spend_test, x_spend_test = _compute_group_means(test_spend, treatment_mask)
+  y_spend_pred = pred_alpha_spend + pred_beta_spend * x_spend_test
+  n_treatment_geos = jnp.sum(treatment_mask)
+
+  incremental_spend = (
+      incremental_spend_sign * n_treatment_geos * (y_spend_test - y_spend_pred)
+  )
+  cumulative_incremental_spend = jnp.cumsum(incremental_spend)
+
+  cumulative_icpd = total_cumul_effect / cumulative_incremental_spend
+  icpd_lower = total_lower_cis / cumulative_incremental_spend
+  icpd_upper = total_upper_cis / cumulative_incremental_spend
+
+  return IcpdResults(
+      cumulative_icpd=cumulative_icpd,
+      lower_bound=icpd_lower,
+      upper_bound=icpd_upper,
+  )
+
+
+def analyze(
+    pretest_conversions: jnp.ndarray,
+    test_conversions: jnp.ndarray,
+    treatment_mask: jnp.ndarray,
+    placebo_masks: jnp.ndarray,
+    alpha: float,
+    experiment_type: api.ExperimentType,
+    test_type: api.TestType = api.TestType.TWO_SIDED,
+    pretest_spend: Optional[jnp.ndarray] = None,
+    test_spend: Optional[jnp.ndarray] = None,
+) -> TbrAnalysisResult:
+  """Generates analysis metrics for a GeoX experiment using JAX inputs."""
+  y_pretest, x_pretest = _compute_group_means(
+      pretest_conversions, treatment_mask
+  )
+  pred_alpha, pred_beta = _fit_linear_regression(x_pretest, y_pretest)
+
+  y_pred_pre = pred_alpha + pred_beta * x_pretest
+  rmse = jnp.sqrt(jnp.mean((y_pretest - y_pred_pre) ** 2))
+  log_rmse = jnp.sqrt(jnp.mean((jnp.log(y_pretest) - jnp.log(y_pred_pre)) ** 2))
+
+  y_test, x_test = _compute_group_means(test_conversions, treatment_mask)
+  y_pred = pred_alpha + pred_beta * x_test
+  y_pred_cumul = jnp.cumsum(y_pred)
+  y_test_cumul = jnp.cumsum(y_test)
+
+  geo_avg_cumul_effect = y_test_cumul - y_pred_cumul
+  n_treatment_geos = jnp.sum(treatment_mask)
+  total_cumul_effect = n_treatment_geos * geo_avg_cumul_effect
+  total_y_test_cumul = n_treatment_geos * y_test_cumul
+  total_y_pred_cumul = n_treatment_geos * y_pred_cumul
+
+  (
+      placebo_y_test_cumul,
+      placebo_y_pred_cumul,
+      placebo_rmses,
+      placebo_log_rmses,
+  ) = jax.vmap(
+      _compute_placebo_effect_from_mask, in_axes=(None, None, None, 0)
+  )(
+      pretest_conversions, test_conversions, treatment_mask, placebo_masks
+  )
+  placebo_estimates = placebo_y_test_cumul - placebo_y_pred_cumul
+  t_placebo = placebo_estimates / jnp.maximum(placebo_rmses[:, None], 1e-9)
+
+  # For Go Dark studies, we negate the incremental metrics.
+  sign = -1.0 if experiment_type == api.ExperimentType.GO_DARK else 1.0
+  signed_geo_avg_cumul_effect = sign * geo_avg_cumul_effect
+  signed_total_cumul_effect = sign * total_cumul_effect
+  signed_t_placebo = sign * t_placebo
+
+  geo_averaged_lower_cis, geo_averaged_upper_cis = jax.vmap(
+      methodology_util.compute_cis, in_axes=(0, None, 1, None, None)
+  )(signed_geo_avg_cumul_effect, rmse, signed_t_placebo, alpha, test_type)
+  total_lower_cis = n_treatment_geos * geo_averaged_lower_cis
+  total_upper_cis = n_treatment_geos * geo_averaged_upper_cis
+
+  p_value = methodology_util.compute_studentized_p_value(
+      signed_geo_avg_cumul_effect[-1],
+      rmse,
+      signed_t_placebo[:, -1],
+      test_type,
+  )
+  lift = api.Estimate(
+      point_estimate=float(signed_total_cumul_effect[-1]),
+      lower_bound=float(total_lower_cis[-1]),
+      upper_bound=float(total_upper_cis[-1]),
+      # TODO: Update this to the actual standard deviation.
+      standard_deviation=float(1.0),
+      p_value=float(p_value),
+  )
+  percent_lift = methodology_util.get_percent_lift(
+      total_y_test_cumul[-1],
+      total_y_pred_cumul[-1],
+      log_rmse,
+      placebo_y_test_cumul[:, -1],
+      placebo_y_pred_cumul[:, -1],
+      placebo_log_rmses,
+      alpha,
+      experiment_type,
+      test_type,
+  )
+
+  cumulative_lift_with_cis = np.array(
+      jnp.stack([signed_total_cumul_effect, total_lower_cis, total_upper_cis]).T
+  )
+
+  icpd = None
+  cumulative_icpd_with_cis = None
+  if pretest_spend is not None and test_spend is not None:
+    icpd_results = _compute_icpd(
+        pretest_spend,
+        test_spend,
+        treatment_mask,
+        signed_total_cumul_effect,
+        total_lower_cis,
+        total_upper_cis,
+        sign,
+    )
+    icpd = api.Estimate(
+        point_estimate=float(icpd_results.cumulative_icpd[-1]),
+        lower_bound=float(icpd_results.lower_bound[-1]),
+        upper_bound=float(icpd_results.upper_bound[-1]),
+        # TODO: Update this to the actual standard deviation.
+        standard_deviation=float(1.0),
+        p_value=float(p_value),
+    )
+    cumulative_icpd_with_cis = np.array(
+        jnp.stack([
+            icpd_results.cumulative_icpd,
+            icpd_results.lower_bound,
+            icpd_results.upper_bound,
+        ]).T
+    )
+
+  return TbrAnalysisResult(
+      lift=lift,
+      cumulative_lift_with_cis=cumulative_lift_with_cis,
+      percent_lift=percent_lift,
+      icpd=icpd,
+      cumulative_icpd_with_cis=cumulative_icpd_with_cis,
+  )

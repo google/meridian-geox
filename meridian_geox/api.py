@@ -1,0 +1,331 @@
+# Copyright 2026 The Meridian GeoX Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""API types and enums for the GeoX library."""
+
+import dataclasses
+import enum
+from typing import Annotated, Any, Optional, TypeVar, Union
+
+import jax.numpy as jnp
+import numpy as np
+import pandas as pd
+import pandera as pa
+import pydantic
+
+
+# pytype: disable=invalid-annotation
+
+# Column names.
+DATE = "date"
+LOCATION = "location"
+CONVERSIONS = "conversions"
+SPEND = "spend"
+
+
+def _validate_timestamp(v: Any) -> pd.Timestamp:
+  if isinstance(v, pd.Timestamp):
+    return v
+  return pd.Timestamp(v)
+
+
+def _serialize_timestamp(v: pd.Timestamp) -> str:
+  return v.isoformat()
+
+
+def _serialize_set(v: set[Any]) -> list[Any]:
+  return sorted(list(v))
+
+
+Timestamp = Annotated[
+    pd.Timestamp,
+    pydantic.BeforeValidator(_validate_timestamp),
+    pydantic.PlainSerializer(
+        _serialize_timestamp, return_type=str, when_used="json"
+    ),
+]
+
+
+T = TypeVar("T")
+SortedSet = Annotated[
+    set[T],
+    pydantic.PlainSerializer(
+        _serialize_set, return_type=list, when_used="json"
+    ),
+]
+
+
+def _validate_jnp_array(v: Any) -> jnp.ndarray:
+  if isinstance(v, (jnp.ndarray, np.ndarray)):
+    return jnp.array(v)
+  return jnp.array(v)
+
+
+def _serialize_jnp_array(v: Any) -> list[Any]:
+  if hasattr(v, "tolist"):
+    return v.tolist()
+  return list(v)
+
+
+JnpArray = Annotated[
+    jnp.ndarray,
+    pydantic.BeforeValidator(_validate_jnp_array),
+    pydantic.PlainSerializer(
+        _serialize_jnp_array, return_type=list, when_used="json"
+    ),
+]
+
+
+class DataSchema(pa.DataFrameModel):
+  """Schema for geo data."""
+
+  # Required: Date.
+  date: pa.typing.Series[pd.Timestamp] = pa.Field(alias=DATE)
+  # Required: Location Name (String).
+  # Must not contain null/empty strings.
+  location: pa.typing.Series[str] = pa.Field(alias=LOCATION, str_matches=r".+")
+  # Required: Conversions (Numeric).
+  conversions: pa.typing.Series[float] = pa.Field(alias=CONVERSIONS)
+  # Optional: Spend (Numeric).
+  # Must not be negative if provided.
+  spend: Optional[pa.typing.Series[float]] = pa.Field(alias=SPEND, ge=0)
+
+
+class ExperimentType(enum.Enum):
+  HOLDBACK = 1
+  GO_DARK = 2
+  HEAVY_UP = 3
+
+
+class GeoAssignmentRule(enum.Enum):
+  RANDOM = 1
+  STRATIFIED_SAMPLING = 2
+
+
+class Methodology(enum.Enum):
+  TBR = 1
+  SDID = 2
+
+
+class TestType(enum.Enum):
+  ONE_SIDED = 1
+  TWO_SIDED = 2
+
+
+class GeoGroup(enum.Enum):
+  CONTROL = 1
+  TREATMENT = 2
+  EXCLUDED = 3
+
+
+class SeMethod(enum.Enum):
+  PLACEBO = 1
+  SIMPLIFIED_DESIGN_AWARE_PLACEBO = 2
+
+
+@pydantic.dataclasses.dataclass
+class DesignConfig:
+  """Parameters for designing a GeoX study."""
+
+  __pydantic_config__ = pydantic.ConfigDict(arbitrary_types_allowed=True)
+
+  # TODO: Figure out if need to support weekly granularity.
+  experiment_duration: Annotated[int, pydantic.Field(gt=0)]
+  # Supports using different experiment types in different cells.
+  experiment_types: Union[
+      ExperimentType, list[ExperimentType]
+  ] = ExperimentType.HOLDBACK
+  # The methodologies to be considered for the experiment design.
+  methodology: Methodology = Methodology.TBR
+  geo_assignment_rule: GeoAssignmentRule = (
+      GeoAssignmentRule.RANDOM
+  )
+  # TODO: If needed, add per-methodology configs.
+  cell_count: Annotated[int, pydantic.Field(gt=0)] = 1
+  alpha: float = 0.1
+  power: float = 0.8
+  test_type: TestType = TestType.TWO_SIDED
+  # The number of output design options.
+  design_output_count: Annotated[int, pydantic.Field(gt=0)] = 10
+  # This is needed for an accurate estimate of budget.
+  cost_per_incremental_conversion: Optional[float] = 1.0
+  # TODO: Consider moving this to a method specific config.
+  covariate_columns: list[str] = dataclasses.field(default_factory=list)
+
+  # Advanced design search parameters.
+  # Number of candidates for the fast scoring step.
+  n_candidates: Annotated[int, pydantic.Field(gt=0)] = 10000
+  # Number of fully scored candidates.
+  n_ranked_candidates: Annotated[int, pydantic.Field(gt=0)] = 100
+  # Number of iterations for confidence interval estimation.
+  n_aa_test_iterations: Annotated[int, pydantic.Field(gt=0)] = 500
+  max_candidate_generation_retries: Annotated[int, pydantic.Field(gt=0)] = 10
+  # Random number generator seed.
+  seed: int = 42
+  # Maximum allowed symmetric difference for slope check.
+  slope_tolerance: float = 0.2
+  # Number of strata for stratified sampling.
+  num_strata: Annotated[int, pydantic.Field(gt=0)] = 4
+  # Number of iterations for k-means clustering.
+  k_means_iterations: Annotated[int, pydantic.Field(gt=0)] = 10
+  # An integer that configures the generation of stratum label sequences.
+  # This should be larger than n_candidates for best results.
+  pad_length: Annotated[int, pydantic.Field(gt=0)] = 10000
+
+
+@pydantic.dataclasses.dataclass
+class Constraints:
+  """Constraints for designing a GeoX study."""
+
+  __pydantic_config__ = pydantic.ConfigDict(arbitrary_types_allowed=True)
+
+  # The geos to be included in a treatment group.
+  included_treatment_geos: SortedSet[str] = dataclasses.field(
+      default_factory=set
+  )
+  # The geos to be included in the control group.
+  included_control_geos: SortedSet[str] = dataclasses.field(default_factory=set)
+  # The geos to be excluded from the experiment design.
+  excluded_geos: SortedSet[str] = dataclasses.field(default_factory=set)
+  # Dates to exclude from the experiment design.
+  excluded_dates: SortedSet[Timestamp] = dataclasses.field(default_factory=set)
+  # The maximum budget for the experiment design (per cell).
+  budget: Optional[float] = None
+  # The maximum budget percentage change for the experiment design. This can
+  # only be used if the spend data is provided (per cell).
+  budget_percent: Optional[float] = None
+  # The minimum conversions volume for any treatment group (per cell).
+  min_conversions_percent: Optional[float] = None
+  # The maximum conversions volume for any treatment group (per cell).
+  max_conversions_percent: Optional[float] = 0.3
+
+
+@dataclasses.dataclass
+class Design:
+  """A design for a GeoX study."""
+
+  __pydantic_config__ = pydantic.ConfigDict(arbitrary_types_allowed=True)
+
+  # Treatment geos for each cell.
+  treatment_geos: dict[str, SortedSet[str]]
+  control_geos: SortedSet[str]
+  excluded_geos: SortedSet[str]
+  # Design metrics for each cell.
+  minimum_detectable_effect: dict[str, float] = dataclasses.field(
+      default_factory=dict
+  )
+  p_value: dict[str, float] = dataclasses.field(default_factory=dict)
+  budget: dict[str, float] = dataclasses.field(default_factory=dict)
+  design_config: Optional[DesignConfig] = None
+  constraints: Optional[Constraints] = None
+  # The stratum label of each geo, ordered by geo name.
+  geo_stratum_labels: Optional[JnpArray] = None
+  # Conterfactual conversion time series. Includes cell ID, date and
+  # counterfactual conversions. This is used for plotting.
+  counterfactual_conversions: Annotated[
+      Optional[pd.DataFrame], pydantic.Field(exclude=True)
+  ] = dataclasses.field(default=None, repr=False)
+
+  def export_to_json(self) -> str:
+    """Exports the design to a JSON file."""
+    return pydantic.TypeAdapter(Design).dump_json(self).decode()
+
+  @classmethod
+  def load_from_json(cls, json_str: str) -> "Design":
+    """Loads the design from a JSON file."""
+    return pydantic.TypeAdapter(cls).validate_json(json_str)
+
+
+@dataclasses.dataclass
+class DesignSet:
+  """A set of designs for a GeoX study."""
+
+  __pydantic_config__ = pydantic.ConfigDict(arbitrary_types_allowed=True)
+
+  designs: dict[str, Design]
+  # A dataframe with ranked designs and their corresponding metrics. This
+  # includes an index to identify the design in the list of designs and metrics
+  # such as cell ID, design rank score, budget, minimum detectable effect,
+  # statistical power, and other robustness and representativeness metrics.
+  design_metrics: pd.DataFrame = dataclasses.field(repr=False)
+  # TODO: Consider including provenance information such as input
+  # data and configs to make comparison/visualization easier.
+  design_data: pd.DataFrame = dataclasses.field(repr=False)
+
+
+@pydantic.dataclasses.dataclass
+class AnalysisConfig:
+  """Parameters for analyzing a GeoX study."""
+
+  __pydantic_config__ = pydantic.ConfigDict(arbitrary_types_allowed=True)
+
+  methodology: Methodology
+  # The design (including geo splits, geo assignment rule, other design input
+  # parameters) used for the experiment.
+  design: Design
+  analysis_start_date: Timestamp
+  # If needed, extend this to include a cooldown period.
+  analysis_end_date: Timestamp
+  # The dates to be excluded from the analysis.
+  excluded_dates: SortedSet[Timestamp] = dataclasses.field(default_factory=set)
+  # If not provided, will be inferred from the design config.
+  alpha: Optional[float] = None
+  # If not provided, will be inferred from the design config.
+  test_type: Optional[TestType] = None
+
+
+@dataclasses.dataclass
+class Estimate:
+  """An estimate with its confidence interval."""
+
+  __pydantic_config__ = pydantic.ConfigDict(arbitrary_types_allowed=True)
+
+  point_estimate: float
+  lower_bound: float
+  upper_bound: float
+  standard_deviation: float
+  p_value: Optional[float] = None
+
+
+@dataclasses.dataclass
+class AnalysisMetrics:
+  """Metrics for a single cell analysis."""
+
+  __pydantic_config__ = pydantic.ConfigDict(arbitrary_types_allowed=True)
+
+  lift: Estimate
+  percent_lift: Estimate
+  # Cumulative time series of lift estimates.
+  cumulative_lift_estimates: pd.DataFrame = dataclasses.field(repr=False)
+  # Incremental conversion per dollar. Conversion could be revenue or any other
+  # KPI. When conversion value is used, iCPD is equivalent to iROAS. This is
+  # only populated if spend data is available.
+  icpd: Optional[Estimate] = None
+  # Cumulative time series of iCPD.
+  cumulative_icpd_estimates: Optional[pd.DataFrame] = dataclasses.field(
+      default=None, repr=False
+  )
+
+
+@dataclasses.dataclass
+class AnalysisResult:
+  """Analysis results for a GeoX study."""
+
+  __pydantic_config__ = pydantic.ConfigDict(arbitrary_types_allowed=True)
+
+  # Cell IDs and corresponding analysis metrics.
+  results: dict[str, AnalysisMetrics]
+  # Counterfactual conversion time series. Includes cell ID, date and
+  # counterfactual conversions. This is used for plotting.
+  counterfactual_conversions: pd.DataFrame = dataclasses.field(repr=False)
