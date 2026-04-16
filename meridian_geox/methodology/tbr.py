@@ -15,7 +15,6 @@
 """TBR methodology implementation."""
 
 import dataclasses
-import functools
 from typing import Optional
 
 import jax
@@ -318,7 +317,7 @@ def _compute_placebo_effect_with_random_design(
   return jnp.mean(py_val - py_pred), p_rmse
 
 
-@functools.partial(jax.jit, static_argnames=['test_type'])
+@jax.jit(static_argnames=['test_type'])
 def _get_mde_simplified_design_aware_placebo(
     data_pre: jnp.ndarray,
     data_val: jnp.ndarray,
@@ -359,7 +358,7 @@ def _get_mde_simplified_design_aware_placebo(
   return MdeResults(mde_abs=mde_abs, mde_pct=mde_pct, p_value=p_values)
 
 
-@functools.partial(jax.jit, static_argnames=['n_permutations', 'test_type'])
+@jax.jit(static_argnames=['n_permutations', 'test_type'])
 def _get_mde_placebo(
     data_pre: jnp.ndarray,
     data_val: jnp.ndarray,

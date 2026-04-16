@@ -16,7 +16,7 @@ keywords = []
 # pip dependencies of the project
 # Installed locally with `pip install -e .`
 dependencies = [
-    "jax",
+    "jax>=0.4.20",
     "jaxkd",
     "numpy",
     "pandas",
