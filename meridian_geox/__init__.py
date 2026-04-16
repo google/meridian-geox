@@ -39,5 +39,5 @@ from .data_quality.data_quality import QualityCheckConfig
 from .data_quality.data_quality import QualityCheckResult
 from .design import compare_designs
 from .design import concat_design_reports
-from .design import design
 from .design import plot_design
+from .design import run_design

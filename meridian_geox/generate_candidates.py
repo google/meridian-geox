@@ -15,6 +15,7 @@
 """Library for generating design candidates."""
 
 import dataclasses
+import functools
 import logging
 from typing import Any, Optional
 
@@ -127,7 +128,7 @@ def _float_to_label(floats: jnp.ndarray, intervals: jnp.ndarray):
   return jnp.argmax(floats < intervals)
 
 
-@jax.jit(static_argnames=['seq_length', 'pad_length'])
+@functools.partial(jax.jit, static_argnames=['seq_length', 'pad_length'])
 def get_minimal_discrepancy_stratum_labels(
     offset: int, stratum_counts: jnp.ndarray, seq_length: int, pad_length: int
 ):
@@ -488,7 +489,7 @@ def get_stratified_sampling_candidates(
   return candidates
 
 
-@jax.jit(static_argnames=['n_designs', 'n_geos', 'n_treated'])
+@functools.partial(jax.jit, static_argnames=['n_designs', 'n_geos', 'n_treated'])
 def _generate_random_masks(
     n_designs: int,
     n_geos: int,

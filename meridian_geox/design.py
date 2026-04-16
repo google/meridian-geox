@@ -329,7 +329,7 @@ def _get_design_summary(
   )
 
 
-def design(
+def run_design(
     data: pd.DataFrame,
     design_config: api.DesignConfig,
     constraints: api.Constraints,
@@ -457,7 +457,7 @@ def compare_designs(
 ) -> api.DesignSet:
   """Compares designs based on different design configurations."""
   design_sets = [
-      design(data, config, constraints)
+      run_design(data, config, constraints)
       for config, constraints in design_requirements
   ]
 

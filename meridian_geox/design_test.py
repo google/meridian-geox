@@ -67,7 +67,7 @@ class DesignTest(parameterized.TestCase):
 
     constraints = api.Constraints()
 
-    result = design.design(data, design_config, constraints)
+    result = design.run_design(data, design_config, constraints)
 
     self.assertIsInstance(result, api.DesignSet)
     self.assertNotEmpty(result.designs)
@@ -109,7 +109,7 @@ class DesignTest(parameterized.TestCase):
       data_list.append({api.DATE: d, api.LOCATION: l, api.CONVERSIONS: 10.0})
     data_3 = pd.DataFrame(data_list)
     with self.assertRaisesRegex(ValueError, 'Not enough geos.'):
-      design.design(data_3, design_config, constraints)
+      design.run_design(data_3, design_config, constraints)
 
     # 4 geos, but max_conversions_percent=0.8 means n_treated=3,
     # so n_control=1, which is < 2.
@@ -120,7 +120,7 @@ class DesignTest(parameterized.TestCase):
     data_2 = pd.DataFrame(data_list_2)
     constraints_2 = api.Constraints(max_conversions_percent=0.8)
     with self.assertRaisesRegex(ValueError, 'Not enough geos.'):
-      design.design(data_2, design_config, constraints_2)
+      design.run_design(data_2, design_config, constraints_2)
 
   def test_design_small_n_geos(self):
     # 4 geos.
@@ -133,7 +133,7 @@ class DesignTest(parameterized.TestCase):
     design_config = api.DesignConfig(experiment_duration=2, n_candidates=5)
     constraints = api.Constraints(max_conversions_percent=0.5)
 
-    result = design.design(data, design_config, constraints)
+    result = design.run_design(data, design_config, constraints)
 
     for _, design_obj in result.designs.items():
       # n_treated should be at least 2 and at most n_geos - 2.
@@ -160,7 +160,7 @@ class DesignTest(parameterized.TestCase):
         excluded_geos={'geo_1'}, max_conversions_percent=0.5
     )
 
-    result = design.design(data, design_config, constraints)
+    result = design.run_design(data, design_config, constraints)
 
     for _, design_obj in result.designs.items():
       # geo_1 should not be in treatment or control.
@@ -182,8 +182,8 @@ class DesignTest(parameterized.TestCase):
     config1 = api.DesignConfig(experiment_duration=5, seed=42, n_candidates=5)
     config2 = api.DesignConfig(experiment_duration=5, seed=42, n_candidates=5)
 
-    result1 = design.design(data, config1, api.Constraints())
-    result2 = design.design(data, config2, api.Constraints())
+    result1 = design.run_design(data, config1, api.Constraints())
+    result2 = design.run_design(data, config2, api.Constraints())
 
     # Check that design metrics are identical.
     pd.testing.assert_frame_equal(
@@ -258,7 +258,7 @@ class DesignTest(parameterized.TestCase):
         included_control_geos=included_control, max_conversions_percent=0.5
     )
 
-    result = design.design(data, design_config, constraints)
+    result = design.run_design(data, design_config, constraints)
 
     self.assertNotEmpty(result.designs)
     for _, design_obj in result.designs.items():
@@ -289,7 +289,7 @@ class DesignTest(parameterized.TestCase):
     )
     constraints = api.Constraints(max_conversions_percent=0.5)
 
-    result = design.design(data, design_config, constraints)
+    result = design.run_design(data, design_config, constraints)
 
     self.assertNotEmpty(result.designs)
     for _, design_obj in result.designs.items():
@@ -468,7 +468,7 @@ class DesignTest(parameterized.TestCase):
     )
 
     with absltest.mock.patch.object(
-        design, 'design', side_effect=[ds1, ds2]
+        design, 'run_design', side_effect=[ds1, ds2]
     ) as mock_design:
       result = design.compare_designs(data, requirements, design_output_count=2)
 
