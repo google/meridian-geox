@@ -15,6 +15,7 @@
 """TBR methodology implementation."""
 
 import dataclasses
+import functools
 from typing import Optional
 
 import jax
@@ -105,10 +106,18 @@ def _fit_linear_regression(
     alpha: Intercept.
     beta: Slope.
   """
-  # Stack a column of ones for the intercept.
-  design_matrix = jnp.column_stack([jnp.ones_like(x), x])
-  coeffs, _, _, _ = jnp.linalg.lstsq(design_matrix, y, rcond=None)
-  return coeffs[0], coeffs[1]
+  # We compute directly as opposed to using jnp.linalg.lstsq for better
+  # performance with JAX. The latter has much bigger diffs when comparing to
+  # standard NumPy.
+  x_mean = jnp.mean(x)
+  y_mean = jnp.mean(y)
+  ss_xx = jnp.sum((x - x_mean) ** 2)
+  ss_xy = jnp.sum((x - x_mean) * (y - y_mean))
+  # TODO: Raise an error if x is constant (ss_xx == 0).
+  slope = jnp.where(ss_xx > 1e-10, ss_xy / ss_xx, 0.0)
+  intercept = y_mean - slope * x_mean
+
+  return intercept, slope
 
 
 @jax.jit
@@ -317,7 +326,7 @@ def _compute_placebo_effect_with_random_design(
   return jnp.mean(py_val - py_pred), p_rmse
 
 
-@jax.jit(static_argnames=['test_type'])
+@functools.partial(jax.jit, static_argnames=['test_type'])
 def _get_mde_simplified_design_aware_placebo(
     data_pre: jnp.ndarray,
     data_val: jnp.ndarray,
@@ -358,7 +367,7 @@ def _get_mde_simplified_design_aware_placebo(
   return MdeResults(mde_abs=mde_abs, mde_pct=mde_pct, p_value=p_values)
 
 
-@jax.jit(static_argnames=['n_permutations', 'test_type'])
+@functools.partial(jax.jit, static_argnames=['n_permutations', 'test_type'])
 def _get_mde_placebo(
     data_pre: jnp.ndarray,
     data_val: jnp.ndarray,

@@ -14,12 +14,14 @@
 
 """Utility functions for GeoX methodologies."""
 
+import functools
+
 import jax
 import jax.numpy as jnp
 from meridian_geox import api
 
 
-@jax.jit(static_argnames=['test_type'])
+@functools.partial(jax.jit, static_argnames=['test_type'])
 def compute_studentized_p_value(
     estimate: float,
     rmse: float,
@@ -57,7 +59,7 @@ def compute_se(
   return jnp.std(t_placebo) * rmse
 
 
-@jax.jit(static_argnames=['test_type'])
+@functools.partial(jax.jit, static_argnames=['test_type'])
 def compute_cis(
     estimate: float,
     rmse: float,

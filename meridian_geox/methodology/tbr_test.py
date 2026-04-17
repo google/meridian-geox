@@ -35,6 +35,15 @@ class TbrTest(parameterized.TestCase):
     np.testing.assert_allclose(alpha, 2.0, atol=1e-5)
     np.testing.assert_allclose(beta, 3.0, atol=1e-5)
 
+  def test_fit_linear_regression_constant_x(self):
+    # x is constant. Denominator in slope calculation is 0.
+    x = jnp.array([100.0, 100.0, 100.0])
+    y = jnp.array([110.0, 120.0, 130.0])
+    alpha, beta = tbr._fit_linear_regression(x, y)
+    # Slope should be 0.0, intercept should be mean(y) = 120.0.
+    np.testing.assert_allclose(beta, 0.0, atol=1e-5)
+    np.testing.assert_allclose(alpha, 120.0, atol=1e-5)
+
   def test_compute_group_means(self):
     # 2 time points, 4 geos.
     data = jnp.array([[10.0, 20.0, 30.0, 40.0], [15.0, 25.0, 35.0, 45.0]])
