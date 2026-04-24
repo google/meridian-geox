@@ -20,6 +20,7 @@ from meridian_geox import api
 from meridian_geox import generate_candidates
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 
 class GenerateCandidatesTest(parameterized.TestCase):
@@ -29,8 +30,10 @@ class GenerateCandidatesTest(parameterized.TestCase):
     seq_length = 100
     pad_length = 20
     offset = 5
+    sampler = stats.qmc.Sobol(d=1, scramble=True, rng=42)
+    sobol_seq = jnp.ravel(sampler.random(seq_length + pad_length))
     labels = generate_candidates.get_minimal_discrepancy_stratum_labels(
-        offset, stratum_counts, seq_length, pad_length
+        offset, stratum_counts, sobol_seq, seq_length
     )
     self.assertEqual(labels.shape, (seq_length,))
     unique_labels, counts = np.unique(labels, return_counts=True)
@@ -44,7 +47,7 @@ class GenerateCandidatesTest(parameterized.TestCase):
     # check different offset gives different result
     offset2 = 6
     labels2 = generate_candidates.get_minimal_discrepancy_stratum_labels(
-        offset2, stratum_counts, seq_length, pad_length
+        offset2, stratum_counts, sobol_seq, seq_length
     )
     self.assertFalse(jnp.array_equal(labels, labels2))
 
@@ -114,6 +117,8 @@ class GenerateCandidatesTest(parameterized.TestCase):
     geo_conversions = jnp.array([10, 2, 1, 7, 8, 3])
     max_conversions = 15.0
     key = jax.random.PRNGKey(0)
+    sampler = stats.qmc.Sobol(d=1, scramble=True, rng=42)
+    sobol_seq = jnp.ravel(sampler.random(6 + design_config.pad_length))
     candidates = (
         generate_candidates.get_unconstrained_stratified_sampling_candidates(
             design_config,
@@ -122,6 +127,7 @@ class GenerateCandidatesTest(parameterized.TestCase):
             geo_conversions,
             max_conversions,
             key,
+            sobol_seq,
         )
     )
     self.assertEqual(candidates.shape, (10, 6))

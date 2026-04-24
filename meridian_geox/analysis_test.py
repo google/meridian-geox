@@ -33,10 +33,11 @@ class AnalysisTest(parameterized.TestCase):
     geos = [f'G{i}' for i in range(1, n_geos + 1)]
     data_rows = []
     for d in dates:
-      for g in geos:
-        row = {api.DATE: d, api.LOCATION: g, api.CONVERSIONS: 100.0}
+      for i, g in enumerate(geos):
+        val = 100.0 + i * 10.0 + (d.day % 7) * 5.0
+        row = {api.DATE: d, api.LOCATION: g, api.CONVERSIONS: val}
         if include_spend:
-          row[api.SPEND] = 50.0
+          row[api.SPEND] = val * 0.5
         data_rows.append(row)
     return pd.DataFrame(data_rows)
 
@@ -196,6 +197,24 @@ class AnalysisTest(parameterized.TestCase):
     self.assertIsInstance(result, api.AnalysisResult)
     self.assertIn('1', result.results)
     metrics = result.results['1']
+    # Test reproducibility
+    result2 = analysis.analyze(data, config)
+    metrics2 = result2.results['1']
+
+    self.assertEqual(metrics.lift.point_estimate, metrics2.lift.point_estimate)
+    self.assertEqual(metrics.lift.lower_bound, metrics2.lift.lower_bound)
+    self.assertEqual(metrics.lift.upper_bound, metrics2.lift.upper_bound)
+    self.assertEqual(
+        metrics.percent_lift.point_estimate,
+        metrics2.percent_lift.point_estimate,
+    )
+    self.assertEqual(
+        metrics.percent_lift.lower_bound, metrics2.percent_lift.lower_bound
+    )
+    self.assertEqual(
+        metrics.percent_lift.upper_bound, metrics2.percent_lift.upper_bound
+    )
+
     self.assertIsInstance(metrics, api.AnalysisMetrics)
     self.assertAlmostEqual(metrics.lift.point_estimate, 0.0, places=1)
     self.assertAlmostEqual(metrics.percent_lift.point_estimate, 0.0, places=1)
@@ -244,6 +263,25 @@ class AnalysisTest(parameterized.TestCase):
     self.assertIsInstance(result, api.AnalysisResult)
     self.assertIn('1', result.results)
     metrics = result.results['1']
+
+    # Test reproducibility
+    result2 = analysis.analyze(data, config)
+    metrics2 = result2.results['1']
+
+    self.assertEqual(metrics.lift.point_estimate, metrics2.lift.point_estimate)
+    self.assertEqual(metrics.lift.lower_bound, metrics2.lift.lower_bound)
+    self.assertEqual(metrics.lift.upper_bound, metrics2.lift.upper_bound)
+    self.assertEqual(
+        metrics.percent_lift.point_estimate,
+        metrics2.percent_lift.point_estimate,
+    )
+    self.assertEqual(
+        metrics.percent_lift.lower_bound, metrics2.percent_lift.lower_bound
+    )
+    self.assertEqual(
+        metrics.percent_lift.upper_bound, metrics2.percent_lift.upper_bound
+    )
+
     self.assertAlmostEqual(metrics.lift.point_estimate, 0.0, places=1)
     self.assertAlmostEqual(metrics.percent_lift.point_estimate, 0.0, places=1)
     self.assertEqual(

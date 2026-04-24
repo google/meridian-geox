@@ -92,7 +92,11 @@ class DesignTest(parameterized.TestCase):
     self.assertIn('mde_pct', result.design_metrics.columns)
     self.assertIn('p_value', result.design_metrics.columns)
     self.assertIn('cell_id', result.design_metrics.columns)
+    self.assertIn('design_methodology', result.design_metrics.columns)
     self.assertTrue((result.design_metrics['cell_id'] == 'cell_1').all())
+    self.assertTrue(
+        (result.design_metrics['design_methodology'] == 'RANDOM-TBR').all()
+    )
 
   def test_random_design_min_geos_requirement(self):
     dates = pd.date_range(start='2023-01-01', periods=6)
@@ -169,18 +173,40 @@ class DesignTest(parameterized.TestCase):
       # geo_1 should be in excluded_geos.
       self.assertIn('geo_1', design_obj.excluded_geos)
 
-  def test_design_reproducibility(self):
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='random',
+          rule=api.GeoAssignmentRule.RANDOM,
+      ),
+      dict(
+          testcase_name='stratified_sampling',
+          rule=api.GeoAssignmentRule.STRATIFIED_SAMPLING,
+      ),
+  )
+  def test_design_reproducibility(self, rule):
     dates = pd.date_range(start='2023-01-01', periods=30)
     locations = [f'geo_{i}' for i in range(10)]
     data_list = []
-    for d, l in itertools.product(dates, locations):
-      data_list.append(
-          {api.DATE: d, api.LOCATION: l, api.CONVERSIONS: np.random.rand()}
-      )
+    for d, (i, l) in itertools.product(dates, enumerate(locations)):
+      # Add deterministic variation to help with stratified sampling.
+      val = 100.0 + i * 10.0 + (d.day % 7) * 5.0
+      data_list.append({api.DATE: d, api.LOCATION: l, api.CONVERSIONS: val})
     data = pd.DataFrame(data_list)
 
-    config1 = api.DesignConfig(experiment_duration=5, seed=42, n_candidates=5)
-    config2 = api.DesignConfig(experiment_duration=5, seed=42, n_candidates=5)
+    config1 = api.DesignConfig(
+        experiment_duration=5,
+        seed=42,
+        n_candidates=20,
+        n_ranked_candidates=10,
+        geo_assignment_rule=rule,
+    )
+    config2 = api.DesignConfig(
+        experiment_duration=5,
+        seed=42,
+        n_candidates=20,
+        n_ranked_candidates=10,
+        geo_assignment_rule=rule,
+    )
 
     result1 = design.run_design(data, config1, api.Constraints())
     result2 = design.run_design(data, config2, api.Constraints())
@@ -405,7 +431,11 @@ class DesignTest(parameterized.TestCase):
         design_config=design_config,
         constraints=constraints,
     )
-    ds1_metrics = pd.DataFrame([{'design_id': d1_id, 'mde_pct': 0.8}])
+    ds1_metrics = pd.DataFrame([{
+        'design_id': d1_id,
+        'mde_pct': 0.8,
+        'design_methodology': 'RANDOM-TBR',
+    }])
     ds1 = api.DesignSet(
         designs={d1_id: d1},
         design_metrics=ds1_metrics,
@@ -420,7 +450,11 @@ class DesignTest(parameterized.TestCase):
         design_config=design_config,
         constraints=constraints,
     )
-    ds2_metrics = pd.DataFrame([{'design_id': d2_id, 'mde_pct': 0.9}])
+    ds2_metrics = pd.DataFrame([{
+        'design_id': d2_id,
+        'mde_pct': 0.9,
+        'design_methodology': 'RANDOM-TBR',
+    }])
     ds2 = api.DesignSet(
         designs={d2_id: d2},
         design_metrics=ds2_metrics,
@@ -434,6 +468,9 @@ class DesignTest(parameterized.TestCase):
     self.assertIn(d1_id, result.designs)
     self.assertEqual(result.design_metrics.iloc[0]['design_id'], d1_id)
     self.assertEqual(result.design_metrics.iloc[0]['mde_pct'], 0.8)
+    self.assertEqual(
+        result.design_metrics.iloc[0]['design_methodology'], 'RANDOM-TBR'
+    )
 
   def test_compare_designs(self):
     data = pd.DataFrame()
@@ -447,7 +484,11 @@ class DesignTest(parameterized.TestCase):
         control_geos={'geo_2'},
         excluded_geos=set(),
     )
-    ds1_metrics = pd.DataFrame([{'design_id': d1_id, 'mde_pct': 0.8}])
+    ds1_metrics = pd.DataFrame([{
+        'design_id': d1_id,
+        'mde_pct': 0.8,
+        'design_methodology': 'RANDOM-TBR',
+    }])
     ds1 = api.DesignSet(
         designs={d1_id: d1},
         design_metrics=ds1_metrics,
@@ -460,7 +501,11 @@ class DesignTest(parameterized.TestCase):
         control_geos={'geo_4'},
         excluded_geos=set(),
     )
-    ds2_metrics = pd.DataFrame([{'design_id': d2_id, 'mde_pct': 0.7}])
+    ds2_metrics = pd.DataFrame([{
+        'design_id': d2_id,
+        'mde_pct': 0.7,
+        'design_methodology': 'RANDOM-TBR',
+    }])
     ds2 = api.DesignSet(
         designs={d2_id: d2},
         design_metrics=ds2_metrics,
@@ -584,6 +629,10 @@ class DesignTest(parameterized.TestCase):
     self.assertIn('cell_1', design_obj.minimum_detectable_effect)
     self.assertIn('cell_1', design_obj.p_value)
     self.assertIn('cell_1', design_obj.budget)
+    self.assertIn('design_methodology', result.design_metrics.columns)
+    self.assertEqual(
+        result.design_metrics.iloc[0]['design_methodology'], 'RANDOM-TBR'
+    )
     self.assertAlmostEqual(
         result.design_metrics.iloc[0]['budget'], expected_budget, places=5
     )

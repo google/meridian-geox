@@ -304,6 +304,10 @@ def _get_design_summary(
     metrics_list.append({
         'design_id': design_id,
         'cell_id': 'cell_1',
+        'design_methodology': (
+            f'{design_config.geo_assignment_rule.name}-'
+            f'{design_config.methodology.name}'
+        ),
         'r2': r2_scores_np[i],
         'mde_abs': mde_abs_np[i],
         'mde_pct': mde_pct_np[i],
@@ -315,7 +319,7 @@ def _get_design_summary(
   # TODO: Add more design metrics to rank the designs.
   design_metrics = design_metrics.sort_values(by='mde_pct').head(
       design_config.design_output_count
-  )
+  ).reset_index(drop=True)
   top_design_ids = set(design_metrics['design_id'])
   designs = {k: v for k, v in designs.items() if k in top_design_ids}
 
@@ -346,7 +350,7 @@ def run_design(
 
   # TODO: Complete the design method following the steps below.
   # 1. Preprocess data.
-  error_messages: list[str] = util.validate_data(
+  error_messages: list[str] = util.validate_design_input(
       data, design_config, constraints
   )
   if error_messages:
@@ -490,7 +494,7 @@ def concat_design_reports(
 
   top_metrics = combined_metrics.sort_values(by='mde_pct').head(
       design_output_count
-  )
+  ).reset_index(drop=True)
   top_design_ids = set(top_metrics['design_id'])
   top_designs = {k: v for k, v in all_designs.items() if k in top_design_ids}
 

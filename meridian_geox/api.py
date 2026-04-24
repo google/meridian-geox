@@ -21,7 +21,7 @@ from typing import Annotated, Any, Optional, TypeVar, Union
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
-import pandera as pa
+import pandera.pandas as pa
 import pydantic
 
 
@@ -230,7 +230,9 @@ class Design:
   design_config: Optional[DesignConfig] = None
   constraints: Optional[Constraints] = None
   # The stratum label of each geo, ordered by geo name.
-  geo_stratum_labels: Optional[JnpArray] = None
+  geo_stratum_labels: Optional[JnpArray] = dataclasses.field(
+      default=None, repr=False
+  )
   # Conterfactual conversion time series. Includes cell ID, date and
   # counterfactual conversions. This is used for plotting.
   counterfactual_conversions: Annotated[

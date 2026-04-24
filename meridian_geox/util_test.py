@@ -40,41 +40,49 @@ class UtilTest(parameterized.TestCase):
     )
     self.constraints = api.Constraints()
 
-  def test_validate_data_success(self):
-    errors = util.validate_data(self.data, self.design_config, self.constraints)
+  def test_validate_design_input_success(self):
+    errors = util.validate_design_input(
+        self.data, self.design_config, self.constraints
+    )
     self.assertEmpty(errors)
 
-  def test_validate_data_schema_error(self):
+  def test_validate_design_input_schema_error(self):
     # Missing 'location' column.
     invalid_data = self.data.drop(columns=['location'])
-    errors = util.validate_data(
+    errors = util.validate_design_input(
         invalid_data, self.design_config, self.constraints
     )
     self.assertNotEmpty(errors)
     self.assertIn('location', errors[0])
 
-  def test_validate_data_not_enough_dates(self):
+  def test_validate_design_input_not_enough_dates(self):
     # experiment_duration is 10, need at least 30 dates.
     # We have exactly 30 dates in setUp. Let's set duration to 11.
     design_config = api.DesignConfig(experiment_duration=11)
-    errors = util.validate_data(self.data, design_config, self.constraints)
+    errors = util.validate_design_input(
+        self.data, design_config, self.constraints
+    )
     self.assertLen(errors, 1)
     self.assertIn('Need at least 3 * experiment duration dates', errors[0])
 
-  def test_validate_data_not_enough_geos_after_exclusion(self):
+  def test_validate_design_input_not_enough_geos_after_exclusion(self):
     # Exclude 7 out of 10 geos, leaving only 3. Need at least 4.
     constraints = api.Constraints(excluded_geos={f'G{i}' for i in range(7)})
-    errors = util.validate_data(self.data, self.design_config, constraints)
+    errors = util.validate_design_input(
+        self.data, self.design_config, constraints
+    )
     self.assertLen(errors, 1)
     self.assertIn(
         'Not enough geos left after excluding excluded geos', errors[0]
     )
 
-  def test_validate_data_overlap_excluded_included_control(self):
+  def test_validate_design_input_overlap_excluded_included_control(self):
     constraints = api.Constraints(
         excluded_geos={'G1'}, included_control_geos={'G1'}
     )
-    errors = util.validate_data(self.data, self.design_config, constraints)
+    errors = util.validate_design_input(
+        self.data, self.design_config, constraints
+    )
     self.assertLen(errors, 1)
     self.assertIn(
         'Excluded geos must not overlap with included control geos', errors[0]
@@ -86,7 +94,7 @@ class UtilTest(parameterized.TestCase):
       ('power_zero', 0.1, 0.0, 'Power must be between 0 and 1'),
       ('power_one', 0.1, 1.0, 'Power must be between 0 and 1'),
   )
-  def test_validate_data_invalid_alpha_power(
+  def test_validate_design_input_invalid_alpha_power(
       self, alpha, power, expected_error
   ):
     design_config = api.DesignConfig(
@@ -94,31 +102,37 @@ class UtilTest(parameterized.TestCase):
         alpha=alpha,
         power=power,
     )
-    errors = util.validate_data(self.data, design_config, self.constraints)
+    errors = util.validate_design_input(
+        self.data, design_config, self.constraints
+    )
     self.assertLen(errors, 1)
     self.assertIn(expected_error, errors[0])
 
-  def test_validate_data_holdback_missing_cpic(self):
+  def test_validate_design_input_holdback_missing_cpic(self):
     design_config = api.DesignConfig(
         experiment_duration=5,
         experiment_types=api.ExperimentType.HOLDBACK,
         cost_per_incremental_conversion=None,
     )
-    errors = util.validate_data(self.data, design_config, self.constraints)
+    errors = util.validate_design_input(
+        self.data, design_config, self.constraints
+    )
     self.assertLen(errors, 1)
     self.assertIn(
         'Cost per incremental conversion must be set for HOLDBACK experiments',
         errors[0],
     )
 
-  def test_validate_data_go_dark_missing_cpic_no_error(self):
+  def test_validate_design_input_go_dark_missing_cpic_no_error(self):
     # Cost per incremental conversion is NOT required for GO_DARK.
     design_config = api.DesignConfig(
         experiment_duration=5,
         experiment_types=api.ExperimentType.GO_DARK,
         cost_per_incremental_conversion=None,
     )
-    errors = util.validate_data(self.data, design_config, self.constraints)
+    errors = util.validate_design_input(
+        self.data, design_config, self.constraints
+    )
     self.assertEmpty(errors)
 
 

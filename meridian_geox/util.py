@@ -16,7 +16,7 @@
 
 from meridian_geox import api
 import pandas as pd
-import pandera as pa
+import pandera.pandas as pa
 
 
 def is_go_dark_or_heavy_up(
@@ -47,7 +47,16 @@ def pivot_and_sort_data(
   return pivoted.reindex(sorted(pivoted.columns), axis=1).sort_index()
 
 
-def validate_data(
+def validate_schema(data: pd.DataFrame) -> list[str]:
+  """Validates the input data using the schema."""
+  try:
+    api.DataSchema.validate(data)
+  except (pa.errors.SchemaError, pa.errors.SchemaErrors) as err:
+    return [str(err)]
+  return []
+
+
+def validate_design_input(
     data: pd.DataFrame,
     design_config: api.DesignConfig,
     constraints: api.Constraints,
@@ -57,12 +66,9 @@ def validate_data(
   # example, check the pretest data length, etc. Return a list of error
   # messages. Empty list means no errors.
   # TODO: Add checks for reporting use case.
-  errors = []
-
-  try:
-    api.DataSchema.validate(data)
-  except (pa.errors.SchemaError, pa.errors.SchemaErrors) as err:
-    return [str(err)]
+  errors = validate_schema(data)
+  if errors:
+    return errors
 
   # Check data length.
   if data[api.DATE].nunique() < 3 * design_config.experiment_duration:

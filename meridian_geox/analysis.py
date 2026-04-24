@@ -97,9 +97,11 @@ def _get_placebo_masks(
     placebo_data: pd.DataFrame,
     design_config: api.DesignConfig,
     constraints: Optional[api.Constraints],
+    key: jax.Array,
     geo_stratum_labels: Optional[jnp.ndarray] = None,
 ) -> jnp.ndarray:
   """Generates placebo masks for a GeoX experiment."""
+  # TODO: Refactor to move placebo mask generation to design phase.
   processed_placebo_data = design.prepare_data(
       data=placebo_data,
       experiment_duration=design_config.experiment_duration,
@@ -112,7 +114,7 @@ def _get_placebo_masks(
             filtered_data=processed_placebo_data.filtered_data,
             design_config=design_config,
             constraints=constraints,
-            key=jax.random.key(design_config.seed),
+            key=key,
             selection_train=processed_placebo_data.selection_train,
             selection_train_spend=processed_placebo_data.selection_train_spend,
         )
@@ -132,7 +134,7 @@ def _get_placebo_masks(
             design_config=design_config,
             constraints=constraints,
             geo_stratum_labels=geo_stratum_labels[treatment_mask == 0],
-            key=jax.random.key(design_config.seed),
+            key=key,
             selection_train_spend=processed_placebo_data.selection_train_spend,
         )
     )
@@ -202,6 +204,7 @@ def _get_analysis_summary(
     icpd: Optional[api.Estimate],
     cumulative_icpd_with_cis: Optional[np.ndarray],
     analysis_dates: pd.Index,
+    cell_names: list[str],
 ) -> api.AnalysisResult:
   """Converts raw analysis results into an AnalysisResult object."""
   cumulative_lift_estimates = pd.DataFrame(
@@ -220,7 +223,7 @@ def _get_analysis_summary(
 
   return api.AnalysisResult(
       results={
-          '1': api.AnalysisMetrics(
+          cell_names[0]: api.AnalysisMetrics(
               lift=lift,
               percent_lift=percent_lift,
               cumulative_lift_estimates=cumulative_lift_estimates,
@@ -249,6 +252,10 @@ def analyze(
         ' supported.'
     )
 
+  error_messages: list[str] = util.validate_schema(data)
+  if error_messages:
+    raise ValueError(f'Data validation failed: {error_messages}')
+
   # 1. Prepare configuration.
   design_config = _prepare_design_config(analysis_config)
   experiment_type = _get_experiment_type(design_config)
@@ -265,11 +272,18 @@ def analyze(
     spend = _get_time_series(data, api.SPEND, analysis_config)
 
   # 4. Generate placebo masks.
+  # We use a key derived from the design config seed to ensure that placebo
+  # mask generation is deterministic but distinct from the design phase.
+  # We use a fold-in of a constant value to distinguish this key from others.
+  # TODO: After refactoring to move placebo design generation to
+  # the design phase, replace the constant fold-in with key splitting.
+  analysis_key = jax.random.fold_in(jax.random.key(design_config.seed), 12345)
   placebo_masks = _get_placebo_masks(
       treatment_mask=treatment.mask,
       placebo_data=data[~data[api.LOCATION].isin(treatment.geos)],
       design_config=design_config,
       constraints=analysis_config.design.constraints,
+      key=analysis_key,
       geo_stratum_labels=analysis_config.design.geo_stratum_labels,
   )
 
@@ -294,6 +308,7 @@ def analyze(
       icpd=tbr_result.icpd,
       cumulative_icpd_with_cis=tbr_result.cumulative_icpd_with_cis,
       analysis_dates=conversions.dates,
+      cell_names=list(analysis_config.design.treatment_geos.keys()),
   )
 
 
