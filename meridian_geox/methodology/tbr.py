@@ -34,16 +34,29 @@ class MdeResults:
     mde_abs: (N_designs,) Absolute MDE.
     mde_pct: (N_designs,) Relative MDE (percentage).
     p_value: (N_designs,) The AA p-value.
+    observed_conversions: (N_designs, T) Observed conversions.
+    counterfactual_conversions: (N_designs, T) Counterfactual conversions.
   """
 
   mde_abs: jnp.ndarray
   mde_pct: jnp.ndarray
   p_value: jnp.ndarray
+  observed_conversions: jnp.ndarray
+  counterfactual_conversions: jnp.ndarray
 
 
 jax.tree_util.register_pytree_node(
     MdeResults,
-    lambda node: ((node.mde_abs, node.mde_pct, node.p_value), None),
+    lambda node: (
+        (
+            node.mde_abs,
+            node.mde_pct,
+            node.p_value,
+            node.observed_conversions,
+            node.counterfactual_conversions,
+        ),
+        None,
+    ),
     lambda _, children: MdeResults(*children),
 )
 
@@ -83,6 +96,9 @@ class TbrAnalysisResult:
     percent_lift: The relative lift estimate.
     icpd: The incremental cost per dollar estimate.
     cumulative_icpd_with_cis: (T, 3) Cumulative ICPD estimates with CIs.
+    counterfactual_conversions_with_cis: (T, 4) Observed, counterfactual, and
+      CIs.
+    pointwise_difference_with_cis: (T, 3) Pointwise difference and CIs.
   """
 
   lift: api.Estimate
@@ -90,6 +106,12 @@ class TbrAnalysisResult:
   percent_lift: api.Estimate
   icpd: Optional[api.Estimate] = None
   cumulative_icpd_with_cis: Optional[np.ndarray] = None
+  counterfactual_conversions_with_cis: np.ndarray = dataclasses.field(
+      default_factory=lambda: np.array([])
+  )
+  pointwise_difference_with_cis: np.ndarray = dataclasses.field(
+      default_factory=lambda: np.array([])
+  )
 
 
 @jax.jit
@@ -163,8 +185,8 @@ def _compute_placebo_effect_from_mask(
       control).
 
   Returns:
-    Placebo cumulative treatment response, Placebo cumulative predicted
-    response, Placebo RMSE, Placebo log RMSE.
+    Placebo treatment response, Placebo predicted response, Placebo RMSE,
+    Placebo log RMSE.
   """
   # Create a mask for valid control units (excluding original treated units).
   # p_mask is 1.0 for placebo treated, 0.0 otherwise.
@@ -197,13 +219,11 @@ def _compute_placebo_effect_from_mask(
   py_test, px_test = _compute_placebo_means(
       data_test, p_mask, valid_control_mask
   )
-  # We want cumulative results so that we can obtain a cumulative analysis times
+  # We want pointwise results so that we can obtain a pointwise analysis times
   # series with CIs.
   py_pred = p_alpha + p_beta * px_test
-  py_pred_cumul = jnp.cumsum(py_pred)
-  py_test_cumul = jnp.cumsum(py_test)
 
-  return py_test_cumul, py_pred_cumul, p_rmse, p_log_rmse
+  return py_test, py_pred, p_rmse, p_log_rmse
 
 
 @jax.jit
@@ -342,11 +362,19 @@ def _get_mde_simplified_design_aware_placebo(
     y_val, x_val = _compute_group_means(data_val, mask)
     y_pred = alpha + beta * x_val
 
+    n_treated = jnp.sum(mask)
     real_effect = jnp.mean(y_val - y_pred)
     baseline = jnp.mean(y_val)
-    return real_effect, baseline
 
-  effects, baselines = jax.vmap(_get_effect)(treatment_masks)
+    # Combine pre and val for full time series.
+    y_full = jnp.concatenate([y_pre, y_val])
+    y_pred_full = jnp.concatenate([alpha + beta * x_pre, y_pred])
+
+    return real_effect, baseline, n_treated * y_full, n_treated * y_pred_full
+
+  effects, baselines, observed, counterfactual = jax.vmap(_get_effect)(
+      treatment_masks
+  )
 
   se = jnp.std(effects)
   mde_abs_val = se * z_score_sum
@@ -364,7 +392,13 @@ def _get_mde_simplified_design_aware_placebo(
     p_values = 1.0 - stats.norm.cdf(z_scores)
   p_values = jnp.where(se > 1e-10, p_values, 1.0)
 
-  return MdeResults(mde_abs=mde_abs, mde_pct=mde_pct, p_value=p_values)
+  return MdeResults(
+      mde_abs=mde_abs,
+      mde_pct=mde_pct,
+      p_value=p_values,
+      observed_conversions=observed,
+      counterfactual_conversions=counterfactual,
+  )
 
 
 @functools.partial(jax.jit, static_argnames=['n_permutations', 'test_type'])
@@ -411,6 +445,13 @@ def _get_mde_placebo(
     real_effect = jnp.mean(y_val - y_pred)
     baseline = jnp.mean(y_val)
 
+    # Combine pre and val for full time series.
+    y_full = jnp.concatenate([y_pre, y_val])
+    y_pred_full = jnp.concatenate([alpha + beta * x_pre, y_pred])
+
+    observed = n_treated * y_full
+    counterfactual = n_treated * y_pred_full
+
     # 2. Placebo Simulation.
     keys = jax.random.split(key, n_permutations)
 
@@ -431,14 +472,20 @@ def _get_mde_placebo(
         real_effect, real_rmse, t_placebo, test_type
     )
 
-    return mde_abs, mde_pct, p_value
+    return mde_abs, mde_pct, p_value, observed, counterfactual
 
   # Vmap over designs.
-  mde_abs, mde_pct, p_values = jax.vmap(_get_one_mde)(
+  mde_abs, mde_pct, p_values, observed, counterfactual = jax.vmap(_get_one_mde)(
       treatment_masks, random_keys
   )
 
-  return MdeResults(mde_abs=mde_abs, mde_pct=mde_pct, p_value=p_values)
+  return MdeResults(
+      mde_abs=mde_abs,
+      mde_pct=mde_pct,
+      p_value=p_values,
+      observed_conversions=observed,
+      counterfactual_conversions=counterfactual,
+  )
 
 
 @jax.jit
@@ -602,8 +649,8 @@ def analyze(
   total_y_pred_cumul = n_treatment_geos * y_pred_cumul
 
   (
-      placebo_y_test_cumul,
-      placebo_y_pred_cumul,
+      placebo_y_test,
+      placebo_y_pred,
       placebo_rmses,
       placebo_log_rmses,
   ) = jax.vmap(
@@ -611,6 +658,9 @@ def analyze(
   )(
       pretest_conversions, test_conversions, treatment_mask, placebo_masks
   )
+
+  placebo_y_test_cumul = jnp.cumsum(placebo_y_test, axis=1)
+  placebo_y_pred_cumul = jnp.cumsum(placebo_y_pred, axis=1)
   placebo_estimates = placebo_y_test_cumul - placebo_y_pred_cumul
   t_placebo = placebo_estimates / jnp.maximum(placebo_rmses[:, None], 1e-9)
 
@@ -656,6 +706,79 @@ def analyze(
       jnp.stack([signed_total_cumul_effect, total_lower_cis, total_upper_cis]).T
   )
 
+  # Pointwise metrics.
+  geo_avg_pointwise_effect = y_test - y_pred
+  total_pointwise_effect = n_treatment_geos * geo_avg_pointwise_effect
+  placebo_pointwise_estimates = placebo_y_test - placebo_y_pred
+  t_placebo_pointwise = placebo_pointwise_estimates / jnp.maximum(
+      placebo_rmses[:, None], 1e-9
+  )
+
+  signed_total_pointwise_effect = sign * total_pointwise_effect
+  signed_t_placebo_pointwise = sign * t_placebo_pointwise
+
+  geo_averaged_pointwise_lower_cis, geo_averaged_pointwise_upper_cis = jax.vmap(
+      methodology_util.compute_cis, in_axes=(0, None, 1, None, None)
+  )(
+      signed_total_pointwise_effect / n_treatment_geos,
+      rmse,
+      signed_t_placebo_pointwise,
+      alpha,
+      test_type,
+  )
+  total_pointwise_lower_cis = (
+      n_treatment_geos * geo_averaged_pointwise_lower_cis
+  )
+  total_pointwise_upper_cis = (
+      n_treatment_geos * geo_averaged_pointwise_upper_cis
+  )
+
+  total_y_test = n_treatment_geos * y_test
+  total_y_pred = n_treatment_geos * y_pred
+  if sign == 1:
+    cf_lower = total_y_test - total_pointwise_upper_cis
+    cf_upper = total_y_test - total_pointwise_lower_cis
+  else:
+    cf_lower = total_y_test + total_pointwise_lower_cis
+    cf_upper = total_y_test + total_pointwise_upper_cis
+
+  # Combine pre-test and test period for pointwise metrics.
+  total_y_pretest = n_treatment_geos * y_pretest
+  total_y_pred_pre = n_treatment_geos * y_pred_pre
+  total_pretest_pointwise_effect = sign * (total_y_pretest - total_y_pred_pre)
+
+  n_pre = len(y_pretest)
+  nan_cis_pre = jnp.full((n_pre,), jnp.nan)
+
+  # (T_pre + T_test, 3)
+  pointwise_difference_with_cis = np.array(
+      jnp.concatenate([
+          jnp.stack([
+              total_pretest_pointwise_effect,
+              nan_cis_pre,
+              nan_cis_pre,
+          ]).T,
+          jnp.stack([
+              signed_total_pointwise_effect,
+              total_pointwise_lower_cis,
+              total_pointwise_upper_cis,
+          ]).T,
+      ])
+  )
+
+  # (T_pre + T_test, 4)
+  counterfactual_conversions_with_cis = np.array(
+      jnp.concatenate([
+          jnp.stack([
+              total_y_pretest,
+              total_y_pred_pre,
+              nan_cis_pre,
+              nan_cis_pre,
+          ]).T,
+          jnp.stack([total_y_test, total_y_pred, cf_lower, cf_upper]).T,
+      ])
+  )
+
   icpd = None
   cumulative_icpd_with_cis = None
   if pretest_spend is not None and test_spend is not None:
@@ -690,4 +813,6 @@ def analyze(
       percent_lift=percent_lift,
       icpd=icpd,
       cumulative_icpd_with_cis=cumulative_icpd_with_cis,
+      counterfactual_conversions_with_cis=counterfactual_conversions_with_cis,
+      pointwise_difference_with_cis=pointwise_difference_with_cis,
   )

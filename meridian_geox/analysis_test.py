@@ -45,7 +45,14 @@ class AnalysisTest(parameterized.TestCase):
     data = self._create_sample_data(n_days=5, n_geos=3)
     # G3 is excluded, and 2024-01-05 is excluded.
     design_obj = api.Design(
-        treatment_geos={'1': {'G1'}},
+        designs={
+            '1': api.PerCellDesign(
+                treatment_geos={'G1'},
+                minimum_detectable_effect=0.0,
+                p_value=0.0,
+                budget=0.0,
+            )
+        },
         control_geos={'G2'},
         excluded_geos={'G3'},
     )
@@ -70,9 +77,7 @@ class AnalysisTest(parameterized.TestCase):
     data = self._create_sample_data(n_days=10, n_geos=2)
     config = api.AnalysisConfig(
         methodology=api.Methodology.TBR,
-        design=api.Design(
-            treatment_geos={}, control_geos=set(), excluded_geos=set()
-        ),
+        design=api.Design(designs={}, control_geos=set(), excluded_geos=set()),
         analysis_start_date=pd.Timestamp('2024-01-06'),
         analysis_end_date=pd.Timestamp('2024-01-08'),
     )
@@ -83,15 +88,16 @@ class AnalysisTest(parameterized.TestCase):
     # Test: 2024-01-06 to 2024-01-08 (3 days)
     self.assertEqual(time_series.pretest.shape, (5, 2))
     self.assertEqual(time_series.test.shape, (3, 2))
-    self.assertLen(time_series.dates, 3)
-    self.assertEqual(time_series.dates[0], pd.Timestamp('2024-01-06'))
+    self.assertLen(time_series.pretest_dates, 5)
+    self.assertLen(time_series.test_dates, 3)
+    self.assertEqual(time_series.test_dates[0], pd.Timestamp('2024-01-06'))
 
   def test_prepare_design_config_overrides(self):
     design_config = api.DesignConfig(
         experiment_duration=2, alpha=0.05, n_aa_test_iterations=100
     )
     design_obj = api.Design(
-        treatment_geos={},
+        designs={},
         control_geos=set(),
         excluded_geos=set(),
         design_config=design_config,
@@ -142,7 +148,14 @@ class AnalysisTest(parameterized.TestCase):
     data = self._create_sample_data(n_days=1, n_geos=4)
     # Geos are G1, G2, G3, G4.
     design_obj = api.Design(
-        treatment_geos={'cell_1': {'G1', 'G3'}},
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1', 'G3'},
+                minimum_detectable_effect=0.0,
+                p_value=0.0,
+                budget=0.0,
+            )
+        },
         control_geos={'G2', 'G4'},
         excluded_geos=set(),
     )
@@ -176,11 +189,19 @@ class AnalysisTest(parameterized.TestCase):
     )
 
     study_design = api.Design(
-        treatment_geos={'1': {'G1', 'G2'}},
+        designs={
+            '1': api.PerCellDesign(
+                treatment_geos={'G1', 'G2'},
+                minimum_detectable_effect=0.1,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
         control_geos={f'G{i}' for i in range(3, 7)},
         excluded_geos=set(),
         design_config=design_config,
         constraints=api.Constraints(max_conversions_percent=0.5),
+        data=data,
     )
 
     config = api.AnalysisConfig(
@@ -195,8 +216,21 @@ class AnalysisTest(parameterized.TestCase):
     result = analysis.analyze(data, config)
 
     self.assertIsInstance(result, api.AnalysisResult)
+    self.assertIs(result.analysis_config, config)
+    self.assertEqual(result.analysis_config.methodology, api.Methodology.TBR)
+    self.assertEqual(
+        result.analysis_config.analysis_start_date, pd.Timestamp('2024-01-11')
+    )
+    self.assertEqual(
+        result.analysis_config.analysis_end_date, pd.Timestamp('2024-01-15')
+    )
+    self.assertEqual(result.analysis_config.alpha, 0.1)
+    self.assertEqual(result.analysis_config.test_type, api.TestType.TWO_SIDED)
+
     self.assertIn('1', result.results)
+
     metrics = result.results['1']
+
     # Test reproducibility
     result2 = analysis.analyze(data, config)
     metrics2 = result2.results['1']
@@ -219,15 +253,27 @@ class AnalysisTest(parameterized.TestCase):
     self.assertAlmostEqual(metrics.lift.point_estimate, 0.0, places=1)
     self.assertAlmostEqual(metrics.percent_lift.point_estimate, 0.0, places=1)
     self.assertEqual(
-        list(metrics.cumulative_lift_estimates.columns),
-        ['lift', 'lift_lower_bound', 'lift_upper_bound'],
+        list(metrics.cumulative_lift.columns),
+        ['lift', 'lower_bound', 'upper_bound'],
     )
-    self.assertLen(metrics.cumulative_lift_estimates, 5)
+    self.assertLen(metrics.cumulative_lift, 5)
     self.assertAlmostEqual(
-        metrics.cumulative_lift_estimates['lift'].iloc[-1],
+        metrics.cumulative_lift['lift'].iloc[-1],
         metrics.lift.point_estimate,
         places=5,
     )
+
+    self.assertEqual(
+        list(metrics.counterfactual_conversions.columns),
+        ['observed', 'counterfactual', 'lower_bound', 'upper_bound'],
+    )
+    self.assertLen(metrics.counterfactual_conversions, 15)
+
+    self.assertEqual(
+        list(metrics.pointwise_difference.columns),
+        ['difference', 'lower_bound', 'upper_bound'],
+    )
+    self.assertLen(metrics.pointwise_difference, 15)
 
   def test_analyze_stratified_sampling(self):
     data = self._create_sample_data(n_days=15, n_geos=10)
@@ -241,12 +287,20 @@ class AnalysisTest(parameterized.TestCase):
     )
 
     study_design = api.Design(
-        treatment_geos={'1': {'G1'}},
+        designs={
+            '1': api.PerCellDesign(
+                treatment_geos={'G1'},
+                minimum_detectable_effect=0.1,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
         control_geos={f'G{i}' for i in range(2, 11)},
         excluded_geos=set(),
         design_config=design_config,
         constraints=api.Constraints(max_conversions_percent=0.5),
         geo_stratum_labels=jnp.array([0, 1, 0, 1, 0, 1, 0, 1, 0, 1]),
+        data=data,
     )
 
     config = api.AnalysisConfig(
@@ -261,6 +315,7 @@ class AnalysisTest(parameterized.TestCase):
     result = analysis.analyze(data, config)
 
     self.assertIsInstance(result, api.AnalysisResult)
+    self.assertIs(result.analysis_config, config)
     self.assertIn('1', result.results)
     metrics = result.results['1']
 
@@ -285,14 +340,33 @@ class AnalysisTest(parameterized.TestCase):
     self.assertAlmostEqual(metrics.lift.point_estimate, 0.0, places=1)
     self.assertAlmostEqual(metrics.percent_lift.point_estimate, 0.0, places=1)
     self.assertEqual(
-        list(metrics.cumulative_lift_estimates.columns),
-        ['lift', 'lift_lower_bound', 'lift_upper_bound'],
+        list(metrics.cumulative_lift.columns),
+        ['lift', 'lower_bound', 'upper_bound'],
     )
+
+    self.assertEqual(
+        list(metrics.counterfactual_conversions.columns),
+        ['observed', 'counterfactual', 'lower_bound', 'upper_bound'],
+    )
+    self.assertLen(metrics.counterfactual_conversions, 15)
+
+    self.assertEqual(
+        list(metrics.pointwise_difference.columns),
+        ['difference', 'lower_bound', 'upper_bound'],
+    )
+    self.assertLen(metrics.pointwise_difference, 15)
 
   def test_analyze_unsupported_methodology(self):
     design_config = api.DesignConfig(experiment_duration=2)
     study_design = api.Design(
-        treatment_geos={'1': {'G1'}},
+        designs={
+            '1': api.PerCellDesign(
+                treatment_geos={'G1'},
+                minimum_detectable_effect=0.1,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
         control_geos={'G2'},
         excluded_geos=set(),
         design_config=design_config,
@@ -326,13 +400,21 @@ class AnalysisTest(parameterized.TestCase):
 
     # G10 is excluded
     study_design = api.Design(
-        treatment_geos={'1': {'G1'}},
+        designs={
+            '1': api.PerCellDesign(
+                treatment_geos={'G1'},
+                minimum_detectable_effect=0.1,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
         control_geos={f'G{i}' for i in range(2, 10)},
         excluded_geos={'G10'},
         design_config=design_config,
         constraints=api.Constraints(
             excluded_geos={'G10'}, max_conversions_percent=0.5
         ),
+        data=data,
     )
 
     config = api.AnalysisConfig(
@@ -347,10 +429,52 @@ class AnalysisTest(parameterized.TestCase):
     result = analysis.analyze(data, config)
 
     self.assertIsInstance(result, api.AnalysisResult)
+    self.assertIs(result.analysis_config, config)
     self.assertIn('1', result.results)
     metrics = result.results['1']
+
     self.assertAlmostEqual(metrics.lift.point_estimate, 0.0, places=1)
     self.assertAlmostEqual(metrics.percent_lift.point_estimate, 0.0, places=1)
+
+  def test_analyze_locations_mismatch(self):
+    data = self._create_sample_data(n_days=5, n_geos=3)
+    # Original data locations: G1, G2, G3.
+
+    # Data for analysis: remove G3, add G4.
+    analysis_data = data[data[api.LOCATION] != 'G3'].copy()
+    new_rows = []
+    for d in data[api.DATE].unique():
+      new_rows.append({api.DATE: d, api.LOCATION: 'G4', api.CONVERSIONS: 100.0})
+    analysis_data = pd.concat(
+        [analysis_data, pd.DataFrame(new_rows)], ignore_index=True
+    )
+
+    study_design = api.Design(
+        designs={
+            '1': api.PerCellDesign(
+                treatment_geos={'G1'},
+                minimum_detectable_effect=0.1,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={'G2'},
+        excluded_geos={'G3'},
+        data=data,
+        design_config=api.DesignConfig(experiment_duration=1),
+    )
+
+    config = api.AnalysisConfig(
+        methodology=api.Methodology.TBR,
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-01'),
+        analysis_end_date=pd.Timestamp('2024-01-05'),
+    )
+
+    with self.assertRaisesRegex(
+        ValueError, 'locations in the analysis data do not match'
+    ):
+      analysis.analyze(analysis_data, config)
 
 
 if __name__ == '__main__':

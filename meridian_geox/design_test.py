@@ -76,8 +76,8 @@ class DesignTest(parameterized.TestCase):
     for _, design_obj in result.designs.items():
       self.assertIsInstance(design_obj, api.Design)
 
-      self.assertIn('cell_1', design_obj.treatment_geos)
-      treatment_geos = design_obj.treatment_geos['cell_1']
+      self.assertIn('cell_1', design_obj.designs)
+      treatment_geos = design_obj.designs['cell_1'].treatment_geos
       self.assertNotEmpty(treatment_geos)
       self.assertNotEmpty(design_obj.control_geos)
 
@@ -142,7 +142,7 @@ class DesignTest(parameterized.TestCase):
     for _, design_obj in result.designs.items():
       # n_treated should be at least 2 and at most n_geos - 2.
       # With 4 geos, 0.5 * 4 = 2 treated.
-      t_geos = design_obj.treatment_geos['cell_1']
+      t_geos = design_obj.designs['cell_1'].treatment_geos
       c_geos = design_obj.control_geos
       self.assertLen(t_geos, 2)
       self.assertLen(c_geos, 2)
@@ -168,7 +168,7 @@ class DesignTest(parameterized.TestCase):
 
     for _, design_obj in result.designs.items():
       # geo_1 should not be in treatment or control.
-      self.assertNotIn('geo_1', design_obj.treatment_geos['cell_1'])
+      self.assertNotIn('geo_1', design_obj.designs['cell_1'].treatment_geos)
       self.assertNotIn('geo_1', design_obj.control_geos)
       # geo_1 should be in excluded_geos.
       self.assertIn('geo_1', design_obj.excluded_geos)
@@ -290,7 +290,7 @@ class DesignTest(parameterized.TestCase):
     for _, design_obj in result.designs.items():
       for geo in included_control:
         self.assertIn(geo, design_obj.control_geos)
-        self.assertNotIn(geo, design_obj.treatment_geos['cell_1'])
+        self.assertNotIn(geo, design_obj.designs['cell_1'].treatment_geos)
 
   def test_design_max_conversions_percent(self):
     dates = pd.date_range(start='2023-01-01', periods=30)
@@ -319,7 +319,7 @@ class DesignTest(parameterized.TestCase):
 
     self.assertNotEmpty(result.designs)
     for _, design_obj in result.designs.items():
-      self.assertNotIn('geo_0', design_obj.treatment_geos['cell_1'])
+      self.assertNotIn('geo_0', design_obj.designs['cell_1'].treatment_geos)
       self.assertIn('geo_0', design_obj.control_geos)
 
   def test_filter_results_by_aa_test(self):
@@ -334,6 +334,8 @@ class DesignTest(parameterized.TestCase):
         mde_pct=jnp.array([0.1, 0.2, 0.3]),
         p_values=jnp.array([0.05, 0.15, 0.2]),  # Candidate 0 fails (p < alpha)
         r2_scores=jnp.array([0.9, 0.8, 0.7]),
+        observed_conversions=jnp.zeros((3, 5)),
+        counterfactual_conversions=jnp.zeros((3, 5)),
     )
 
     # p_values >= alpha (0.1).
@@ -364,6 +366,8 @@ class DesignTest(parameterized.TestCase):
         mde_pct=jnp.array([0.1]),
         p_values=jnp.array([0.05]),  # Fails (p < alpha)
         r2_scores=jnp.array([0.9]),
+        observed_conversions=jnp.zeros((1, 5)),
+        counterfactual_conversions=jnp.zeros((1, 5)),
     )
 
     with self.assertRaisesRegex(ValueError, 'No designs passed the A/A test'):
@@ -387,15 +391,26 @@ class DesignTest(parameterized.TestCase):
         alpha=0.05,
     )
     original_design = api.Design(
-        treatment_geos={'cell_1': {'G1', 'G2'}},
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1', 'G2'},
+                minimum_detectable_effect=0.1,
+                p_value=0.5,
+                budget=1000.0,
+                counterfactual_conversions=pd.DataFrame({'cf': [1, 2]}),
+            )
+        },
         control_geos={'G3', 'G4'},
         excluded_geos={'G5'},
-        minimum_detectable_effect={'cell_1': 0.1},
-        p_value={'cell_1': 0.5},
-        budget={'cell_1': 1000.0},
         design_config=design_config,
         constraints=constraints,
         geo_stratum_labels=jnp.array([0, 1, 0, 1, 2]),
+        data=pd.DataFrame({
+            api.DATE: [pd.Timestamp('2024-01-01'), pd.Timestamp('2024-01-02')],
+            api.LOCATION: ['G1', 'G2'],
+            api.CONVERSIONS: [100.0, 110.0],
+            api.SPEND: [50.0, 55.0],
+        }),
     )
 
     json_str = original_design.export_to_json()
@@ -404,19 +419,30 @@ class DesignTest(parameterized.TestCase):
     self.assertEqual(loaded_design.design_config, original_design.design_config)
     self.assertEqual(loaded_design.constraints, original_design.constraints)
     self.assertEqual(
-        loaded_design.treatment_geos, original_design.treatment_geos
+        loaded_design.designs['cell_1'].treatment_geos,
+        original_design.designs['cell_1'].treatment_geos,
     )
     self.assertEqual(loaded_design.control_geos, original_design.control_geos)
     self.assertEqual(loaded_design.excluded_geos, original_design.excluded_geos)
     self.assertEqual(
-        loaded_design.minimum_detectable_effect,
-        original_design.minimum_detectable_effect,
+        loaded_design.designs['cell_1'].minimum_detectable_effect,
+        original_design.designs['cell_1'].minimum_detectable_effect,
     )
-    self.assertEqual(loaded_design.p_value, original_design.p_value)
-    self.assertEqual(loaded_design.budget, original_design.budget)
+    self.assertEqual(
+        loaded_design.designs['cell_1'].p_value,
+        original_design.designs['cell_1'].p_value,
+    )
+    self.assertEqual(
+        loaded_design.designs['cell_1'].budget,
+        original_design.designs['cell_1'].budget,
+    )
 
     np.testing.assert_array_equal(
         loaded_design.geo_stratum_labels, original_design.geo_stratum_labels
+    )
+    pd.testing.assert_frame_equal(loaded_design.data, original_design.data)
+    self.assertIsNone(
+        loaded_design.designs['cell_1'].counterfactual_conversions
     )
 
   def test_concat_design_reports(self):
@@ -425,7 +451,14 @@ class DesignTest(parameterized.TestCase):
 
     d1_id = 'd1'
     d1 = api.Design(
-        treatment_geos={'cell_1': {'geo_1'}},
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'geo_1'},
+                minimum_detectable_effect=0.8,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
         control_geos={'geo_2'},
         excluded_geos=set(),
         design_config=design_config,
@@ -444,7 +477,14 @@ class DesignTest(parameterized.TestCase):
 
     d2_id = 'd2'
     d2 = api.Design(
-        treatment_geos={'cell_1': {'geo_3'}},
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'geo_3'},
+                minimum_detectable_effect=0.9,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
         control_geos={'geo_4'},
         excluded_geos=set(),
         design_config=design_config,
@@ -480,7 +520,14 @@ class DesignTest(parameterized.TestCase):
 
     d1_id = 'd1'
     d1 = api.Design(
-        treatment_geos={'cell_1': {'geo_1'}},
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'geo_1'},
+                minimum_detectable_effect=0.8,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
         control_geos={'geo_2'},
         excluded_geos=set(),
     )
@@ -497,7 +544,14 @@ class DesignTest(parameterized.TestCase):
 
     d2_id = 'd2'
     d2 = api.Design(
-        treatment_geos={'cell_1': {'geo_3'}},
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'geo_3'},
+                minimum_detectable_effect=0.7,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
         control_geos={'geo_4'},
         excluded_geos=set(),
     )
@@ -577,6 +631,11 @@ class DesignTest(parameterized.TestCase):
       has_spend,
       expected_budget,
   ):
+    data = pd.DataFrame({
+        api.DATE: [pd.Timestamp('2023-01-01')],
+        api.LOCATION: ['geo_1'],
+        api.CONVERSIONS: [10.0],
+    })
     scored_candidates = design.ScoredCandidates(
         # 2 control, 2 treated geos.
         candidates=jnp.array([[0, 0, 1, 1]]),
@@ -584,6 +643,8 @@ class DesignTest(parameterized.TestCase):
         mde_pct=jnp.array([0.1]),
         p_values=jnp.array([0.5]),
         r2_scores=jnp.array([0.9]),
+        observed_conversions=jnp.zeros((1, 1)),
+        counterfactual_conversions=jnp.zeros((1, 1)),
     )
     design_config = api.DesignConfig(
         experiment_duration=5,
@@ -620,15 +681,18 @@ class DesignTest(parameterized.TestCase):
         geos,
         geo_stratum_labels,
         processed_data,
+        data=data,
     )
 
     self.assertLen(result.designs, 1)
     design_id = result.design_metrics.iloc[0]['design_id']
     design_obj = result.designs[design_id]
     self.assertEqual(result.design_metrics.iloc[0]['cell_id'], 'cell_1')
-    self.assertIn('cell_1', design_obj.minimum_detectable_effect)
-    self.assertIn('cell_1', design_obj.p_value)
-    self.assertIn('cell_1', design_obj.budget)
+    self.assertIn('cell_1', design_obj.designs)
+    self.assertAlmostEqual(
+        design_obj.designs['cell_1'].minimum_detectable_effect, 0.1
+    )
+    self.assertAlmostEqual(design_obj.designs['cell_1'].p_value, 0.5)
     self.assertIn('design_methodology', result.design_metrics.columns)
     self.assertEqual(
         result.design_metrics.iloc[0]['design_methodology'], 'RANDOM-TBR'
@@ -636,6 +700,66 @@ class DesignTest(parameterized.TestCase):
     self.assertAlmostEqual(
         result.design_metrics.iloc[0]['budget'], expected_budget, places=5
     )
+
+  def test_run_design_populates_data_field(self):
+    dates = pd.date_range(start='2023-01-01', periods=10)
+    locations = ['geo_1', 'geo_2', 'geo_3', 'geo_4']
+    data_list = []
+    for d, l in itertools.product(dates, locations):
+      data_list.append({api.DATE: d, api.LOCATION: l, api.CONVERSIONS: 10.0})
+    data = pd.DataFrame(data_list)
+    design_config = api.DesignConfig(experiment_duration=2, n_candidates=5)
+    constraints = api.Constraints(max_conversions_percent=0.5)
+
+    result = design.run_design(data, design_config, constraints)
+
+    for _, design_obj in result.designs.items():
+      pd.testing.assert_frame_equal(design_obj.data, data)
+
+  def test_get_design_summary_populates_data_field(self):
+    scored_candidates = design.ScoredCandidates(
+        candidates=jnp.array([[0, 0, 1, 1]]),
+        mde_abs=jnp.array([10.0]),
+        mde_pct=jnp.array([0.1]),
+        p_values=jnp.array([0.5]),
+        r2_scores=jnp.array([0.9]),
+        observed_conversions=jnp.zeros((1, 1)),
+        counterfactual_conversions=jnp.zeros((1, 1)),
+    )
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        design_output_count=1,
+    )
+    constraints = api.Constraints()
+    geos = ['geo_1', 'geo_2', 'geo_3', 'geo_4']
+    geo_stratum_labels = jnp.array([0, 0, 1, 1])
+    data = pd.DataFrame({
+        api.DATE: [pd.Timestamp('2023-01-01')],
+        api.LOCATION: ['geo_1'],
+        api.CONVERSIONS: [10.0],
+    })
+
+    processed_data = design.ProcessedData(
+        selection_train=jnp.array([]),
+        selection_eval=jnp.array([]),
+        estimation_train=jnp.array([]),
+        estimation_eval=jnp.array([[0, 0, 50, 50]]),
+        training_period=[],
+        filtered_data=pd.DataFrame(),
+    )
+
+    result = design._get_design_summary(
+        scored_candidates,
+        design_config,
+        constraints,
+        geos,
+        geo_stratum_labels,
+        processed_data,
+        data=data,
+    )
+
+    for _, design_obj in result.designs.items():
+      pd.testing.assert_frame_equal(design_obj.data, data)
 
 
 if __name__ == '__main__':

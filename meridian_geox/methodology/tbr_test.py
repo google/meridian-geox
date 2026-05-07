@@ -184,6 +184,12 @@ class TbrTest(parameterized.TestCase):
     self.assertEqual(results.mde_abs.shape, (n_designs,))
     self.assertEqual(results.mde_pct.shape, (n_designs,))
     self.assertEqual(results.p_value.shape, (n_designs,))
+    self.assertEqual(
+        results.observed_conversions.shape, (n_designs, t_pre + t_val)
+    )
+    self.assertEqual(
+        results.counterfactual_conversions.shape, (n_designs, t_pre + t_val)
+    )
 
     # mde_abs should be constant across designs because SE is derived from the
     # set check that values are close.
@@ -308,6 +314,12 @@ class TbrTest(parameterized.TestCase):
     self.assertEqual(results.mde_abs.shape, (n_designs,))
     self.assertEqual(results.mde_pct.shape, (n_designs,))
     self.assertEqual(results.p_value.shape, (n_designs,))
+    self.assertEqual(
+        results.observed_conversions.shape, (n_designs, t_pre + t_val)
+    )
+    self.assertEqual(
+        results.counterfactual_conversions.shape, (n_designs, t_pre + t_val)
+    )
 
     # With random data, MDE should be > 0.
     self.assertTrue(jnp.all(results.mde_abs > 0.0))
@@ -490,20 +502,39 @@ class TbrTest(parameterized.TestCase):
     metrics = api.AnalysisMetrics(
         lift=tbr_result.lift,
         percent_lift=tbr_result.percent_lift,
-        cumulative_lift_estimates=pd.DataFrame(
+        cumulative_lift=pd.DataFrame(
             data=tbr_result.cumulative_lift_with_cis,
             index=pd.date_range('2024-01-11', periods=5),
-            columns=['lift', 'lift_lower_bound', 'lift_upper_bound'],
+            columns=['lift', 'lower_bound', 'upper_bound'],
+        ),
+        counterfactual_conversions=pd.DataFrame(
+            data=tbr_result.counterfactual_conversions_with_cis,
+            index=pd.date_range('2024-01-01', periods=15),
+            columns=[
+                'observed',
+                'counterfactual',
+                'lower_bound',
+                'upper_bound',
+            ],
+        ),
+        pointwise_difference=pd.DataFrame(
+            data=tbr_result.pointwise_difference_with_cis,
+            index=pd.date_range('2024-01-01', periods=15),
+            columns=['difference', 'lower_bound', 'upper_bound'],
         ),
         icpd=tbr_result.icpd,
-        cumulative_icpd_estimates=pd.DataFrame(
+        cumulative_icpd=pd.DataFrame(
             data=tbr_result.cumulative_icpd_with_cis,
             index=pd.date_range('2024-01-11', periods=5),
-            columns=['icpd', 'icpd_lower_bound', 'icpd_upper_bound'],
+            columns=['icpd', 'lower_bound', 'upper_bound'],
         ),
     )
 
     self.assertIsInstance(metrics, api.AnalysisMetrics)
+    self.assertLen(metrics.counterfactual_conversions, 15)
+    self.assertIn('observed', metrics.counterfactual_conversions.columns)
+    self.assertLen(metrics.pointwise_difference, 15)
+    self.assertIn('difference', metrics.pointwise_difference.columns)
     # 2 treatment geos * 10 lift/day * 5 days = 100 total lift
     self.assertAlmostEqual(metrics.lift.point_estimate, 100.0, delta=1.0)
     # Total conversions in treatment: 2 * (110 * 5) = 1100
@@ -514,8 +545,8 @@ class TbrTest(parameterized.TestCase):
     # Since we added a clear lift, p-value should be small
     self.assertLess(metrics.lift.p_value, 0.5)
 
-    self.assertLen(metrics.cumulative_lift_estimates, 5)
-    self.assertIn('lift', metrics.cumulative_lift_estimates.columns)
+    self.assertLen(metrics.cumulative_lift, 5)
+    self.assertIn('lift', metrics.cumulative_lift.columns)
 
     # Total lift per day = 2 geos * 10 = 20
     # Total incremental spend per day = 2 geos * (20 - 10) = 20
@@ -525,11 +556,11 @@ class TbrTest(parameterized.TestCase):
     # p-value should be the same as lift p-value
     self.assertEqual(metrics.icpd.p_value, metrics.lift.p_value)
 
-    assert metrics.cumulative_icpd_estimates is not None
-    self.assertLen(metrics.cumulative_icpd_estimates, 5)
-    self.assertIn('icpd', metrics.cumulative_icpd_estimates.columns)
-    self.assertIn('icpd_lower_bound', metrics.cumulative_icpd_estimates.columns)
-    self.assertIn('icpd_upper_bound', metrics.cumulative_icpd_estimates.columns)
+    assert metrics.cumulative_icpd is not None
+    self.assertLen(metrics.cumulative_icpd, 5)
+    self.assertIn('icpd', metrics.cumulative_icpd.columns)
+    self.assertIn('lower_bound', metrics.cumulative_icpd.columns)
+    self.assertIn('upper_bound', metrics.cumulative_icpd.columns)
 
   def test_generate_analysis_go_dark(self):
     # Setup 6 geos: 2 treatment, 4 control
@@ -626,20 +657,39 @@ class TbrTest(parameterized.TestCase):
     metrics = api.AnalysisMetrics(
         lift=tbr_result.lift,
         percent_lift=tbr_result.percent_lift,
-        cumulative_lift_estimates=pd.DataFrame(
+        cumulative_lift=pd.DataFrame(
             data=tbr_result.cumulative_lift_with_cis,
             index=pd.date_range('2024-01-11', periods=5),
-            columns=['lift', 'lift_lower_bound', 'lift_upper_bound'],
+            columns=['lift', 'lower_bound', 'upper_bound'],
+        ),
+        counterfactual_conversions=pd.DataFrame(
+            data=tbr_result.counterfactual_conversions_with_cis,
+            index=pd.date_range('2024-01-01', periods=15),
+            columns=[
+                'observed',
+                'counterfactual',
+                'lower_bound',
+                'upper_bound',
+            ],
+        ),
+        pointwise_difference=pd.DataFrame(
+            data=tbr_result.pointwise_difference_with_cis,
+            index=pd.date_range('2024-01-01', periods=15),
+            columns=['difference', 'lower_bound', 'upper_bound'],
         ),
         icpd=tbr_result.icpd,
-        cumulative_icpd_estimates=pd.DataFrame(
+        cumulative_icpd=pd.DataFrame(
             data=tbr_result.cumulative_icpd_with_cis,
             index=pd.date_range('2024-01-11', periods=5),
-            columns=['icpd', 'icpd_lower_bound', 'icpd_upper_bound'],
+            columns=['icpd', 'lower_bound', 'upper_bound'],
         ),
     )
 
     self.assertIsInstance(metrics, api.AnalysisMetrics)
+    self.assertLen(metrics.counterfactual_conversions, 15)
+    self.assertIn('observed', metrics.counterfactual_conversions.columns)
+    self.assertLen(metrics.pointwise_difference, 15)
+    self.assertIn('difference', metrics.pointwise_difference.columns)
     # Lift should be POSITIVE because we negated the negative drop.
     # 2 treatment geos * 10 drop/day * 5 days = 100 total absolute drop.
     # Negating it gives 100.0 lift.
@@ -777,14 +827,14 @@ class TbrTest(parameterized.TestCase):
     p_mask = jnp.array([0, 1, 0])
 
     (
-        y_test_cumul,
-        y_pred_cumul,
+        y_test,
+        y_pred,
         rmse,
         log_rmse,
     ) = tbr._compute_placebo_effect_from_mask(
         data_pretest, data_test, mask, p_mask
     )
-    effect_cumul = y_test_cumul - y_pred_cumul
+    effect = y_test - y_pred
     # p_mask=1 selects G1. valid_control_mask selects G2.
     # pre: py = [10, 20], px = [10, 20]. alpha=0, beta=1.
     # rmse = 0.
@@ -792,7 +842,7 @@ class TbrTest(parameterized.TestCase):
     # py_pred = 0 + 1 * 30 = 30.
     # effect = 30 - 30 = 0.
     self.assertAlmostEqual(float(rmse), 0.0, delta=1e-4)
-    self.assertAlmostEqual(float(effect_cumul[0]), 0.0, delta=1e-4)
+    self.assertAlmostEqual(float(effect[0]), 0.0, delta=1e-4)
     self.assertAlmostEqual(float(log_rmse), 0.0, delta=1e-4)
 
 

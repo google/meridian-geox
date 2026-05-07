@@ -87,6 +87,28 @@ JnpArray = Annotated[
 ]
 
 
+def _validate_dataframe(v: Any) -> pd.DataFrame:
+  if isinstance(v, pd.DataFrame):
+    return v
+  df = pd.DataFrame(**v)
+  if DATE in df.columns:
+    df[DATE] = pd.to_datetime(df[DATE])
+  return df
+
+
+def _serialize_dataframe(v: pd.DataFrame) -> dict[str, Any]:
+  return v.to_dict(orient="split")
+
+
+DataFrame = Annotated[
+    pd.DataFrame,
+    pydantic.BeforeValidator(_validate_dataframe),
+    pydantic.PlainSerializer(
+        _serialize_dataframe, return_type=dict, when_used="json"
+    ),
+]
+
+
 class DataSchema(pa.DataFrameModel):
   """Schema for geo data."""
 
@@ -212,32 +234,40 @@ class Constraints:
 
 
 @dataclasses.dataclass
+class PerCellDesign:
+  """Design results for a single cell."""
+
+  __pydantic_config__ = pydantic.ConfigDict(arbitrary_types_allowed=True)
+
+  treatment_geos: SortedSet[str]
+  minimum_detectable_effect: float
+  p_value: float
+  budget: float
+  # Counterfactual conversion time series. Includes date, observed, and
+  # counterfactual conversions. This is used for plotting.
+  counterfactual_conversions: Annotated[
+      Optional[DataFrame], pydantic.Field(exclude=True)
+  ] = dataclasses.field(default=None, repr=False)
+
+
+@dataclasses.dataclass
 class Design:
   """A design for a GeoX study."""
 
   __pydantic_config__ = pydantic.ConfigDict(arbitrary_types_allowed=True)
 
-  # Treatment geos for each cell.
-  treatment_geos: dict[str, SortedSet[str]]
+  # Results for each cell.
+  designs: dict[str, PerCellDesign]
   control_geos: SortedSet[str]
   excluded_geos: SortedSet[str]
-  # Design metrics for each cell.
-  minimum_detectable_effect: dict[str, float] = dataclasses.field(
-      default_factory=dict
-  )
-  p_value: dict[str, float] = dataclasses.field(default_factory=dict)
-  budget: dict[str, float] = dataclasses.field(default_factory=dict)
   design_config: Optional[DesignConfig] = None
   constraints: Optional[Constraints] = None
   # The stratum label of each geo, ordered by geo name.
   geo_stratum_labels: Optional[JnpArray] = dataclasses.field(
       default=None, repr=False
   )
-  # Conterfactual conversion time series. Includes cell ID, date and
-  # counterfactual conversions. This is used for plotting.
-  counterfactual_conversions: Annotated[
-      Optional[pd.DataFrame], pydantic.Field(exclude=True)
-  ] = dataclasses.field(default=None, repr=False)
+  # The data used for the design. This is used for analysis.
+  data: Optional[DataFrame] = dataclasses.field(default=None, repr=False)
 
   def export_to_json(self) -> str:
     """Exports the design to a JSON file."""
@@ -260,10 +290,10 @@ class DesignSet:
   # includes an index to identify the design in the list of designs and metrics
   # such as cell ID, design rank score, budget, minimum detectable effect,
   # statistical power, and other robustness and representativeness metrics.
-  design_metrics: pd.DataFrame = dataclasses.field(repr=False)
+  design_metrics: DataFrame = dataclasses.field(repr=False)
   # TODO: Consider including provenance information such as input
   # data and configs to make comparison/visualization easier.
-  design_data: pd.DataFrame = dataclasses.field(repr=False)
+  design_data: DataFrame = dataclasses.field(repr=False)
 
 
 @pydantic.dataclasses.dataclass
@@ -301,6 +331,16 @@ class Estimate:
 
 
 @dataclasses.dataclass
+class DescriptiveMetrics:
+  """Descriptive metrics for a single cell analysis."""
+
+  __pydantic_config__ = pydantic.ConfigDict(arbitrary_types_allowed=True)
+
+  # TODO: Compute total spend for each cell.
+  total_spend: Optional[float] = None
+
+
+@dataclasses.dataclass
 class AnalysisMetrics:
   """Metrics for a single cell analysis."""
 
@@ -309,15 +349,28 @@ class AnalysisMetrics:
   lift: Estimate
   percent_lift: Estimate
   # Cumulative time series of lift estimates.
-  cumulative_lift_estimates: pd.DataFrame = dataclasses.field(repr=False)
+  cumulative_lift: DataFrame = dataclasses.field(
+      default_factory=pd.DataFrame, repr=False
+  )
+  # Counterfactual conversion time series. Includes date, observed,
+  # counterfactual, and confidence intervals (test period only).
+  counterfactual_conversions: pd.DataFrame = dataclasses.field(
+      default_factory=pd.DataFrame, repr=False
+  )
+  # Pointwise difference between observed and counterfactual conversions.
+  # Includes date, difference, and confidence intervals (test period only).
+  pointwise_difference: pd.DataFrame = dataclasses.field(
+      default_factory=pd.DataFrame, repr=False
+  )
   # Incremental conversion per dollar. Conversion could be revenue or any other
   # KPI. When conversion value is used, iCPD is equivalent to iROAS. This is
   # only populated if spend data is available.
   icpd: Optional[Estimate] = None
   # Cumulative time series of iCPD.
-  cumulative_icpd_estimates: Optional[pd.DataFrame] = dataclasses.field(
+  cumulative_icpd: Optional[DataFrame] = dataclasses.field(
       default=None, repr=False
   )
+  descriptive_metrics: Optional[DescriptiveMetrics] = None
 
 
 @dataclasses.dataclass
@@ -328,6 +381,5 @@ class AnalysisResult:
 
   # Cell IDs and corresponding analysis metrics.
   results: dict[str, AnalysisMetrics]
-  # Counterfactual conversion time series. Includes cell ID, date and
-  # counterfactual conversions. This is used for plotting.
-  counterfactual_conversions: pd.DataFrame = dataclasses.field(repr=False)
+  # The configuration used for the analysis.
+  analysis_config: AnalysisConfig

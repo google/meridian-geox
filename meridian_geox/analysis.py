@@ -35,7 +35,8 @@ class TimeSeries:
 
   pretest: jnp.ndarray
   test: jnp.ndarray
-  dates: pd.Index
+  pretest_dates: pd.Index
+  test_dates: pd.Index
 
 
 @dataclasses.dataclass
@@ -79,33 +80,40 @@ def _get_time_series(
 ) -> TimeSeries:
   """Extracts pre-test and test time series for a given column."""
   pivoted_data = util.pivot_and_sort_data(data, column)
-  pretest = jnp.array(
-      pivoted_data[
-          pivoted_data.index < analysis_config.analysis_start_date
-      ].values
-  )
+  pretest_data = pivoted_data[
+      pivoted_data.index < analysis_config.analysis_start_date
+  ]
+  pretest = jnp.array(pretest_data.values)
   test_data = pivoted_data[
       (pivoted_data.index >= analysis_config.analysis_start_date)
       & (pivoted_data.index <= analysis_config.analysis_end_date)
   ]
   test = jnp.array(test_data.values)
-  return TimeSeries(pretest=pretest, test=test, dates=test_data.index)
+  return TimeSeries(
+      pretest=pretest,
+      test=test,
+      pretest_dates=pretest_data.index,
+      test_dates=test_data.index,
+  )
 
 
 def _get_placebo_masks(
-    treatment_mask: jnp.ndarray,
-    placebo_data: pd.DataFrame,
+    design_obj: api.Design,
+    treatment: TreatmentMask,
     design_config: api.DesignConfig,
-    constraints: Optional[api.Constraints],
     key: jax.Array,
-    geo_stratum_labels: Optional[jnp.ndarray] = None,
 ) -> jnp.ndarray:
   """Generates placebo masks for a GeoX experiment."""
-  # TODO: Refactor to move placebo mask generation to design phase.
+  if design_obj.data is None:
+    raise ValueError('Design data is required for placebo mask generation.')
+
+  placebo_data = design_obj.data[
+      ~design_obj.data[api.LOCATION].isin(treatment.geos)
+  ]
   processed_placebo_data = design.prepare_data(
       data=placebo_data,
       experiment_duration=design_config.experiment_duration,
-      constraints=constraints,
+      constraints=design_obj.constraints,
   )
 
   if design_config.geo_assignment_rule == api.GeoAssignmentRule.RANDOM:
@@ -113,7 +121,7 @@ def _get_placebo_masks(
         generate_candidates.get_random_candidates(
             filtered_data=processed_placebo_data.filtered_data,
             design_config=design_config,
-            constraints=constraints,
+            constraints=design_obj.constraints,
             key=key,
             selection_train=processed_placebo_data.selection_train,
             selection_train_spend=processed_placebo_data.selection_train_spend,
@@ -123,7 +131,7 @@ def _get_placebo_masks(
       design_config.geo_assignment_rule
       == api.GeoAssignmentRule.STRATIFIED_SAMPLING
   ):
-    if geo_stratum_labels is None:
+    if design_obj.geo_stratum_labels is None:
       raise ValueError(
           'geo_stratum_labels is required for stratified sampling.'
       )
@@ -132,8 +140,10 @@ def _get_placebo_masks(
             selection_train=processed_placebo_data.selection_train,
             filtered_data=processed_placebo_data.filtered_data,
             design_config=design_config,
-            constraints=constraints,
-            geo_stratum_labels=geo_stratum_labels[treatment_mask == 0],
+            constraints=design_obj.constraints,
+            geo_stratum_labels=design_obj.geo_stratum_labels[
+                treatment.mask == 0
+            ],
             key=key,
             selection_train_spend=processed_placebo_data.selection_train_spend,
         )
@@ -144,7 +154,7 @@ def _get_placebo_masks(
     )
 
   return jax.vmap(_get_full_mask, in_axes=(None, 0))(
-      treatment_mask, placebo_masks_without_treatment_geos
+      treatment.mask, placebo_masks_without_treatment_geos
   )
 
 
@@ -192,7 +202,9 @@ def _get_treatment_mask(
   """Creates a binary treatment mask and returns treatment geo names."""
   geos = sorted(data[api.LOCATION].unique())
   # TODO Add multicell support.
-  treatment_geos = sorted(list(list(design_obj.treatment_geos.values())[0]))
+  treatment_geos = sorted(
+      list(list(design_obj.designs.values())[0].treatment_geos)
+  )
   treatment_mask = np.isin(geos, treatment_geos).astype(int)
   return TreatmentMask(mask=jnp.array(treatment_mask), geos=treatment_geos)
 
@@ -203,35 +215,54 @@ def _get_analysis_summary(
     percent_lift: api.Estimate,
     icpd: Optional[api.Estimate],
     cumulative_icpd_with_cis: Optional[np.ndarray],
-    analysis_dates: pd.Index,
+    counterfactual_conversions_with_cis: np.ndarray,
+    pointwise_difference_with_cis: np.ndarray,
+    pretest_dates: pd.Index,
+    test_dates: pd.Index,
     cell_names: list[str],
+    analysis_config: api.AnalysisConfig,
 ) -> api.AnalysisResult:
   """Converts raw analysis results into an AnalysisResult object."""
-  cumulative_lift_estimates = pd.DataFrame(
+  cumulative_lift = pd.DataFrame(
       data=cumulative_lift_with_cis,
-      index=analysis_dates,
-      columns=['lift', 'lift_lower_bound', 'lift_upper_bound'],
+      index=test_dates,
+      columns=['lift', 'lower_bound', 'upper_bound'],
   )
 
-  cumulative_icpd_estimates = None
+  cumulative_icpd = None
   if cumulative_icpd_with_cis is not None:
-    cumulative_icpd_estimates = pd.DataFrame(
+    cumulative_icpd = pd.DataFrame(
         data=cumulative_icpd_with_cis,
-        index=analysis_dates,
-        columns=['icpd', 'icpd_lower_bound', 'icpd_upper_bound'],
+        index=test_dates,
+        columns=['icpd', 'lower_bound', 'upper_bound'],
     )
+
+  full_dates = pretest_dates.append(test_dates)
+  counterfactual_conversions = pd.DataFrame(
+      data=counterfactual_conversions_with_cis,
+      index=full_dates,
+      columns=['observed', 'counterfactual', 'lower_bound', 'upper_bound'],
+  )
+
+  pointwise_difference = pd.DataFrame(
+      data=pointwise_difference_with_cis,
+      index=full_dates,
+      columns=['difference', 'lower_bound', 'upper_bound'],
+  )
 
   return api.AnalysisResult(
       results={
           cell_names[0]: api.AnalysisMetrics(
               lift=lift,
               percent_lift=percent_lift,
-              cumulative_lift_estimates=cumulative_lift_estimates,
+              cumulative_lift=cumulative_lift,
+              counterfactual_conversions=counterfactual_conversions,
+              pointwise_difference=pointwise_difference,
               icpd=icpd,
-              cumulative_icpd_estimates=cumulative_icpd_estimates,
+              cumulative_icpd=cumulative_icpd,
           )
       },
-      counterfactual_conversions=pd.DataFrame(),
+      analysis_config=analysis_config,
   )
 
 
@@ -250,6 +281,12 @@ def analyze(
     raise ValueError(
         f'Unsupported methodology: {analysis_config.methodology}. Only TBR is'
         ' supported.'
+    )
+
+  if set(data[api.LOCATION]) != set(analysis_config.design.data[api.LOCATION]):
+    raise ValueError(
+        'The locations in the analysis data do not match the locations in the'
+        ' design.'
     )
 
   error_messages: list[str] = util.validate_schema(data)
@@ -279,12 +316,10 @@ def analyze(
   # the design phase, replace the constant fold-in with key splitting.
   analysis_key = jax.random.fold_in(jax.random.key(design_config.seed), 12345)
   placebo_masks = _get_placebo_masks(
-      treatment_mask=treatment.mask,
-      placebo_data=data[~data[api.LOCATION].isin(treatment.geos)],
+      design_obj=analysis_config.design,
+      treatment=treatment,
       design_config=design_config,
-      constraints=analysis_config.design.constraints,
       key=analysis_key,
-      geo_stratum_labels=analysis_config.design.geo_stratum_labels,
   )
 
   # 5. Run methodology analysis.
@@ -307,8 +342,12 @@ def analyze(
       percent_lift=tbr_result.percent_lift,
       icpd=tbr_result.icpd,
       cumulative_icpd_with_cis=tbr_result.cumulative_icpd_with_cis,
-      analysis_dates=conversions.dates,
-      cell_names=list(analysis_config.design.treatment_geos.keys()),
+      counterfactual_conversions_with_cis=tbr_result.counterfactual_conversions_with_cis,
+      pointwise_difference_with_cis=tbr_result.pointwise_difference_with_cis,
+      pretest_dates=conversions.pretest_dates,
+      test_dates=conversions.test_dates,
+      cell_names=list(analysis_config.design.designs.keys()),
+      analysis_config=analysis_config,
   )
 
 

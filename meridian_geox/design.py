@@ -58,6 +58,8 @@ class ScoredCandidates:
   mde_pct: jnp.ndarray
   p_values: jnp.ndarray
   r2_scores: jnp.ndarray
+  observed_conversions: jnp.ndarray
+  counterfactual_conversions: jnp.ndarray
 
 
 def prepare_data(
@@ -180,6 +182,10 @@ def _filter_results_by_aa_test(
       mde_pct=scored_candidates.mde_pct[is_valid_aa],
       p_values=scored_candidates.p_values[is_valid_aa],
       r2_scores=scored_candidates.r2_scores[is_valid_aa],
+      observed_conversions=scored_candidates.observed_conversions[is_valid_aa],
+      counterfactual_conversions=scored_candidates.counterfactual_conversions[
+          is_valid_aa
+      ],
   )
 
 
@@ -190,6 +196,7 @@ def _get_design_summary(
     geos: list[str],
     geo_stratum_labels: jnp.ndarray,
     processed_data: ProcessedData,
+    data: pd.DataFrame,
 ) -> api.DesignSet:
   """Converts the results to a DesignSet."""
   designs = {}
@@ -201,6 +208,10 @@ def _get_design_summary(
   mde_pct_np = np.array(scored_candidates.mde_pct)
   p_values_np = np.array(scored_candidates.p_values)
   r2_scores_np = np.array(scored_candidates.r2_scores)
+  observed_conversions_np = np.array(scored_candidates.observed_conversions)
+  counterfactual_conversions_np = np.array(
+      scored_candidates.counterfactual_conversions
+  )
   estimation_eval_np = np.array(processed_data.estimation_eval)
   estimation_eval_spend_np = (
       np.array(processed_data.estimation_eval_spend)
@@ -211,6 +222,10 @@ def _get_design_summary(
   is_go_dark_or_heavy_up = util.is_go_dark_or_heavy_up(
       design_config.experiment_types
   )
+
+  # Get full dates for plotting.
+  pivoted_data = util.pivot_and_sort_data(data, api.CONVERSIONS)
+  full_dates = pivoted_data.index
 
   for i in range(len(top_candidates_np)):
     mask = top_candidates_np[i]
@@ -283,21 +298,29 @@ def _get_design_summary(
 
     # TODO: Add multicell support for metrics.
     # Currently only a single metric is calculated for the whole design.
-    # We assign this metric to cell_1 only for now.
-    mde_dict = {'cell_1': float(mde_pct_np[i])}
-    p_value_dict = {'cell_1': float(p_values_np[i])}
-    budget_dict = {'cell_1': float(required_budget)}
+    # We assign this metric to all cells for now.
+    cell_designs = {}
+    for cell_name, treatment_geos in treatment_geos_dict.items():
+      cell_designs[cell_name] = api.PerCellDesign(
+          treatment_geos=treatment_geos,
+          minimum_detectable_effect=float(mde_pct_np[i]),
+          p_value=float(p_values_np[i]),
+          budget=float(required_budget),
+          counterfactual_conversions=pd.DataFrame({
+              'date': full_dates,
+              'observed': observed_conversions_np[i],
+              'counterfactual': counterfactual_conversions_np[i],
+          }),
+      )
 
     design_obj = api.Design(
-        treatment_geos=treatment_geos_dict,
+        designs=cell_designs,
         control_geos=control_geos,
         excluded_geos=constraints.excluded_geos,
-        minimum_detectable_effect=mde_dict,
-        p_value=p_value_dict,
-        budget=budget_dict,
         design_config=design_config,
         constraints=constraints,
         geo_stratum_labels=geo_stratum_labels,
+        data=data,
     )
     designs[design_id] = design_obj
 
@@ -320,8 +343,9 @@ def _get_design_summary(
   design_metrics = design_metrics.sort_values(by='mde_pct').head(
       design_config.design_output_count
   ).reset_index(drop=True)
-  top_design_ids = set(design_metrics['design_id'])
-  designs = {k: v for k, v in designs.items() if k in top_design_ids}
+  designs = {
+      design_id: designs[design_id] for design_id in design_metrics['design_id']
+  }
 
   # TODO: Populate design_data.
   design_data = pd.DataFrame()
@@ -438,6 +462,8 @@ def run_design(
       mde_pct=mde_results.mde_pct,
       p_values=mde_results.p_value,
       r2_scores=r2_scores[mde_params.top_indices],
+      observed_conversions=mde_results.observed_conversions,
+      counterfactual_conversions=mde_results.counterfactual_conversions,
   )
   filtered_scored_candidates = _filter_results_by_aa_test(
       scored_candidates, design_config
@@ -451,6 +477,7 @@ def run_design(
       geos,
       geo_stratum_labels,
       processed_data,
+      data,
   )
 
 
@@ -495,8 +522,10 @@ def concat_design_reports(
   top_metrics = combined_metrics.sort_values(by='mde_pct').head(
       design_output_count
   ).reset_index(drop=True)
-  top_design_ids = set(top_metrics['design_id'])
-  top_designs = {k: v for k, v in all_designs.items() if k in top_design_ids}
+  top_designs = {
+      design_id: all_designs[design_id]
+      for design_id in top_metrics['design_id']
+  }
 
   return api.DesignSet(
       designs=top_designs,
