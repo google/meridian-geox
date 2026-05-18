@@ -46,6 +46,24 @@ class UtilTest(parameterized.TestCase):
     )
     self.assertEmpty(errors)
 
+  def test_validate_design_input_multiple_spend_cells_success(self):
+    data = self.data.copy()
+    data['spend_cell_1'] = 10.0
+    data['spend_cell_2'] = 20.0
+    data['spend_cell_3'] = 30.0
+    errors = util.validate_design_input(
+        data, self.design_config, self.constraints
+    )
+    self.assertEmpty(errors)
+
+  def test_validate_design_input_spend_cell_negative_error(self):
+    data = self.data.copy()
+    data['spend_cell_1'] = -10.0
+    errors = util.validate_design_input(
+        data, self.design_config, self.constraints
+    )
+    self.assertNotEmpty(errors)
+
   def test_validate_design_input_schema_error(self):
     # Missing 'location' column.
     invalid_data = self.data.drop(columns=['location'])

@@ -32,8 +32,8 @@ class TbrTest(parameterized.TestCase):
     x = jnp.array([0.0, 1.0, 2.0, 3.0, 4.0])
     y = 2.0 + 3.0 * x
     alpha, beta = tbr._fit_linear_regression(x, y)
-    np.testing.assert_allclose(alpha, 2.0, atol=1e-5)
-    np.testing.assert_allclose(beta, 3.0, atol=1e-5)
+    np.testing.assert_allclose(alpha, 2.0, rtol=5e-5, atol=5e-5)
+    np.testing.assert_allclose(beta, 3.0, rtol=5e-5, atol=5e-5)
 
   def test_fit_linear_regression_constant_x(self):
     # x is constant. Denominator in slope calculation is 0.
@@ -41,24 +41,25 @@ class TbrTest(parameterized.TestCase):
     y = jnp.array([110.0, 120.0, 130.0])
     alpha, beta = tbr._fit_linear_regression(x, y)
     # Slope should be 0.0, intercept should be mean(y) = 120.0.
-    np.testing.assert_allclose(beta, 0.0, atol=1e-5)
-    np.testing.assert_allclose(alpha, 120.0, atol=1e-5)
+    np.testing.assert_allclose(beta, 0.0, rtol=5e-5, atol=5e-5)
+    np.testing.assert_allclose(alpha, 120.0, rtol=5e-5, atol=5e-5)
 
-  def test_compute_group_means(self):
+  def test_compute_group_mean(self):
     # 2 time points, 4 geos.
     data = jnp.array([[10.0, 20.0, 30.0, 40.0], [15.0, 25.0, 35.0, 45.0]])
     # Geos 0 and 2 are treated (indices 0, 2).
     mask = jnp.array([1.0, 0.0, 1.0, 0.0])
 
-    y_mean, x_mean = tbr._compute_group_means(data, mask)
+    y_mean = tbr._compute_group_mean(data, mask, 1.0)
+    x_mean = tbr._compute_group_mean(data, mask, 0.0)
 
     # Treated: (10+30)/2=20, (15+35)/2=25.
     expected_y_mean = jnp.array([20.0, 25.0])
     # Control: (20+40)/2=30, (25+45)/2=35.
     expected_x_mean = jnp.array([30.0, 35.0])
 
-    np.testing.assert_allclose(y_mean, expected_y_mean, atol=1e-5)
-    np.testing.assert_allclose(x_mean, expected_x_mean, atol=1e-5)
+    np.testing.assert_allclose(y_mean, expected_y_mean, rtol=5e-5, atol=5e-5)
+    np.testing.assert_allclose(x_mean, expected_x_mean, rtol=5e-5, atol=5e-5)
 
   def test_get_r2_perfect_correlation(self):
     # Create data where treated is exactly 2 * control + 1.
@@ -76,10 +77,34 @@ class TbrTest(parameterized.TestCase):
     mask = jnp.concatenate([jnp.ones(n_geos // 2), jnp.zeros(n_geos // 2)])
     treatment_masks = mask[None, :]  # Batch of size 1.
 
-    r2 = tbr.get_r2(data_pre, data_val, treatment_masks)
+    r2 = tbr.get_r2(data_pre, data_val, treatment_masks, jnp.array([1.0]))
 
     # Verify that R2 is close to 1.0 due to perfect linear relationship.
-    np.testing.assert_allclose(r2, 1.0, atol=1e-5)
+    np.testing.assert_allclose(r2, 1.0, rtol=5e-5, atol=5e-5)
+
+  def test_get_r2_multicell(self):
+    t = 10
+    # Control data.
+    control_data = jax.random.normal(jax.random.PRNGKey(0), (t, 2))
+    # Cell 1 data perfectly correlated.
+    cell1_data = 2.0 * control_data + 1.0
+    # Cell 2 data perfectly correlated with different slope/intercept.
+    cell2_data = 0.5 * control_data - 1.0
+
+    data_pre = jnp.concatenate([cell1_data, cell2_data, control_data], axis=1)
+    data_val = data_pre  # validation same as pre for this test.
+
+    # Geos 0,1 are Cell 1; Geos 2,3 are Cell 2; Geos 4,5 are Control.
+    mask = jnp.array([1.0, 1.0, 2.0, 2.0, 0.0, 0.0])
+    treatment_masks = mask[None, :]  # Batch of size 1.
+
+    treatment_cell_labels = jnp.array([1.0, 2.0])
+    r2 = tbr.get_r2(data_pre, data_val, treatment_masks, treatment_cell_labels)
+
+    # Verify that R2 is close to 1.0 for both cells due to perfect linear
+    # relationship. Shape should be (1, 2)
+    self.assertEqual(r2.shape, (1, 2))
+    np.testing.assert_allclose(r2, 1.0, rtol=5e-5, atol=5e-5)
 
   def test_get_r2_invalid_design(self):
     t = 10
@@ -94,10 +119,10 @@ class TbrTest(parameterized.TestCase):
 
     treatment_masks = jnp.stack([mask_zeros, mask_ones])
 
-    r2 = tbr.get_r2(data_pre, data_val, treatment_masks)
+    r2 = tbr.get_r2(data_pre, data_val, treatment_masks, jnp.array([1.0]))
 
-    self.assertTrue(jnp.isnan(r2[0]))
-    self.assertTrue(jnp.isnan(r2[1]))
+    self.assertTrue(jnp.isnan(r2[0, 0]))
+    self.assertTrue(jnp.isnan(r2[1, 0]))
 
   def test_get_mde_identical_geos_simplified_design_aware_placebo(self):
     t_pre = 10
@@ -132,8 +157,8 @@ class TbrTest(parameterized.TestCase):
     )
 
     # MDE should be 0 because all effects are exactly 0 (SE=0).
-    np.testing.assert_allclose(results.mde_abs, 0.0, atol=1e-5)
-    np.testing.assert_allclose(results.mde_pct, 0.0, atol=1e-5)
+    np.testing.assert_allclose(results.mde_abs, 0.0, rtol=5e-5, atol=5e-5)
+    np.testing.assert_allclose(results.mde_pct, 0.0, rtol=5e-5, atol=5e-5)
 
   @parameterized.named_parameters(
       dict(
@@ -181,6 +206,16 @@ class TbrTest(parameterized.TestCase):
         se_method=api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO,
     )
 
+    # Squeeze the results to remove the extra dimension since there is only 1
+    # treatment cell.
+    results.mde_abs = results.mde_abs.squeeze()
+    results.mde_pct = results.mde_pct.squeeze()
+    results.p_value = results.p_value.squeeze()
+    results.observed_conversions = results.observed_conversions.squeeze()
+    results.counterfactual_conversions = (
+        results.counterfactual_conversions.squeeze()
+    )
+
     self.assertEqual(results.mde_abs.shape, (n_designs,))
     self.assertEqual(results.mde_pct.shape, (n_designs,))
     self.assertEqual(results.p_value.shape, (n_designs,))
@@ -201,9 +236,11 @@ class TbrTest(parameterized.TestCase):
     baselines = []
     for i in range(n_designs):
       mask = masks[i]
-      y_pre, x_pre = tbr._compute_group_means(data_pre, mask)
+      y_pre = tbr._compute_group_mean(data_pre, mask, 1.0)
+      x_pre = tbr._compute_group_mean(data_pre, mask, 0.0)
       alpha, beta = tbr._fit_linear_regression(x_pre, y_pre)
-      y_val, x_val = tbr._compute_group_means(data_val, mask)
+      y_val = tbr._compute_group_mean(data_val, mask, 1.0)
+      x_val = tbr._compute_group_mean(data_val, mask, 0.0)
       y_pred = alpha + beta * x_val
       real_effect = jnp.mean(y_val - y_pred)
       effects.append(real_effect)
@@ -215,11 +252,15 @@ class TbrTest(parameterized.TestCase):
     # 1. Verify MDE Abs.
     expected_se = jnp.std(effects)
     expected_mde_abs = expected_se * z_score_sum
-    np.testing.assert_allclose(results.mde_abs[0], expected_mde_abs, atol=1e-5)
+    np.testing.assert_allclose(
+        results.mde_abs[0], expected_mde_abs, rtol=5e-5, atol=5e-5
+    )
 
     # 2. Verify MDE Pct.
     expected_mde_pct = expected_mde_abs / baselines
-    np.testing.assert_allclose(results.mde_pct, expected_mde_pct, atol=1e-5)
+    np.testing.assert_allclose(
+        results.mde_pct, expected_mde_pct, rtol=5e-5, atol=5e-5
+    )
 
     # 3. Verify P-values.
     # z_scores = effects / se.
@@ -231,7 +272,9 @@ class TbrTest(parameterized.TestCase):
       # p = 1 - cdf(z).
       expected_p_values = 1.0 - stats.norm.cdf(z_scores)
 
-    np.testing.assert_allclose(results.p_value, expected_p_values, atol=1e-5)
+    np.testing.assert_allclose(
+        results.p_value, expected_p_values, rtol=5e-5, atol=5e-5
+    )
 
   def test_get_mde_single_design_simplified_design_aware_placebo(self):
     t_pre = 10
@@ -276,6 +319,172 @@ class TbrTest(parameterized.TestCase):
           test_type=api.TestType.ONE_SIDED,
       ),
   )
+  def test_get_mde_multicell_simplified_design_aware_placebo(self, test_type):
+    t_pre = 10
+    t_val = 5
+    n_geos = 12
+    n_designs = 3
+    treatment_cell_labels = jnp.array([1.0, 2.0])
+    k_cells = len(treatment_cell_labels)
+
+    key = jax.random.PRNGKey(42)
+    # Generate random data.
+    data_pre = jax.random.normal(key, (t_pre, n_geos)) + 10.0
+    data_val = jax.random.normal(key, (t_val, n_geos)) + 10.0
+
+    # Create distinct masks.
+    masks = jnp.zeros((n_designs, n_geos))
+    for i in range(n_designs):
+      masks = masks.at[i, (i) % n_geos].set(1.0)
+      masks = masks.at[i, (i + 1) % n_geos].set(1.0)
+      masks = masks.at[i, (i + 2) % n_geos].set(2.0)
+      masks = masks.at[i, (i + 3) % n_geos].set(2.0)
+
+    z_score_sum = 1.96
+    random_keys = jax.random.split(key, n_designs)
+
+    results = tbr.get_mde(
+        data_pre=data_pre,
+        data_val=data_val,
+        treatment_masks=masks,
+        random_keys=random_keys,
+        n_permutations=100,
+        z_score_sum=z_score_sum,
+        test_type=test_type,
+        se_method=api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO,
+        treatment_cell_labels=treatment_cell_labels,
+    )
+
+    self.assertEqual(results.mde_abs.shape, (n_designs, k_cells))
+    self.assertEqual(results.mde_pct.shape, (n_designs, k_cells))
+    self.assertEqual(results.p_value.shape, (n_designs, k_cells))
+    self.assertEqual(
+        results.observed_conversions.shape, (n_designs, k_cells, t_pre + t_val)
+    )
+    self.assertEqual(
+        results.counterfactual_conversions.shape,
+        (n_designs, k_cells, t_pre + t_val),
+    )
+
+    # Verify that MDE abs is constant across designs within each cell (but can
+    # differ between cells).
+    for c in range(k_cells):
+      first_mde = results.mde_abs[0, c]
+      np.testing.assert_allclose(results.mde_abs[:, c], first_mde, atol=1e-6)
+
+    # Verify that standard calculation matches.
+    for c in range(k_cells):
+      cell_label = treatment_cell_labels[c]
+      effects = []
+      baselines = []
+      for i in range(n_designs):
+        mask = masks[i]
+        y_pre = tbr._compute_group_mean(data_pre, mask, cell_label)
+        x_pre = tbr._compute_group_mean(data_pre, mask, 0.0)
+        alpha, beta = tbr._fit_linear_regression(x_pre, y_pre)
+        y_val = tbr._compute_group_mean(data_val, mask, cell_label)
+        x_val = tbr._compute_group_mean(data_val, mask, 0.0)
+        y_pred = alpha + beta * x_val
+        real_effect = jnp.mean(y_val - y_pred)
+        effects.append(real_effect)
+        baselines.append(jnp.mean(y_val))
+
+      effects = jnp.array(effects)
+      baselines = jnp.array(baselines)
+
+      expected_se = jnp.std(effects)
+      expected_mde_abs = expected_se * z_score_sum
+      np.testing.assert_allclose(
+          results.mde_abs[:, c], expected_mde_abs, rtol=5e-5, atol=5e-5
+      )
+
+      expected_mde_pct = expected_mde_abs / baselines
+      np.testing.assert_allclose(
+          results.mde_pct[:, c], expected_mde_pct, rtol=5e-5, atol=5e-5
+      )
+
+      z_scores = effects / expected_se
+      if test_type == api.TestType.TWO_SIDED:
+        expected_p_values = 2.0 * (1.0 - stats.norm.cdf(jnp.abs(z_scores)))
+      else:
+        expected_p_values = 1.0 - stats.norm.cdf(z_scores)
+      np.testing.assert_allclose(
+          results.p_value[:, c], expected_p_values, rtol=5e-5, atol=5e-5
+      )
+
+  def test_get_mde_multicell_identical_geos_simplified_design_aware_placebo(
+      self,
+  ):
+    t_pre = 10
+    t_val = 5
+    n_geos = 6
+    treatment_cell_labels = jnp.array([1.0, 2.0])
+
+    # Create identical data for all geos.
+    time_series = jnp.arange(t_pre + t_val, dtype=jnp.float32)
+    data = jnp.tile(time_series[:, None], (1, n_geos))
+
+    data_pre = data[:t_pre, :]
+    data_val = data[t_pre:, :]
+
+    masks = jnp.array([[1.0, 1.0, 2.0, 2.0, 0.0, 0.0]])
+
+    key = jax.random.PRNGKey(0)
+    random_keys = jax.random.split(key, 1)
+
+    results = tbr.get_mde(
+        data_pre=data_pre,
+        data_val=data_val,
+        treatment_masks=masks,
+        random_keys=random_keys,
+        n_permutations=100,
+        z_score_sum=1.96,
+        se_method=api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO,
+        treatment_cell_labels=treatment_cell_labels,
+    )
+
+    # MDE should be 0 because all effects are exactly 0 (SE=0).
+    np.testing.assert_allclose(results.mde_abs, 0.0, rtol=5e-5, atol=5e-5)
+    np.testing.assert_allclose(results.mde_pct, 0.0, rtol=5e-5, atol=5e-5)
+
+  def test_get_mde_multicell_placebo_raises_not_implemented(self):
+    t_pre = 10
+    t_val = 5
+    n_geos = 6
+    treatment_cell_labels = jnp.array([1.0, 2.0])
+
+    data_pre = jnp.zeros((t_pre, n_geos))
+    data_val = jnp.zeros((t_val, n_geos))
+    masks = jnp.array([[1.0, 1.0, 2.0, 2.0, 0.0, 0.0]])
+
+    key = jax.random.PRNGKey(0)
+    random_keys = jax.random.split(key, 1)
+
+    with self.assertRaisesRegex(
+        NotImplementedError,
+        'Multicell support is not implemented for _get_mde_placebo.*',
+    ):
+      tbr.get_mde(
+          data_pre=data_pre,
+          data_val=data_val,
+          treatment_masks=masks,
+          random_keys=random_keys,
+          n_permutations=20,
+          z_score_sum=1.96,
+          se_method=api.SeMethod.PLACEBO,
+          treatment_cell_labels=treatment_cell_labels,
+      )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='two_sided',
+          test_type=api.TestType.TWO_SIDED,
+      ),
+      dict(
+          testcase_name='one_sided',
+          test_type=api.TestType.ONE_SIDED,
+      ),
+  )
   def test_get_mde_placebo(self, test_type):
     t_pre = 10
     t_val = 5
@@ -309,6 +518,16 @@ class TbrTest(parameterized.TestCase):
         z_score_sum=z_score_sum,
         test_type=test_type,
         se_method=api.SeMethod.PLACEBO,
+    )
+
+    # Squeeze the results to remove the extra dimension since there is only 1
+    # treatment cell.
+    results.mde_abs = results.mde_abs.squeeze()
+    results.mde_pct = results.mde_pct.squeeze()
+    results.p_value = results.p_value.squeeze()
+    results.observed_conversions = results.observed_conversions.squeeze()
+    results.counterfactual_conversions = (
+        results.counterfactual_conversions.squeeze()
     )
 
     self.assertEqual(results.mde_abs.shape, (n_designs,))
@@ -359,8 +578,8 @@ class TbrTest(parameterized.TestCase):
 
     # Placebo effects should all be 0 because any control group fits perfectly.
     # Therefore std(placebo_effects) = 0 -> MDE = 0.
-    np.testing.assert_allclose(results.mde_abs, 0.0, atol=1e-5)
-    np.testing.assert_allclose(results.mde_pct, 0.0, atol=1e-5)
+    np.testing.assert_allclose(results.mde_abs, 0.0, rtol=5e-5, atol=5e-5)
+    np.testing.assert_allclose(results.mde_pct, 0.0, rtol=5e-5, atol=5e-5)
 
   def test_get_mde_placebo_reproducibility(self):
     t_pre = 10

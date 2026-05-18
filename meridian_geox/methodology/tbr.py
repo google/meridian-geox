@@ -31,11 +31,12 @@ class MdeResults:
   """Results of the MDE calculation.
 
   Attributes:
-    mde_abs: (N_designs,) Absolute MDE.
-    mde_pct: (N_designs,) Relative MDE (percentage).
-    p_value: (N_designs,) The AA p-value.
-    observed_conversions: (N_designs, T) Observed conversions.
-    counterfactual_conversions: (N_designs, T) Counterfactual conversions.
+    mde_abs: (N_designs, k_cells) Absolute MDE.
+    mde_pct: (N_designs, k_cells) Relative MDE (percentage).
+    p_value: (N_designs, k_cells) The AA p-value.
+    observed_conversions: (N_designs, k_cells, T) Observed conversions.
+    counterfactual_conversions: (N_designs, k_cells, T) Counterfactual
+      conversions.
   """
 
   mde_abs: jnp.ndarray
@@ -143,27 +144,26 @@ def _fit_linear_regression(
 
 
 @jax.jit
-def _compute_group_means(
-    data: jnp.ndarray, mask: jnp.ndarray
-) -> tuple[jnp.ndarray, jnp.ndarray]:
-  """Computes mean time series for treated and control groups.
+def _compute_group_mean(
+    data: jnp.ndarray,
+    mask: jnp.ndarray,
+    cell_label: float,
+) -> jnp.ndarray:
+  """Computes mean time series for a given cell.
 
   Args:
     data: (T, N) Time series data.
-    mask: (N,) Binary treatment mask (1.0 for treated, 0.0 for control).
+    mask: (N,) Treatment mask (0.0 for control, positive integer for treatment).
+    cell_label: Cell label.
 
   Returns:
-    y_mean: (T,) Average time series for treated group.
-    x_mean: (T,) Average time series for control group.
+    mean_ts: (T,) Average time series for the cell.
   """
-  n_treated = jnp.sum(mask)
-  n_control = jnp.sum(1.0 - mask)
+  binary_mask = (mask == cell_label).astype(jnp.float32)
+  n_geos = jnp.sum(binary_mask)
+  mean_ts = jnp.dot(data, binary_mask) / jnp.maximum(n_geos, 1.0)
 
-  # Avoid division by zero.
-  y_mean = jnp.dot(data, mask) / jnp.maximum(n_treated, 1.0)
-  x_mean = jnp.dot(data, 1.0 - mask) / jnp.maximum(n_control, 1.0)
-
-  return y_mean, x_mean
+  return mean_ts
 
 
 # TODO: Decouple methodology-specific estimation from the general
@@ -228,7 +228,10 @@ def _compute_placebo_effect_from_mask(
 
 @jax.jit
 def get_r2(
-    data_pre: jnp.ndarray, data_val: jnp.ndarray, treatment_masks: jnp.ndarray
+    data_pre: jnp.ndarray,
+    data_val: jnp.ndarray,
+    treatment_masks: jnp.ndarray,
+    treatment_cell_labels: jnp.ndarray,
 ) -> jnp.ndarray:
   """Calculates validation R-squared for a batch of designs.
 
@@ -236,41 +239,59 @@ def get_r2(
     data_pre: (T_pre, Geos) Pre-period data.
     data_val: (T_val, Geos) Validation-period data.
     treatment_masks: (N_designs, Geos) Batch of treatment masks.
+    treatment_cell_labels: (k_cells,) Treatment cell labels.
 
   Returns:
-    r2_vals: (N_designs,) Out-of-sample R-squared on validation period.
+    r2_vals: (N_designs, k_cells) Out-of-sample R-squared on validation period.
   """
-  # TODO: Add multicell support.
 
   def _get_one_r2(mask):
     # Ensure mask is float.
     mask = mask.astype(jnp.float32)
 
     # Calculate means for treated and control groups in pre-period.
-    y_pre, x_pre = _compute_group_means(data_pre, mask)
+    x_pre = _compute_group_mean(data_pre, mask, 0.0)
+    y_pre_by_cell = jax.vmap(_compute_group_mean, in_axes=(None, None, 0))(
+        data_pre, mask, treatment_cell_labels
+    )
 
     # Simple Linear Regression: y_pre ~ alpha + beta * x_pre.
-    alpha, beta = _fit_linear_regression(x_pre, y_pre)
+    alpha_by_cell, beta_by_cell = jax.vmap(
+        _fit_linear_regression, in_axes=(None, 0)
+    )(x_pre, y_pre_by_cell)
 
     # Validation period.
-    y_val, x_val = _compute_group_means(data_val, mask)
+    x_val = _compute_group_mean(data_val, mask, 0.0)
+    y_val_by_cell = jax.vmap(_compute_group_mean, in_axes=(None, None, 0))(
+        data_val, mask, treatment_cell_labels
+    )
 
     # Predict.
-    y_pred = alpha + beta * x_val
+    y_pred_by_cell = alpha_by_cell[:, None] + beta_by_cell[:, None] * x_val
 
     # Calculate R2.
-    residuals = y_val - y_pred
-    mse = jnp.mean(residuals**2)
-    var_y = jnp.var(y_val)
+    residuals_by_cell = y_val_by_cell - y_pred_by_cell
+    mse_by_cell = jnp.mean(residuals_by_cell**2, axis=1)
+    var_y_by_cell = jnp.var(y_val_by_cell, axis=1)
 
     # Avoid division by zero.
-    r2 = jnp.where(var_y > 1e-10, 1.0 - (mse / var_y), 0.0)
+    r2_by_cell = jax.vmap(
+        lambda mse, var_y: jnp.where(var_y > 1e-10, 1.0 - (mse / var_y), 0.0),
+        in_axes=(0, 0),
+    )(mse_by_cell, var_y_by_cell)
 
     # Return nan if invalid design (no treated or no control).
-    n_treated = jnp.sum(mask)
-    n_control = jnp.sum(1.0 - mask)
-    is_valid = (n_treated > 0) & (n_control > 0)
-    return jnp.where(is_valid, r2, jnp.nan)
+    n_control = jnp.sum((mask == 0.0).astype(jnp.float32))
+
+    n_treated_by_cell = jnp.sum(
+        (mask == treatment_cell_labels[:, None]).astype(jnp.float32), axis=1
+    )
+    is_valid = (n_control > 0) & jnp.all(n_treated_by_cell > 0)
+    return jnp.where(
+        is_valid,
+        r2_by_cell,
+        jnp.full(len(treatment_cell_labels), jnp.nan),
+    )
 
   return jax.vmap(_get_one_r2)(treatment_masks)
 
@@ -352,14 +373,17 @@ def _get_mde_simplified_design_aware_placebo(
     data_val: jnp.ndarray,
     treatment_masks: jnp.ndarray,
     z_score_sum: float,
+    treatment_cell_labels: jnp.ndarray,
     test_type: api.TestType = api.TestType.TWO_SIDED,
 ) -> MdeResults:
   """Calculates MDE using simplified design aware placebo method."""
 
-  def _get_effect(mask):
-    y_pre, x_pre = _compute_group_means(data_pre, mask)
+  def _get_effect(mask, treatment_cell_label):
+    y_pre = _compute_group_mean(data_pre, mask, treatment_cell_label)
+    x_pre = _compute_group_mean(data_pre, mask, 0.0)
     alpha, beta = _fit_linear_regression(x_pre, y_pre)
-    y_val, x_val = _compute_group_means(data_val, mask)
+    y_val = _compute_group_mean(data_val, mask, treatment_cell_label)
+    x_val = _compute_group_mean(data_val, mask, 0.0)
     y_pred = alpha + beta * x_val
 
     n_treated = jnp.sum(mask)
@@ -372,32 +396,53 @@ def _get_mde_simplified_design_aware_placebo(
 
     return real_effect, baseline, n_treated * y_full, n_treated * y_pred_full
 
-  effects, baselines, observed, counterfactual = jax.vmap(_get_effect)(
-      treatment_masks
-  )
+  def _get_mde_and_p_value(effects, baselines):
+    se = jnp.std(effects)
+    mde_abs_val = se * z_score_sum
 
-  se = jnp.std(effects)
-  mde_abs_val = se * z_score_sum
+    # Broadcast to shape (N_designs,).
+    mde_abs = jnp.full_like(effects, mde_abs_val)
+    mde_pct = jnp.where(baselines > 1e-9, mde_abs / baselines, jnp.nan)
 
-  # Broadcast to shape (N_designs,).
-  mde_abs = jnp.full_like(effects, mde_abs_val)
-  mde_pct = jnp.where(baselines > 1e-9, mde_abs / baselines, jnp.nan)
+    # P-values.
+    z_scores = effects / jnp.maximum(se, 1e-10)
+    if test_type == api.TestType.TWO_SIDED:
+      p_value = 2.0 * (1.0 - stats.norm.cdf(jnp.abs(z_scores)))
+    else:
+      # One-sided: Upper tail.
+      p_value = 1.0 - stats.norm.cdf(z_scores)
+    p_value = jnp.where(se > 1e-10, p_value, 1.0)
 
-  # P-values.
-  z_scores = effects / jnp.maximum(se, 1e-10)
-  if test_type == api.TestType.TWO_SIDED:
-    p_values = 2.0 * (1.0 - stats.norm.cdf(jnp.abs(z_scores)))
-  else:
-    # One-sided: Upper tail.
-    p_values = 1.0 - stats.norm.cdf(z_scores)
-  p_values = jnp.where(se > 1e-10, p_values, 1.0)
+    return mde_abs, mde_pct, p_value
 
+  _get_effect_over_masks = jax.vmap(_get_effect, in_axes=(0, None))
+  # shapes:
+  # effects, baselines: (k_cells, N_designs)
+  # observed, counterfactual: (k_cells, N_designs, T_pre + T_val)
+  effects, baselines, observed, counterfactual = jax.vmap(
+      _get_effect_over_masks,
+      in_axes=(None, 0),
+  )(treatment_masks, treatment_cell_labels)
+
+  # shapes:
+  # mde_abs, mde_pct, p_values: (k_cells, N_designs)
+  (
+      mde_abs,
+      mde_pct,
+      p_values,
+  ) = (
+      jax.vmap(_get_mde_and_p_value, in_axes=(0, 0))
+  )(effects, baselines)
+
+  # shapes:
+  # mde_abs, mde_pct, p_values: (N_designs, k_cells)
+  # observed, counterfactual: (N_designs, k_cells, T_pre + T_val)
   return MdeResults(
-      mde_abs=mde_abs,
-      mde_pct=mde_pct,
-      p_value=p_values,
-      observed_conversions=observed,
-      counterfactual_conversions=counterfactual,
+      mde_abs=jnp.transpose(mde_abs),
+      mde_pct=jnp.transpose(mde_pct),
+      p_value=jnp.transpose(p_values),
+      observed_conversions=jnp.transpose(observed, axes=(1, 0, 2)),
+      counterfactual_conversions=jnp.transpose(counterfactual, axes=(1, 0, 2)),
   )
 
 
@@ -431,14 +476,17 @@ def _get_mde_placebo(
     n_placebo_treated = jnp.maximum(1.0, n_placebo_treated)
 
     # 1. Real Effect.
-    y_pre, x_pre = _compute_group_means(data_pre, mask)
+    # TODO: Add multicell support.
+    y_pre = _compute_group_mean(data_pre, mask, 1.0)
+    x_pre = _compute_group_mean(data_pre, mask, 0.0)
     alpha, beta = _fit_linear_regression(x_pre, y_pre)
 
     # RMSE on pre.
     y_pred_pre = alpha + beta * x_pre
     real_rmse = jnp.sqrt(jnp.mean((y_pre - y_pred_pre) ** 2))
 
-    y_val, x_val = _compute_group_means(data_val, mask)
+    y_val = _compute_group_mean(data_val, mask, 1.0)
+    x_val = _compute_group_mean(data_val, mask, 0.0)
     y_pred = alpha + beta * x_val
 
     # Effect is the mean difference in the validation period.
@@ -512,11 +560,14 @@ def check_slope_similarity(
   def _get_single_slope_diff(mask):
     # 1. Conversion slope.
     # y = treated, x = control.
-    y_conv, x_conv = _compute_group_means(conversion_data, mask)
+    # TODO: Add multicell support.
+    y_conv = _compute_group_mean(conversion_data, mask, 1.0)
+    x_conv = _compute_group_mean(conversion_data, mask, 0.0)
     _, b_conv = _fit_linear_regression(x_conv, y_conv)
 
     # 2. Spend slope.
-    y_spend, x_spend = _compute_group_means(spend_data, mask)
+    y_spend = _compute_group_mean(spend_data, mask, 1.0)
+    x_spend = _compute_group_mean(spend_data, mask, 0.0)
     _, b_spend = _fit_linear_regression(x_spend, y_spend)
 
     # 3. Calculate symmetric percentage difference.
@@ -544,6 +595,7 @@ def get_mde(
     z_score_sum: float,
     test_type: api.TestType = api.TestType.TWO_SIDED,
     se_method: api.SeMethod = api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO,
+    treatment_cell_labels: Optional[jnp.ndarray] = None,
 ) -> MdeResults:
   """Runs placebo check and calculates MDE for a batch of designs.
 
@@ -559,16 +611,30 @@ def get_mde(
       simulations for each design. 'simplified_design_aware_placebo' calculates
       SE based on the distribution of effects across the provided treatment
       masks.
+    treatment_cell_labels: (k_cells,) Treatment cell labels for multicell
+      designs.
 
   Returns:
     MdeResults object.
   """
-  # TODO: Add multicell support.
+  if treatment_cell_labels is None:
+    treatment_cell_labels = jnp.array([1.0])
+
   if se_method == api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO:
     return _get_mde_simplified_design_aware_placebo(
-        data_pre, data_val, treatment_masks, z_score_sum, test_type
+        data_pre,
+        data_val,
+        treatment_masks,
+        z_score_sum,
+        treatment_cell_labels,
+        test_type,
     )
 
+  # TODO: Add multicell support for _get_mde_placebo.
+  if len(treatment_cell_labels) > 1:
+    raise NotImplementedError(
+        'Multicell support is not implemented for _get_mde_placebo.'
+    )
   return _get_mde_placebo(
       data_pre,
       data_val,
@@ -591,12 +657,15 @@ def _compute_icpd(
     incremental_spend_sign: float,
 ):
   """Computes ICPD metrics using JAX arrays."""
-  y_spend_pre, x_spend_pre = _compute_group_means(pretest_spend, treatment_mask)
+  # TODO: Add multicell support.
+  y_spend_pre = _compute_group_mean(pretest_spend, treatment_mask, 1.0)
+  x_spend_pre = _compute_group_mean(pretest_spend, treatment_mask, 0.0)
   pred_alpha_spend, pred_beta_spend = _fit_linear_regression(
       x_spend_pre, y_spend_pre
   )
 
-  y_spend_test, x_spend_test = _compute_group_means(test_spend, treatment_mask)
+  y_spend_test = _compute_group_mean(test_spend, treatment_mask, 1.0)
+  x_spend_test = _compute_group_mean(test_spend, treatment_mask, 0.0)
   y_spend_pred = pred_alpha_spend + pred_beta_spend * x_spend_test
   n_treatment_geos = jnp.sum(treatment_mask)
 
@@ -628,16 +697,17 @@ def analyze(
     test_spend: Optional[jnp.ndarray] = None,
 ) -> TbrAnalysisResult:
   """Generates analysis metrics for a GeoX experiment using JAX inputs."""
-  y_pretest, x_pretest = _compute_group_means(
-      pretest_conversions, treatment_mask
-  )
+  # TODO: Add multicell support.
+  y_pretest = _compute_group_mean(pretest_conversions, treatment_mask, 1.0)
+  x_pretest = _compute_group_mean(pretest_conversions, treatment_mask, 0.0)
   pred_alpha, pred_beta = _fit_linear_regression(x_pretest, y_pretest)
 
   y_pred_pre = pred_alpha + pred_beta * x_pretest
   rmse = jnp.sqrt(jnp.mean((y_pretest - y_pred_pre) ** 2))
   log_rmse = jnp.sqrt(jnp.mean((jnp.log(y_pretest) - jnp.log(y_pred_pre)) ** 2))
 
-  y_test, x_test = _compute_group_means(test_conversions, treatment_mask)
+  y_test = _compute_group_mean(test_conversions, treatment_mask, 1.0)
+  x_test = _compute_group_mean(test_conversions, treatment_mask, 0.0)
   y_pred = pred_alpha + pred_beta * x_test
   y_pred_cumul = jnp.cumsum(y_pred)
   y_test_cumul = jnp.cumsum(y_test)

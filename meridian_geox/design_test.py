@@ -328,14 +328,18 @@ class DesignTest(parameterized.TestCase):
         alpha=0.1,
         design_output_count=2,
     )
+    # The expanded dimensions are required because we are dealing with a single
+    # cell and the code is vectorized to handle multicell.
     scored_candidates = design.ScoredCandidates(
         candidates=jnp.array([[0, 0, 1, 1], [1, 1, 0, 0], [1, 0, 1, 0]]),
-        mde_abs=jnp.array([1.0, 2.0, 3.0]),
-        mde_pct=jnp.array([0.1, 0.2, 0.3]),
-        p_values=jnp.array([0.05, 0.15, 0.2]),  # Candidate 0 fails (p < alpha)
-        r2_scores=jnp.array([0.9, 0.8, 0.7]),
-        observed_conversions=jnp.zeros((3, 5)),
-        counterfactual_conversions=jnp.zeros((3, 5)),
+        mde_abs=jnp.array([1.0, 2.0, 3.0])[:, None],
+        mde_pct=jnp.array([0.1, 0.2, 0.3])[:, None],
+        p_values=jnp.array([0.05, 0.15, 0.2])[
+            :, None
+        ],  # Candidate 0 fails (p < alpha)
+        r2_scores=jnp.array([0.9, 0.8, 0.7])[:, None],
+        observed_conversions=jnp.zeros((3, 5))[:, None, :],
+        counterfactual_conversions=jnp.zeros((3, 5))[:, None, :],
     )
 
     # p_values >= alpha (0.1).
@@ -360,14 +364,16 @@ class DesignTest(parameterized.TestCase):
         experiment_duration=5,
         alpha=0.1,
     )
+    # The expanded dimensions are required because we are dealing with a single
+    # cell and the code is vectorized to handle multicell.
     scored_candidates = design.ScoredCandidates(
         candidates=jnp.array([[0, 0, 1, 1]]),
-        mde_abs=jnp.array([1.0]),
-        mde_pct=jnp.array([0.1]),
-        p_values=jnp.array([0.05]),  # Fails (p < alpha)
-        r2_scores=jnp.array([0.9]),
-        observed_conversions=jnp.zeros((1, 5)),
-        counterfactual_conversions=jnp.zeros((1, 5)),
+        mde_abs=jnp.array([1.0])[:, None],
+        mde_pct=jnp.array([0.1])[:, None],
+        p_values=jnp.array([0.05])[:, None],  # Fails (p < alpha)
+        r2_scores=jnp.array([0.9])[:, None],
+        observed_conversions=jnp.zeros((1, 5))[:, None, :],
+        counterfactual_conversions=jnp.zeros((1, 5))[:, None, :],
     )
 
     with self.assertRaisesRegex(ValueError, 'No designs passed the A/A test'):
@@ -384,10 +390,10 @@ class DesignTest(parameterized.TestCase):
     )
     design_config = api.DesignConfig(
         experiment_duration=5,
-        experiment_types=[
-            api.ExperimentType.HOLDBACK,
-            api.ExperimentType.GO_DARK,
-        ],
+        experiment_types={
+            'cell_1': api.ExperimentType.HOLDBACK,
+            'cell_2': api.ExperimentType.GO_DARK,
+        },
         alpha=0.05,
     )
     original_design = api.Design(
@@ -636,15 +642,17 @@ class DesignTest(parameterized.TestCase):
         api.LOCATION: ['geo_1'],
         api.CONVERSIONS: [10.0],
     })
+    # The expanded dimensions are required because we are dealing with a single
+    # cell and the code is vectorized to handle multicell.
     scored_candidates = design.ScoredCandidates(
         # 2 control, 2 treated geos.
         candidates=jnp.array([[0, 0, 1, 1]]),
-        mde_abs=jnp.array([10.0]),
-        mde_pct=jnp.array([0.1]),
-        p_values=jnp.array([0.5]),
-        r2_scores=jnp.array([0.9]),
-        observed_conversions=jnp.zeros((1, 1)),
-        counterfactual_conversions=jnp.zeros((1, 1)),
+        mde_abs=jnp.array([10.0])[:, None],
+        mde_pct=jnp.array([0.1])[:, None],
+        p_values=jnp.array([0.5])[:, None],
+        r2_scores=jnp.array([0.9])[:, None],
+        observed_conversions=jnp.zeros((1, 1))[:, None, :],
+        counterfactual_conversions=jnp.zeros((1, 1))[:, None, :],
     )
     design_config = api.DesignConfig(
         experiment_duration=5,
@@ -662,7 +670,9 @@ class DesignTest(parameterized.TestCase):
     # 2 treated geos (geo_3 and geo_4) with 50 conversions and 25 spend each.
     # Total treated volume = 100, total treated spend = 50.
     estimation_eval = jnp.array([[0, 0, 50, 50]])
-    estimation_eval_spend = jnp.array([[0, 0, 25, 25]]) if has_spend else None
+    estimation_eval_spend = (
+        {api.CELL_1: jnp.array([[0, 0, 25, 25]])} if has_spend else {}
+    )
 
     processed_data = design.ProcessedData(
         selection_train=jnp.array([]),
@@ -717,14 +727,16 @@ class DesignTest(parameterized.TestCase):
       pd.testing.assert_frame_equal(design_obj.data, data)
 
   def test_get_design_summary_populates_data_field(self):
+    # The expanded dimensions are required because we are dealing with a single
+    # cell and the code is vectorized to handle multicell.
     scored_candidates = design.ScoredCandidates(
         candidates=jnp.array([[0, 0, 1, 1]]),
-        mde_abs=jnp.array([10.0]),
-        mde_pct=jnp.array([0.1]),
-        p_values=jnp.array([0.5]),
-        r2_scores=jnp.array([0.9]),
-        observed_conversions=jnp.zeros((1, 1)),
-        counterfactual_conversions=jnp.zeros((1, 1)),
+        mde_abs=jnp.array([10.0])[:, None],
+        mde_pct=jnp.array([0.1])[:, None],
+        p_values=jnp.array([0.5])[:, None],
+        r2_scores=jnp.array([0.9])[:, None],
+        observed_conversions=jnp.zeros((1, 1))[:, None, :],
+        counterfactual_conversions=jnp.zeros((1, 1))[:, None, :],
     )
     design_config = api.DesignConfig(
         experiment_duration=5,
@@ -760,6 +772,78 @@ class DesignTest(parameterized.TestCase):
 
     for _, design_obj in result.designs.items():
       pd.testing.assert_frame_equal(design_obj.data, data)
+
+  def test_prepare_data_multicell_spend(self):
+    dates = pd.date_range(start='2023-01-01', periods=10)
+    locations = ['geo_1', 'geo_2', 'geo_3', 'geo_4']
+    data_list = []
+    for d, l in itertools.product(dates, locations):
+      data_list.append({
+          api.DATE: d,
+          api.LOCATION: l,
+          api.CONVERSIONS: 10.0,
+          'spend_cell_1': 5.0,
+          'spend_cell_2': 15.0,
+      })
+    data = pd.DataFrame(data_list)
+    constraints = api.Constraints()
+
+    processed_data = design.prepare_data(
+        data=data,
+        experiment_duration=2,
+        constraints=constraints,
+    )
+
+    self.assertIsInstance(processed_data.selection_train_spend, dict)
+    self.assertIsInstance(processed_data.estimation_eval_spend, dict)
+    self.assertIn('cell_1', processed_data.selection_train_spend)
+    self.assertIn('cell_2', processed_data.selection_train_spend)
+    self.assertIn('cell_1', processed_data.estimation_eval_spend)
+    self.assertIn('cell_2', processed_data.estimation_eval_spend)
+
+    # Check shapes.
+    # t2_start_idx = n_dates - experiment_duration = 10 - 2 = 8.
+    # t1_start_idx = t2_start_idx - experiment_duration = 8 - 2 = 6.
+    # t0_spend: first 6 dates. estimation_eval: last 2 dates.
+    self.assertEqual(
+        processed_data.selection_train_spend['cell_1'].shape, (6, 4)
+    )
+    self.assertEqual(
+        processed_data.estimation_eval_spend['cell_1'].shape, (2, 4)
+    )
+
+  def test_prepare_data_single_cell_spend(self):
+    dates = pd.date_range(start='2023-01-01', periods=10)
+    locations = ['geo_1', 'geo_2', 'geo_3', 'geo_4']
+    data_list = []
+    for d, l in itertools.product(dates, locations):
+      data_list.append({
+          api.DATE: d,
+          api.LOCATION: l,
+          api.CONVERSIONS: 10.0,
+          api.SPEND: 5.0,
+      })
+    data = pd.DataFrame(data_list)
+    constraints = api.Constraints()
+
+    processed_data = design.prepare_data(
+        data=data,
+        experiment_duration=2,
+        constraints=constraints,
+    )
+
+    self.assertIsInstance(processed_data.selection_train_spend, dict)
+    self.assertIsInstance(processed_data.estimation_eval_spend, dict)
+    self.assertIn(api.CELL_1, processed_data.selection_train_spend)
+    self.assertIn(api.CELL_1, processed_data.estimation_eval_spend)
+    self.assertEqual(
+        processed_data.selection_train_spend[api.CELL_1].shape,
+        (6, 4),
+    )
+    self.assertEqual(
+        processed_data.estimation_eval_spend[api.CELL_1].shape,
+        (2, 4),
+    )
 
 
 if __name__ == '__main__':

@@ -105,6 +105,24 @@ class GenerateCandidatesTest(parameterized.TestCase):
     expected_mask_low = np.array([1, 0, 0, 1, 0, 1])
     np.testing.assert_array_equal(mask_low, expected_mask_low)
 
+  def test_compute_mask_maximizing_conversions_multicell(self):
+    geos = np.array([0, 2, 4, 1, 3, 5])
+    geo_strata = np.array([0, 1, 2, 0, 1, 2])
+    geo_conversions = np.array([10, 1, 8, 2, 7, 3])
+    max_conversions = 20.0
+    mask = generate_candidates.compute_mask_maximizing_conversions(
+        geos, geo_strata, geo_conversions, max_conversions, num_cells=2
+    )
+    expected_mask = np.array([1, 2, 1, 2, 0, 2])
+    np.testing.assert_array_equal(mask, expected_mask)
+
+    max_conversions_high = 100.0
+    mask_high = generate_candidates.compute_mask_maximizing_conversions(
+        geos, geo_strata, geo_conversions, max_conversions_high, num_cells=2
+    )
+    expected_mask_high = np.array([1, 2, 1, 2, 1, 2])
+    np.testing.assert_array_equal(mask_high, expected_mask_high)
+
   def test_get_unconstrained_stratified_sampling_candidates(self):
     design_config = api.DesignConfig(
         experiment_duration=1,

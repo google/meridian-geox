@@ -32,6 +32,8 @@ DATE = "date"
 LOCATION = "location"
 CONVERSIONS = "conversions"
 SPEND = "spend"
+CELL_1 = "cell_1"
+MULTICELL_SPEND_REGEX = r"^spend_cell_[1-9]\d*$"
 
 
 def _validate_timestamp(v: Any) -> pd.Timestamp:
@@ -122,6 +124,11 @@ class DataSchema(pa.DataFrameModel):
   # Optional: Spend (Numeric).
   # Must not be negative if provided.
   spend: Optional[pa.typing.Series[float]] = pa.Field(alias=SPEND, ge=0)
+  # Optional: Spend per cell (Numeric).
+  # Must not be negative if provided.
+  spend_by_cell: Optional[pa.typing.Series[float]] = pa.Field(
+      alias=r"^spend_cell_[1-9]\d*$", regex=True, ge=0
+  )
 
 
 class ExperimentType(enum.Enum):
@@ -166,7 +173,8 @@ class DesignConfig:
   experiment_duration: Annotated[int, pydantic.Field(gt=0)]
   # Supports using different experiment types in different cells.
   experiment_types: Union[
-      ExperimentType, list[ExperimentType]
+      ExperimentType,
+      dict[str, ExperimentType],
   ] = ExperimentType.HOLDBACK
   # The methodologies to be considered for the experiment design.
   methodology: Methodology = Methodology.TBR
@@ -181,7 +189,7 @@ class DesignConfig:
   # The number of output design options.
   design_output_count: Annotated[int, pydantic.Field(gt=0)] = 10
   # This is needed for an accurate estimate of budget.
-  cost_per_incremental_conversion: Optional[float] = 1.0
+  cost_per_incremental_conversion: Union[float, dict[str, float], None] = 1.0
   # TODO: Consider moving this to a method specific config.
   covariate_columns: list[str] = dataclasses.field(default_factory=list)
 
@@ -223,12 +231,10 @@ class Constraints:
   # Dates to exclude from the experiment design.
   excluded_dates: SortedSet[Timestamp] = dataclasses.field(default_factory=set)
   # The maximum budget for the experiment design (per cell).
-  budget: Optional[float] = None
+  budget: Union[float, dict[str, float], None] = None
   # The maximum budget percentage change for the experiment design. This can
   # only be used if the spend data is provided (per cell).
-  budget_percent: Optional[float] = None
-  # The minimum conversions volume for any treatment group (per cell).
-  min_conversions_percent: Optional[float] = None
+  budget_percent: Union[float, dict[str, float], None] = None
   # The maximum conversions volume for any treatment group (per cell).
   max_conversions_percent: Optional[float] = 0.3
 

@@ -125,24 +125,14 @@ class AnalysisTest(parameterized.TestCase):
         analysis._get_experiment_type(config), api.ExperimentType.GO_DARK
     )
 
-    # Case 2: List with one element
+    # Case 2: Singleton map
     config = api.DesignConfig(
-        experiment_duration=1, experiment_types=[api.ExperimentType.HOLDBACK]
+        experiment_duration=1,
+        experiment_types={'cell_1': api.ExperimentType.HOLDBACK},
     )
     self.assertEqual(
         analysis._get_experiment_type(config), api.ExperimentType.HOLDBACK
     )
-
-    # Case 3: Invalid list
-    config = api.DesignConfig(
-        experiment_duration=1,
-        experiment_types=[
-            api.ExperimentType.GO_DARK,
-            api.ExperimentType.HOLDBACK,
-        ],
-    )
-    with self.assertRaisesRegex(ValueError, 'single experiment type'):
-      analysis._get_experiment_type(config)
 
   def test_get_treatment_mask(self):
     data = self._create_sample_data(n_days=1, n_geos=4)

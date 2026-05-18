@@ -19,6 +19,9 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
+from matplotlib import ticker
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
 from meridian_geox import api
 from meridian_geox import design
 from meridian_geox import generate_candidates
@@ -27,6 +30,7 @@ from meridian_geox.data_quality import data_quality
 from meridian_geox.methodology import tbr
 import numpy as np
 import pandas as pd
+import seaborn as sns
 
 
 @dataclasses.dataclass
@@ -117,15 +121,15 @@ def _get_placebo_masks(
   )
 
   if design_config.geo_assignment_rule == api.GeoAssignmentRule.RANDOM:
-    placebo_masks_without_treatment_geos = (
-        generate_candidates.get_random_candidates(
-            filtered_data=processed_placebo_data.filtered_data,
-            design_config=design_config,
-            constraints=design_obj.constraints,
-            key=key,
-            selection_train=processed_placebo_data.selection_train,
-            selection_train_spend=processed_placebo_data.selection_train_spend,
-        )
+    placebo_masks_without_treatment_geos = generate_candidates.get_random_candidates(
+        filtered_data=processed_placebo_data.filtered_data,
+        design_config=design_config,
+        constraints=design_obj.constraints,
+        key=key,
+        selection_train=processed_placebo_data.selection_train,
+        selection_train_spend=processed_placebo_data.selection_train_spend.get(
+            api.CELL_1
+        ),
     )
   elif (
       design_config.geo_assignment_rule
@@ -135,18 +139,16 @@ def _get_placebo_masks(
       raise ValueError(
           'geo_stratum_labels is required for stratified sampling.'
       )
-    placebo_masks_without_treatment_geos = (
-        generate_candidates.get_stratified_sampling_candidates(
-            selection_train=processed_placebo_data.selection_train,
-            filtered_data=processed_placebo_data.filtered_data,
-            design_config=design_config,
-            constraints=design_obj.constraints,
-            geo_stratum_labels=design_obj.geo_stratum_labels[
-                treatment.mask == 0
-            ],
-            key=key,
-            selection_train_spend=processed_placebo_data.selection_train_spend,
-        )
+    placebo_masks_without_treatment_geos = generate_candidates.get_stratified_sampling_candidates(
+        selection_train=processed_placebo_data.selection_train,
+        filtered_data=processed_placebo_data.filtered_data,
+        design_config=design_config,
+        constraints=design_obj.constraints,
+        geo_stratum_labels=design_obj.geo_stratum_labels[treatment.mask == 0],
+        key=key,
+        selection_train_spend=processed_placebo_data.selection_train_spend.get(
+            api.CELL_1
+        ),
     )
   else:
     raise ValueError(
@@ -186,7 +188,10 @@ def _get_experiment_type(
   experiment_types = design_config.experiment_types
   if isinstance(experiment_types, api.ExperimentType):
     experiment_types = [experiment_types]
+  elif isinstance(experiment_types, dict):
+    experiment_types = list(experiment_types.values())
 
+  # TODO: Add multicell support.
   if len(experiment_types) != 1:
     raise ValueError(
         'We currently only support studies with a single experiment type.'
@@ -352,5 +357,348 @@ def analyze(
 
 
 def plot_analysis(analysis_result: api.AnalysisResult):
-  """Visualizes an analysis result."""
-  raise NotImplementedError
+  """Visualizes the 4-plot suite with divided timelines."""
+  sns.set_style('whitegrid')
+  start_dt = analysis_result.analysis_config.analysis_start_date
+  test_type = analysis_result.analysis_config.test_type
+  has_icpd = any(
+      m.cumulative_icpd is not None for m in analysis_result.results.values()
+  )
+  n_rows = 3 + has_icpd
+
+  _, axes = plt.subplots(
+      n_rows,
+      1,
+      figsize=(15, 7 * n_rows),
+      squeeze=False,
+      constrained_layout=True,
+      gridspec_kw={'hspace': 0.3},
+  )
+
+  cells = sorted(analysis_result.results.keys())
+  blues = sns.color_palette('Blues_d', len(cells))
+  greens = sns.color_palette('Greens_d', len(cells))
+  oranges = sns.color_palette('Oranges_d', len(cells))
+
+  # 1. Initialize global min/max for Y-axis scaling across all cells.
+  global_min_cf, global_max_cf = np.inf, -np.inf
+  global_min_pw, global_max_pw = np.inf, -np.inf
+  global_min_l, global_max_l = np.inf, -np.inf
+  global_min_i, global_max_i = np.inf, -np.inf
+
+  # 2. First Pass: Collect all finite values to determine global y-limits.
+  for cell_id in cells:
+    metrics = analysis_result.results[cell_id]
+    start_dt = analysis_result.analysis_config.analysis_start_date
+
+    # Observed vs. Counterfactual
+    df_cf = metrics.counterfactual_conversions
+    df_cf_test = df_cf[df_cf.index >= start_dt].copy()
+    low_cf = df_cf_test['lower_bound']
+    high_cf = df_cf_test['upper_bound']
+    valid_obs = df_cf['observed'][np.isfinite(df_cf['observed'])]
+    valid_cf = df_cf['counterfactual'][np.isfinite(df_cf['counterfactual'])]
+    valid_low_cf = low_cf[np.isfinite(low_cf)]
+    valid_high_cf = high_cf[np.isfinite(high_cf)]
+    all_finite_cf = pd.concat(
+        [valid_obs, valid_cf, valid_low_cf, valid_high_cf]
+    )
+    if not all_finite_cf.empty:
+      global_min_cf = min(global_min_cf, all_finite_cf.min())
+      global_max_cf = max(global_max_cf, all_finite_cf.max())
+
+    # Pointwise Differences
+    df_pw = metrics.pointwise_difference
+    df_pw_test = df_pw[df_pw.index >= start_dt].copy()
+    low_pw = df_pw_test['lower_bound']
+    high_pw = df_pw_test['upper_bound']
+    valid_diff = df_pw['difference'][np.isfinite(df_pw['difference'])]
+    valid_low_pw = low_pw[np.isfinite(low_pw)]
+    valid_high_pw = high_pw[np.isfinite(high_pw)]
+    all_finite_pw = pd.concat([valid_diff, valid_low_pw, valid_high_pw])
+    if not all_finite_pw.empty:
+      global_min_pw = min(global_min_pw, all_finite_pw.min())
+      global_max_pw = max(global_max_pw, all_finite_pw.max())
+
+    # Cumulative Lift
+    df_l_test = metrics.cumulative_lift[
+        metrics.cumulative_lift.index >= start_dt
+    ]
+    low_l = df_l_test['lower_bound']
+    high_l = df_l_test['upper_bound']
+    valid_lift = df_l_test['lift'][np.isfinite(df_l_test['lift'])]
+    valid_low_l = low_l[np.isfinite(low_l)]
+    valid_high_l = high_l[np.isfinite(high_l)]
+    all_finite_l = pd.concat([valid_lift, valid_low_l, valid_high_l])
+    if not all_finite_l.empty:
+      global_min_l = min(global_min_l, all_finite_l.min())
+      global_max_l = max(global_max_l, all_finite_l.max())
+
+    # Cumulative iCPD
+    if has_icpd and metrics.cumulative_icpd is not None:
+      df_i_test = metrics.cumulative_icpd[
+          metrics.cumulative_icpd.index >= start_dt
+      ]
+      low_i = df_i_test['lower_bound']
+      high_i = df_i_test['upper_bound']
+      valid_icpd = df_i_test['icpd'][np.isfinite(df_i_test['icpd'])]
+      valid_low_i = low_i[np.isfinite(low_i)]
+      valid_high_i = high_i[np.isfinite(high_i)]
+      all_finite_vals = pd.concat([valid_icpd, valid_low_i, valid_high_i])
+      if not all_finite_vals.empty:
+        global_min_i = min(global_min_i, all_finite_vals.min())
+        global_max_i = max(global_max_i, all_finite_vals.max())
+
+  # 3. Calculate and Set Global Y-limits.
+  def calculate_ylim(global_min, global_max):
+    if global_min == np.inf:  # No finite data found
+      return 0, 1, 0.15
+    y_range = global_max - global_min
+    buffer = max(1, y_range * 0.15)
+    y_min_final = global_min - buffer
+    y_max_final = global_max + buffer
+    return y_min_final, y_max_final, buffer
+
+  y_min_cf_final, y_max_cf_final, buffer_cf = calculate_ylim(
+      global_min_cf, global_max_cf
+  )
+  axes[0, 0].set_ylim(y_min_cf_final, y_max_cf_final)
+
+  y_min_pw_final, y_max_pw_final, buffer_pw = calculate_ylim(
+      global_min_pw, global_max_pw
+  )
+  axes[1, 0].set_ylim(y_min_pw_final, y_max_pw_final)
+
+  y_min_l_final, y_max_l_final, buffer_l = calculate_ylim(
+      global_min_l, global_max_l
+  )
+  axes[2, 0].set_ylim(y_min_l_final, y_max_l_final)
+
+  y_min_i_final, y_max_i_final, buffer_i = None, None, None
+  if has_icpd:
+    y_min_i_final, y_max_i_final, buffer_i = calculate_ylim(
+        global_min_i, global_max_i
+    )
+    axes[3, 0].set_ylim(y_min_i_final, y_max_i_final)
+
+  # 4. Second Pass: Plot all lines and fill_between areas.
+  for i, cell_id in enumerate(cells):
+    metrics = analysis_result.results[cell_id]
+    color_b, color_g, color_o = blues[i], greens[i], oranges[i]
+    start_dt = analysis_result.analysis_config.analysis_start_date
+
+    # --- Plot 1: Observed vs. Counterfactual (Full Timeline) ---
+    ax_diag = axes[0, 0]
+    df_cf = metrics.counterfactual_conversions
+    ax_diag.plot(
+        df_cf.index,
+        df_cf['observed'],
+        label=f'Observed conversions of {cell_id}',
+        color=color_b,
+        linewidth=2.5,
+    )
+    ax_diag.plot(
+        df_cf.index,
+        df_cf['counterfactual'],
+        label=f'Counterfactual conversions of {cell_id}',
+        color=color_g,
+        linewidth=2.5,
+    )
+    df_cf_test = df_cf[df_cf.index >= start_dt].copy()
+    low_cf = df_cf_test['lower_bound']
+    high_cf = df_cf_test['upper_bound']
+
+    if test_type == api.TestType.ONE_SIDED:
+      cap_upper_cf = y_max_cf_final + buffer_cf
+      cap_lower_cf = y_min_cf_final - buffer_cf
+      temp_high_cf = np.where(high_cf == np.inf, cap_upper_cf, high_cf)
+      temp_low_cf = np.where(low_cf == -np.inf, cap_lower_cf, low_cf)
+      ax_diag.fill_between(
+          df_cf_test.index,
+          temp_low_cf,
+          temp_high_cf,
+          where=(temp_low_cf <= temp_high_cf),
+          alpha=0.25,
+          color=color_g,
+          label=(
+              f'Confidence interval on counterfactual conversions of {cell_id}'
+          ),
+      )
+    else:
+      ax_diag.fill_between(
+          df_cf_test.index,
+          low_cf,
+          high_cf,
+          where=(low_cf <= high_cf),
+          alpha=0.1,
+          color=color_g,
+          label=f'CI on Counterfactual conversions of {cell_id}',
+      )
+
+    # --- Plot 2: Pointwise Differences (Full Timeline) ---
+    ax_pw = axes[1, 0]
+    df_pw = metrics.pointwise_difference
+    ax_pw.plot(
+        df_pw.index,
+        df_pw['difference'],
+        label=f'Pointwise difference of {cell_id}',
+        color=color_o,
+        linewidth=2.5,
+    )
+    df_pw_test = df_pw[df_pw.index >= start_dt].copy()
+    low_pw = df_pw_test['lower_bound']
+    high_pw = df_pw_test['upper_bound']
+
+    if test_type == api.TestType.ONE_SIDED:
+      cap_upper_pw = y_max_pw_final + buffer_pw
+      cap_lower_pw = y_min_pw_final - buffer_pw
+      temp_high_pw = np.where(high_pw == np.inf, cap_upper_pw, high_pw)
+      temp_low_pw = np.where(low_pw == -np.inf, cap_lower_pw, low_pw)
+      ax_pw.fill_between(
+          df_pw_test.index,
+          temp_low_pw,
+          temp_high_pw,
+          where=(temp_low_pw <= temp_high_pw),
+          alpha=0.15,
+          color=color_o,
+          label=f'Confidence interval of {cell_id}',
+      )
+    else:
+      ax_pw.fill_between(
+          df_pw_test.index,
+          low_pw,
+          high_pw,
+          where=(low_pw <= high_pw),
+          alpha=0.15,
+          color=color_o,
+          label=f'Confidence interval of {cell_id}',
+      )
+
+    # --- Plot 3: Cumulative Lift (Test Period Only) ---
+    ax_l = axes[2, 0]
+    df_l_test = metrics.cumulative_lift[
+        metrics.cumulative_lift.index >= start_dt
+    ]
+    ax_l.plot(
+        df_l_test.index,
+        df_l_test['lift'],
+        label=f'Cumulative lift of {cell_id}',
+        color=color_b,
+        linewidth=2.5,
+    )
+    low_l = df_l_test['lower_bound']
+    high_l = df_l_test['upper_bound']
+
+    if test_type == api.TestType.ONE_SIDED:
+      cap_upper_l = y_max_l_final + buffer_l
+      cap_lower_l = y_min_l_final - buffer_l
+      temp_low_l = np.where(low_l == -np.inf, cap_lower_l, low_l)
+      temp_high_l = np.where(high_l == np.inf, cap_upper_l, high_l)
+      ax_l.fill_between(
+          df_l_test.index,
+          temp_low_l,
+          temp_high_l,
+          where=(temp_low_l <= temp_high_l),
+          alpha=0.15,
+          color=color_b,
+          label=f'Confidence interval of {cell_id}',
+      )
+    else:  # TWO_SIDED
+      ax_l.fill_between(
+          df_l_test.index,
+          low_l,
+          high_l,
+          where=(low_l <= high_l),
+          alpha=0.15,
+          color=color_b,
+          label=f'Confidence interval of {cell_id}',
+      )
+
+    # --- Plot 4: Cumulative iCPD (Test Period Only) ---
+    if has_icpd and metrics.cumulative_icpd is not None:
+      ax_i = axes[3, 0]
+      df_i_test = metrics.cumulative_icpd[
+          metrics.cumulative_icpd.index >= start_dt
+      ]
+      ax_i.plot(
+          df_i_test.index,
+          df_i_test['icpd'],
+          label=f'Cumulative iCPD of {cell_id}',
+          color=color_b,
+          linewidth=2.5,
+      )
+      low_i = df_i_test['lower_bound']
+      high_i = df_i_test['upper_bound']
+
+      if test_type == api.TestType.ONE_SIDED:
+        cap_lower_i = y_min_i_final - buffer_i
+        cap_upper_i = y_max_i_final + buffer_i
+        temp_low_i = np.where(low_i == -np.inf, cap_lower_i, low_i)
+        temp_high_i = np.where(high_i == np.inf, cap_upper_i, high_i)
+        ax_i.fill_between(
+            df_i_test.index,
+            temp_low_i,
+            temp_high_i,
+            where=(temp_low_i <= temp_high_i),
+            alpha=0.15,
+            color=color_b,
+            label=f'Confidence interval of {cell_id}',
+        )
+      else:  # TWO_SIDED
+        ax_i.fill_between(
+            df_i_test.index,
+            low_i,
+            high_i,
+            where=(low_i <= high_i),
+            alpha=0.15,
+            color=color_b,
+            label=f'Confidence interval of {cell_id}',
+        )
+
+  # Final Layout Formatting with Divider
+  for ax in axes.flatten():
+    ax.axvline(
+        start_dt,
+        color='grey',
+        linestyle='--',
+        linewidth=1.5,
+        alpha=0.8,
+        label='Test start date',
+    )  # Period Divider
+    # Deduplicate labels in the legend
+    handles, labels = ax.get_legend_handles_labels()
+    unique_labels = {}
+    for handle, label in zip(handles, labels):
+      unique_labels[label] = handle
+    ax.legend(
+        unique_labels.values(),
+        unique_labels.keys(),
+        bbox_to_anchor=(1.02, 1),
+        loc='upper left',
+        frameon=False,
+    )
+    ax.grid(
+        True,
+        which='major',
+        axis='both',
+        linestyle=':',
+        alpha=0.6,
+        linewidth=0.8,
+    )
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=7, prune='both'))
+
+    # Set Ordered Titles and Labels
+    axes[0, 0].set_title(
+        'Observed vs. Counterfactual total conversions', fontsize=14
+    )
+    axes[0, 0].set_ylabel('Total conversions')
+    axes[1, 0].set_title('Pointwise differences time series', fontsize=14)
+    axes[1, 0].set_ylabel('Pointwise differences')
+    axes[2, 0].set_title('Cumulative lift time series', fontsize=14)
+    axes[2, 0].set_ylabel('Cumulative incremental conversions')
+    if has_icpd:
+      axes[3, 0].set_title('Cumulative iCPD time series', fontsize=14)
+      axes[3, 0].set_ylabel('Cumulative iCPD')
+
+  plt.show()

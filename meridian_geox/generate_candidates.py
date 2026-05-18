@@ -202,19 +202,13 @@ def get_stratified_geo_sequence(
   return jnp.take(geos_by_cluster_ordering, inverse_clusters_lex_sort_indices)
 
 
-def compute_mask_maximizing_conversions(
+def get_treatment_geos_for_one_cell_greedy(
     geos: np.ndarray,
     geo_strata: np.ndarray,
     geo_conversions: np.ndarray,
-    max_conversions: float,
+    max_conversions_per_cell: float,
 ):
-  """Generates a boolean mask of treatment geos maximizing conversions.
-
-  Goes from left to right, adding geos to treatment. It follows two rules: it
-  adds geos from strata in the order specified by geo_strata, and it maximizes
-  the conversions while staying under max_conversions. The sequential nature of
-  this algorithm
-  requires us to use standard numpy instead of JAX.
+  """Generates a list of treatment geos for one cell greedily.
 
   Args:
     geos: A sequence of geos of shape (n_geos,).
@@ -222,11 +216,11 @@ def compute_mask_maximizing_conversions(
       the stratum label of geos[i].
     geo_conversions: An array representing the conversions of each geo.
       geo_conversions[i] is the conversions of geo i.
-    max_conversions: A float representing the max treatment conversions.
+    max_conversions_per_cell: A float representing the max treatment
+      conversions.
 
   Returns:
-    An integer mask of treatment geos of shape (n_geos,). The value at index i
-    is 1 if geo i is a treatment geo, and 0 otherwise.
+    A list of treatment geos.
   """
   geo_sorted_conversions = np.take(geo_conversions, geos)
   treatment_geos = []
@@ -240,7 +234,7 @@ def compute_mask_maximizing_conversions(
     added_conversions = geo_sorted_conversions[geo_conversion_index]
     if (
         geo_strata[geo_conversion_index] == required_cluster
-        and conversions + added_conversions <= max_conversions
+        and conversions + added_conversions <= max_conversions_per_cell
     ):
       treatment_geos.append(geos[geo_conversion_index])
       conversions += added_conversions
@@ -249,8 +243,52 @@ def compute_mask_maximizing_conversions(
     else:
       geo_conversion_index += 1
 
+  return treatment_geos
+
+
+def compute_mask_maximizing_conversions(
+    geos: np.ndarray,
+    geo_strata: np.ndarray,
+    geo_conversions: np.ndarray,
+    max_conversions_per_cell: float,
+    num_cells: int = 1,
+):
+  """Generates a multicell mask of treatment geos maximizing conversions.
+
+  The function splits geos and geo_strata into num_cells sub-sequences, and
+  then applies a greedy algorithm for each sub-sequence. It follows two rules:
+  it adds geos from strata in the order specified by geo_strata, and it
+  maximizes the conversions while staying under max_conversions_per_cell. The
+  sequential nature of this algorithm requires us to use standard numpy instead
+  of JAX.
+
+  Args:
+    geos: A sequence of geos of shape (n_geos,).
+    geo_strata: A sequence of geo strata of shape (n_geos,). geo_strata[i] is
+      the stratum label of geos[i].
+    geo_conversions: An array representing the conversions of each geo.
+      geo_conversions[i] is the conversions of geo i.
+    max_conversions_per_cell: A float representing the max treatment
+      conversions.
+    num_cells: The number of treatment cells to generate.
+
+  Returns:
+    An integer mask of treatment geos of shape (n_geos,). The value at index i
+    is 1 if geo i is a treatment geo, and 0 otherwise.
+  """
   mask = np.full(len(geos), 0)
-  mask[treatment_geos] = 1
+
+  n_geos = len(geos)
+  for i in range(1, num_cells + 1):
+    lb, ub = (i - 1) * n_geos // num_cells, i * n_geos // num_cells
+    treatment_geos = get_treatment_geos_for_one_cell_greedy(
+        geos[lb:ub],
+        geo_strata[lb:ub],
+        geo_conversions,
+        max_conversions_per_cell,
+    )
+    mask[treatment_geos] = i
+
   return mask.astype(jnp.int32)
 
 
@@ -338,14 +376,16 @@ def get_unconstrained_stratified_sampling_candidates(
 
   get_geo_masks = np.vectorize(
       compute_mask_maximizing_conversions,
-      excluded={'geo_conversions', 'max_conversions'},
+      excluded={'geo_conversions', 'max_conversions_per_cell', 'num_cells'},
       signature='(n),(n)->(n)',
   )
+
   return get_geo_masks(
       geos=np.array(stratified_random_geos),
       geo_strata=np.array(stratified_random_geos_strata),
       geo_conversions=np.array(geo_conversions),
-      max_conversions=max_conversions,
+      max_conversions_per_cell=max_conversions / design_config.cell_count,
+      num_cells=design_config.cell_count,
   )
 
 

@@ -20,15 +20,17 @@ import pandera.pandas as pa
 
 
 def is_go_dark_or_heavy_up(
-    experiment_types: api.ExperimentType | list[api.ExperimentType],
+    experiment_types: api.ExperimentType | dict[str, api.ExperimentType],
 ) -> bool:
   """Checks if the experiment is go dark or heavy up."""
   # TODO: Add multicell support.
-  if not isinstance(experiment_types, list):
-    experiment_types = [experiment_types]
+  if isinstance(experiment_types, dict):
+    experiment_types_list = list(experiment_types.values())
+  else:
+    experiment_types_list = [experiment_types]
   return any(
       et in (api.ExperimentType.GO_DARK, api.ExperimentType.HEAVY_UP)
-      for et in experiment_types
+      for et in experiment_types_list
   )
 
 
@@ -99,8 +101,8 @@ def validate_design_input(
     errors.append('Power must be between 0 and 1.')
 
   # Check that CPIC is set for HOLDBACK experiments.
-  if isinstance(design_config.experiment_types, list):
-    experiment_types = design_config.experiment_types
+  if isinstance(design_config.experiment_types, dict):
+    experiment_types = list(design_config.experiment_types.values())
   else:
     experiment_types = [design_config.experiment_types]
   if (

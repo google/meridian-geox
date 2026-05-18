@@ -16,11 +16,15 @@
 
 import dataclasses
 import logging
+import re
 from typing import Any, Callable, Optional
 import uuid
 
 import jax
 import jax.numpy as jnp
+from matplotlib import ticker
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
 from meridian_geox import api
 from meridian_geox import generate_candidates
 from meridian_geox import util
@@ -29,6 +33,7 @@ from meridian_geox.methodology import tbr
 import numpy as np
 import pandas as pd
 from scipy import stats
+import seaborn as sns
 
 
 @dataclasses.dataclass
@@ -43,15 +48,33 @@ class ProcessedData:
   training_period: list[api.Timestamp]
   # Filtered data used for design.
   filtered_data: pd.DataFrame
-  # Spend data for slope check.
-  selection_train_spend: Optional[api.JnpArray] = None
-  # Evaluation spend data for budget calculation.
-  estimation_eval_spend: Optional[api.JnpArray] = None
+  # Spend data for slope check, keyed by cell name.
+  selection_train_spend: dict[str, api.JnpArray] = dataclasses.field(
+      default_factory=dict
+  )
+  # Evaluation spend data for budget calculation, keyed by cell name.
+  estimation_eval_spend: dict[str, api.JnpArray] = dataclasses.field(
+      default_factory=dict
+  )
 
 
 @dataclasses.dataclass
 class ScoredCandidates:
-  """Scored candidates for experiment design."""
+  """Scored candidates for experiment design.
+
+  Attributes:
+    candidates: (n_candidates, geos) Geo assignment for each candidate.
+    mde_abs: (n_candidates, k_cells) Absolute MDE for each candidate.
+    mde_pct: (n_candidates, k_cells) Relative MDE (percentage) for each
+      candidate.
+    p_values: (n_candidates, k_cells) The AA p-value for each candidate.
+    r2_scores: (n_candidates, k_cells) The out of sample R2 score for each
+      candidate.
+    observed_conversions: (n_candidates, k_cells, n_dates) Observed conversions
+      for each candidate.
+    counterfactual_conversions: (n_candidates, k_cells, n_dates) Counterfactual
+      conversions for each candidate.
+  """
 
   candidates: jnp.ndarray
   mde_abs: jnp.ndarray
@@ -94,14 +117,23 @@ def prepare_data(
 
   estimation_train_data = pivoted_data.iloc[:t2_start_idx]
 
-  selection_train_spend = None
-  estimation_eval_spend = None
+  selection_train_spend = {}
+  estimation_eval_spend = {}
   if api.SPEND in data.columns:
     pivoted_spend = util.pivot_and_sort_data(data, api.SPEND)
     t0_spend = pivoted_spend.iloc[:t1_start_idx]
     t2_spend = pivoted_spend.iloc[t2_start_idx:]
-    selection_train_spend = jnp.array(t0_spend.values)
-    estimation_eval_spend = jnp.array(t2_spend.values)
+    selection_train_spend[api.CELL_1] = jnp.array(t0_spend.values)
+    estimation_eval_spend[api.CELL_1] = jnp.array(t2_spend.values)
+  elif any(re.match(api.MULTICELL_SPEND_REGEX, col) for col in data.columns):
+    for col in data.columns:
+      if re.match(api.MULTICELL_SPEND_REGEX, col):
+        cell_name = col[6:]  # Removes "spend_" prefix.
+        pivoted_spend = util.pivot_and_sort_data(data, col)
+        t0_spend = pivoted_spend.iloc[:t1_start_idx]
+        t2_spend = pivoted_spend.iloc[t2_start_idx:]
+        selection_train_spend[cell_name] = jnp.array(t0_spend.values)
+        estimation_eval_spend[cell_name] = jnp.array(t2_spend.values)
 
   return ProcessedData(
       selection_train=jnp.array(t0_data.values),
@@ -133,6 +165,10 @@ def _get_params_for_mde_calculation(
 ) -> MdeParams:
   """Prepares parameters for MDE calculation."""
   # 1. Select top candidates based on out of sample R2.
+
+  # For multicell, we select the minimum R2 score across cells for each
+  # candidate.
+  r2_scores = jnp.min(r2_scores, axis=1)
   sorted_indices = jnp.argsort(r2_scores)[::-1]
   n_top = min(design_config.n_ranked_candidates, len(r2_scores))
   top_indices = sorted_indices[:n_top]
@@ -163,7 +199,9 @@ def _filter_results_by_aa_test(
     design_config: api.DesignConfig,
 ) -> ScoredCandidates:
   """Filters designs based on AA test results."""
-  is_valid_aa = scored_candidates.p_values >= design_config.alpha
+  is_valid_aa = (
+      jnp.min(scored_candidates.p_values, axis=1) >= design_config.alpha
+  )
 
   n_passing = int(jnp.sum(is_valid_aa))
 
@@ -203,19 +241,23 @@ def _get_design_summary(
   metrics_list = []
 
   # Convert JAX arrays to NumPy.
+  # TODO: Remove squeeze(axis=1) when updating _get_design_summary
+  # to support multicell.
   top_candidates_np = np.array(scored_candidates.candidates)
-  mde_abs_np = np.array(scored_candidates.mde_abs)
-  mde_pct_np = np.array(scored_candidates.mde_pct)
-  p_values_np = np.array(scored_candidates.p_values)
-  r2_scores_np = np.array(scored_candidates.r2_scores)
-  observed_conversions_np = np.array(scored_candidates.observed_conversions)
+  mde_abs_np = np.array(scored_candidates.mde_abs.squeeze(axis=1))
+  mde_pct_np = np.array(scored_candidates.mde_pct.squeeze(axis=1))
+  p_values_np = np.array(scored_candidates.p_values.squeeze(axis=1))
+  r2_scores_np = np.array(scored_candidates.r2_scores.squeeze(axis=1))
+  observed_conversions_np = np.array(
+      scored_candidates.observed_conversions.squeeze(axis=1)
+  )
   counterfactual_conversions_np = np.array(
-      scored_candidates.counterfactual_conversions
+      scored_candidates.counterfactual_conversions.squeeze(axis=1)
   )
   estimation_eval_np = np.array(processed_data.estimation_eval)
   estimation_eval_spend_np = (
-      np.array(processed_data.estimation_eval_spend)
-      if processed_data.estimation_eval_spend is not None
+      np.array(processed_data.estimation_eval_spend[api.CELL_1])
+      if api.CELL_1 in processed_data.estimation_eval_spend
       else None
   )
 
@@ -226,6 +268,28 @@ def _get_design_summary(
   # Get full dates for plotting.
   pivoted_data = util.pivot_and_sort_data(data, api.CONVERSIONS)
   full_dates = pivoted_data.index
+
+  # Extract scalars from potential maps for single-cell operations.
+  # TODO: Add support for multicell.
+  budget = constraints.budget
+  if isinstance(budget, dict):
+    budget = next(iter(budget.values())) if budget else None
+
+  budget_percent = constraints.budget_percent
+  if isinstance(budget_percent, dict):
+    budget_percent = (
+        next(iter(budget_percent.values())) if budget_percent else None
+    )
+
+  cost_per_incremental_conversion = (
+      design_config.cost_per_incremental_conversion
+  )
+  if isinstance(cost_per_incremental_conversion, dict):
+    cost_per_incremental_conversion = (
+        next(iter(cost_per_incremental_conversion.values()))
+        if cost_per_incremental_conversion
+        else None
+    )
 
   for i in range(len(top_candidates_np)):
     mask = top_candidates_np[i]
@@ -265,14 +329,14 @@ def _get_design_summary(
             'Setting budget to 0.'
         )
         required_budget = 0.0
-      elif constraints.budget is not None:
-        required_budget = constraints.budget
+      elif budget is not None:
+        required_budget = budget
       else:
         treatment_geo_cost = float(
             np.sum(estimation_eval_spend_np[:, all_treated_indices])
         )
-        if constraints.budget_percent is not None:
-          required_budget = treatment_geo_cost * constraints.budget_percent
+        if budget_percent is not None:
+          required_budget = treatment_geo_cost * budget_percent
         else:
           required_budget = treatment_geo_cost
     else:
@@ -282,15 +346,12 @@ def _get_design_summary(
       required_budget = (
           mde_pct_np[i]
           * treatment_conversion_volume
-          * design_config.cost_per_incremental_conversion
+          * cost_per_incremental_conversion
       )
-      if (
-          constraints.budget is not None
-          and constraints.budget < required_budget
-      ):
+      if budget is not None and budget < required_budget:
         logging.warning(
             'Budget input (%.2f) is less than required budget (%.2f).',
-            constraints.budget,
+            budget,
             required_budget,
         )
 
@@ -307,7 +368,7 @@ def _get_design_summary(
           p_value=float(p_values_np[i]),
           budget=float(required_budget),
           counterfactual_conversions=pd.DataFrame({
-              'date': full_dates,
+              'index': full_dates,
               'observed': observed_conversions_np[i],
               'counterfactual': counterfactual_conversions_np[i],
           }),
@@ -398,7 +459,9 @@ def run_design(
         constraints=constraints,
         key=candidates_key,
         selection_train=processed_data.selection_train,
-        selection_train_spend=processed_data.selection_train_spend,
+        selection_train_spend=processed_data.selection_train_spend.get(
+            api.CELL_1
+        ),
     )
   elif (
       design_config.geo_assignment_rule
@@ -418,7 +481,9 @@ def run_design(
             constraints=constraints,
             geo_stratum_labels=geo_stratum_labels,
             key=sampling_key,
-            selection_train_spend=processed_data.selection_train_spend,
+            selection_train_spend=processed_data.selection_train_spend.get(
+                api.CELL_1
+            ),
         )
     )
   else:
@@ -429,10 +494,14 @@ def run_design(
   # 3. Fast score based on out of sample R2 and select top X candidates for full
   # scoring.
   if design_config.methodology == api.Methodology.TBR:
+    treatment_cell_labels = jnp.arange(1, design_config.cell_count + 1).astype(
+        jnp.float32
+    )
     r2_scores: jnp.ndarray = tbr.get_r2(
         processed_data.selection_train,
         processed_data.selection_eval,
         candidates,
+        treatment_cell_labels,
     )
   else:
     raise ValueError(f'Unsupported methodology: {design_config.methodology}')
@@ -534,6 +603,54 @@ def concat_design_reports(
   )
 
 
-def plot_design(data: pd.DataFrame, design_to_plot: api.Design):
-  """Visualizes a design."""
-  raise NotImplementedError
+def plot_design(design_to_plot: api.Design):
+  """Visualizes pre-test alignment for all cells in a single shared plot."""
+  sns.set_style('ticks')
+  plt.figure(figsize=(15, 7))
+  ax = plt.gca()
+
+  cells = sorted(design_to_plot.designs.keys())
+  # Using sequential palettes to distinguish multiple cells clearly
+  blues = sns.color_palette('Blues_d', len(cells))
+  greens = sns.color_palette('Greens_d', len(cells))
+
+  for i, cell_id in enumerate(cells):
+    cell_design = design_to_plot.designs[cell_id]
+    df = cell_design.counterfactual_conversions
+    if df is None or df.empty:
+      continue
+
+    # Plot Observed
+    ax.plot(
+        df['index'],
+        df['observed'],
+        label=f'Observed conversions of {cell_id}',
+        color=blues[i],
+        linewidth=2.5,
+    )
+
+    # Plot Counterfactual
+    ax.plot(
+        df['index'],
+        df['counterfactual'],
+        label=f'Counterfactual conversions of {cell_id}',
+        color=greens[i],
+        linestyle='-',
+        linewidth=2.5,
+        alpha=0.8,
+    )
+
+  ax.grid(
+      True, which='major', axis='both', linestyle=':', alpha=0.6, linewidth=0.8
+  )
+  ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+  ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=7, prune='both'))
+
+  ax.set_title(
+      'Observed vs Counterfactual total conversions',
+      fontsize=14,
+      fontweight='bold',
+  )
+  ax.set_ylabel('Total conversions')
+  ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
+  plt.show()
