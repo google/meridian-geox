@@ -18,11 +18,13 @@ keywords = []
 dependencies = [
     "jax",
     "jaxkd",
+    "matplotlib",
     "numpy",
     "pandas",
     "pandera",
     "pydantic>=2.0",
     "scipy",
+    "seaborn",
     "statsmodels",
     "tslearn",
 ]
