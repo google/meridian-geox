@@ -57,7 +57,6 @@ class AnalysisTest(parameterized.TestCase):
         excluded_geos={'G3'},
     )
     config = api.AnalysisConfig(
-        methodology=api.Methodology.TBR,
         design=design_obj,
         analysis_start_date=pd.Timestamp('2024-01-01'),
         analysis_end_date=pd.Timestamp('2024-01-05'),
@@ -76,7 +75,6 @@ class AnalysisTest(parameterized.TestCase):
   def test_get_time_series(self):
     data = self._create_sample_data(n_days=10, n_geos=2)
     config = api.AnalysisConfig(
-        methodology=api.Methodology.TBR,
         design=api.Design(designs={}, control_geos=set(), excluded_geos=set()),
         analysis_start_date=pd.Timestamp('2024-01-06'),
         analysis_end_date=pd.Timestamp('2024-01-08'),
@@ -94,7 +92,10 @@ class AnalysisTest(parameterized.TestCase):
 
   def test_prepare_design_config_overrides(self):
     design_config = api.DesignConfig(
-        experiment_duration=2, alpha=0.05, n_aa_test_iterations=100
+        experiment_duration=2,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        alpha=0.05,
+        n_aa_test_iterations=100,
     )
     design_obj = api.Design(
         designs={},
@@ -104,13 +105,12 @@ class AnalysisTest(parameterized.TestCase):
     )
     # Analysis config has no alpha/test_type, should be filled from design.
     config = api.AnalysisConfig(
-        methodology=api.Methodology.TBR,
         design=design_obj,
         analysis_start_date=pd.Timestamp('2024-01-01'),
         analysis_end_date=pd.Timestamp('2024-01-05'),
     )
 
-    prepared_config = analysis._prepare_design_config(config)
+    prepared_config = analysis._prepare_design_config(pd.DataFrame(), config)
 
     self.assertEqual(prepared_config.n_candidates, 100)
     self.assertEqual(config.alpha, 0.05)
@@ -172,6 +172,7 @@ class AnalysisTest(parameterized.TestCase):
 
     design_config = api.DesignConfig(
         experiment_duration=3,
+        experiment_types=api.ExperimentType.HOLDBACK,
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         seed=42,
         n_candidates=5,
@@ -195,7 +196,6 @@ class AnalysisTest(parameterized.TestCase):
     )
 
     config = api.AnalysisConfig(
-        methodology=api.Methodology.TBR,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-11'),
         analysis_end_date=pd.Timestamp('2024-01-15'),
@@ -207,7 +207,6 @@ class AnalysisTest(parameterized.TestCase):
 
     self.assertIsInstance(result, api.AnalysisResult)
     self.assertIs(result.analysis_config, config)
-    self.assertEqual(result.analysis_config.methodology, api.Methodology.TBR)
     self.assertEqual(
         result.analysis_config.analysis_start_date, pd.Timestamp('2024-01-11')
     )
@@ -229,6 +228,9 @@ class AnalysisTest(parameterized.TestCase):
     self.assertEqual(metrics.lift.lower_bound, metrics2.lift.lower_bound)
     self.assertEqual(metrics.lift.upper_bound, metrics2.lift.upper_bound)
     self.assertEqual(
+        metrics.lift.standard_deviation, metrics2.lift.standard_deviation
+    )
+    self.assertEqual(
         metrics.percent_lift.point_estimate,
         metrics2.percent_lift.point_estimate,
     )
@@ -237,6 +239,10 @@ class AnalysisTest(parameterized.TestCase):
     )
     self.assertEqual(
         metrics.percent_lift.upper_bound, metrics2.percent_lift.upper_bound
+    )
+    self.assertEqual(
+        metrics.percent_lift.standard_deviation,
+        metrics2.percent_lift.standard_deviation,
     )
 
     self.assertIsInstance(metrics, api.AnalysisMetrics)
@@ -270,6 +276,7 @@ class AnalysisTest(parameterized.TestCase):
 
     design_config = api.DesignConfig(
         experiment_duration=3,
+        experiment_types=api.ExperimentType.HOLDBACK,
         geo_assignment_rule=api.GeoAssignmentRule.STRATIFIED_SAMPLING,
         seed=42,
         n_candidates=5,
@@ -294,7 +301,6 @@ class AnalysisTest(parameterized.TestCase):
     )
 
     config = api.AnalysisConfig(
-        methodology=api.Methodology.TBR,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-11'),
         analysis_end_date=pd.Timestamp('2024-01-15'),
@@ -317,6 +323,9 @@ class AnalysisTest(parameterized.TestCase):
     self.assertEqual(metrics.lift.lower_bound, metrics2.lift.lower_bound)
     self.assertEqual(metrics.lift.upper_bound, metrics2.lift.upper_bound)
     self.assertEqual(
+        metrics.lift.standard_deviation, metrics2.lift.standard_deviation
+    )
+    self.assertEqual(
         metrics.percent_lift.point_estimate,
         metrics2.percent_lift.point_estimate,
     )
@@ -325,6 +334,10 @@ class AnalysisTest(parameterized.TestCase):
     )
     self.assertEqual(
         metrics.percent_lift.upper_bound, metrics2.percent_lift.upper_bound
+    )
+    self.assertEqual(
+        metrics.percent_lift.standard_deviation,
+        metrics2.percent_lift.standard_deviation,
     )
 
     self.assertAlmostEqual(metrics.lift.point_estimate, 0.0, places=1)
@@ -347,7 +360,12 @@ class AnalysisTest(parameterized.TestCase):
     self.assertLen(metrics.pointwise_difference, 15)
 
   def test_analyze_unsupported_methodology(self):
-    design_config = api.DesignConfig(experiment_duration=2)
+    # SDID is not supported yet.
+    design_config = api.DesignConfig(
+        experiment_duration=2,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        methodology=api.Methodology.SDID,
+    )
     study_design = api.Design(
         designs={
             '1': api.PerCellDesign(
@@ -362,9 +380,7 @@ class AnalysisTest(parameterized.TestCase):
         design_config=design_config,
         constraints=api.Constraints(),
     )
-    # SDID is not supported yet.
     config = api.AnalysisConfig(
-        methodology=api.Methodology.SDID,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-06'),
         analysis_end_date=pd.Timestamp('2024-01-10'),
@@ -372,8 +388,9 @@ class AnalysisTest(parameterized.TestCase):
         test_type=api.TestType.TWO_SIDED,
     )
 
+    data = self._create_sample_data(n_days=10, n_geos=2)
     with self.assertRaisesRegex(ValueError, 'Unsupported methodology'):
-      analysis.analyze(pd.DataFrame(), config)
+      analysis.analyze(data, config)
 
   def test_analyze_excluded_geos(self):
     # Setup with more geos to avoid "Not enough geos" error in placebo
@@ -382,6 +399,7 @@ class AnalysisTest(parameterized.TestCase):
 
     design_config = api.DesignConfig(
         experiment_duration=2,
+        experiment_types=api.ExperimentType.HOLDBACK,
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         seed=42,
         n_candidates=3,
@@ -408,7 +426,6 @@ class AnalysisTest(parameterized.TestCase):
     )
 
     config = api.AnalysisConfig(
-        methodology=api.Methodology.TBR,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-11'),
         analysis_end_date=pd.Timestamp('2024-01-15'),
@@ -451,11 +468,12 @@ class AnalysisTest(parameterized.TestCase):
         control_geos={'G2'},
         excluded_geos={'G3'},
         data=data,
-        design_config=api.DesignConfig(experiment_duration=1),
+        design_config=api.DesignConfig(
+            experiment_duration=1, experiment_types=api.ExperimentType.HOLDBACK
+        ),
     )
 
     config = api.AnalysisConfig(
-        methodology=api.Methodology.TBR,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-01'),
         analysis_end_date=pd.Timestamp('2024-01-05'),

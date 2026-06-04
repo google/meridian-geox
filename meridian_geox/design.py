@@ -241,59 +241,41 @@ def _get_design_summary(
   metrics_list = []
 
   # Convert JAX arrays to NumPy.
-  # TODO: Remove squeeze(axis=1) when updating _get_design_summary
-  # to support multicell.
   top_candidates_np = np.array(scored_candidates.candidates)
-  mde_abs_np = np.array(scored_candidates.mde_abs.squeeze(axis=1))
-  mde_pct_np = np.array(scored_candidates.mde_pct.squeeze(axis=1))
-  p_values_np = np.array(scored_candidates.p_values.squeeze(axis=1))
-  r2_scores_np = np.array(scored_candidates.r2_scores.squeeze(axis=1))
-  observed_conversions_np = np.array(
-      scored_candidates.observed_conversions.squeeze(axis=1)
-  )
+  mde_pct_np = np.array(scored_candidates.mde_pct)
+  p_values_np = np.array(scored_candidates.p_values)
+  r2_scores_np = np.array(scored_candidates.r2_scores)
+  observed_conversions_np = np.array(scored_candidates.observed_conversions)
   counterfactual_conversions_np = np.array(
-      scored_candidates.counterfactual_conversions.squeeze(axis=1)
+      scored_candidates.counterfactual_conversions
   )
   estimation_eval_np = np.array(processed_data.estimation_eval)
-  estimation_eval_spend_np = (
-      np.array(processed_data.estimation_eval_spend[api.CELL_1])
-      if api.CELL_1 in processed_data.estimation_eval_spend
-      else None
-  )
-
-  is_go_dark_or_heavy_up = util.is_go_dark_or_heavy_up(
-      design_config.experiment_types
-  )
+  estimation_eval_spend_np_dict = {
+      cell: np.array(spend)
+      for cell, spend in processed_data.estimation_eval_spend.items()
+  }
 
   # Get full dates for plotting.
   pivoted_data = util.pivot_and_sort_data(data, api.CONVERSIONS)
   full_dates = pivoted_data.index
 
-  # Extract scalars from potential maps for single-cell operations.
-  # TODO: Add support for multicell.
-  budget = constraints.budget
-  if isinstance(budget, dict):
-    budget = next(iter(budget.values())) if budget else None
-
-  budget_percent = constraints.budget_percent
-  if isinstance(budget_percent, dict):
-    budget_percent = (
-        next(iter(budget_percent.values())) if budget_percent else None
-    )
-
-  cost_per_incremental_conversion = (
-      design_config.cost_per_incremental_conversion
+  # Rely on centralized normalization performed at the start of run_design.
+  # We use type hints to satisfy Pytype since they were normalized earlier in
+  # DesignConfig validation or Constraints.normalize().
+  experiment_types: dict[str, api.ExperimentType] = (
+      design_config.experiment_types  # type: ignore
   )
-  if isinstance(cost_per_incremental_conversion, dict):
-    cost_per_incremental_conversion = (
-        next(iter(cost_per_incremental_conversion.values()))
-        if cost_per_incremental_conversion
-        else None
-    )
+  budgets: dict[str, float] = constraints.budget or {}  # type: ignore
+  budget_percents: dict[str, float] = constraints.budget_percent or {}  # type: ignore
+  cpics: dict[str, float] = (
+      design_config.cost_per_incremental_conversion  # type: ignore
+  )
 
   for i in range(len(top_candidates_np)):
+    design_id = str(uuid.uuid4())
+    cell_designs = {}
+
     mask = top_candidates_np[i]
-    treatment_geos_dict = {}
     control_geos = set()
 
     # Identify control geos (mask == 0).
@@ -301,78 +283,92 @@ def _get_design_summary(
     for idx in control_indices:
       control_geos.add(geos[idx])
 
-    # Identify treatment geos for each cell.
-    for cell_id in range(1, design_config.cell_count + 1):
-      cell_indices = np.where(mask == cell_id)[0]
-      treatment_geos_dict[f'cell_{cell_id}'] = {
-          geos[idx] for idx in cell_indices
-      }
+    for cell_name, experiment_type in experiment_types.items():
+      # Treatment cells are indexed starting from 1, so we need to subtract 1
+      # to get the correct index for the metrics array.
+      metrics_cell_index = util.cell_id_from_cell_name(cell_name) - 1
+      treatment_indices = np.where(
+          mask == util.cell_id_from_cell_name(cell_name)
+      )[0]
+      treatment_geos = {geos[idx] for idx in treatment_indices}
 
-    # Identify all treated units (mask > 0).
-    all_treated_indices = np.where(mask > 0)[0]
+      treatment_conversion_volume = float(
+          np.sum(estimation_eval_np[:, treatment_indices])
+      )
+      mde_pct = float(mde_pct_np[i][metrics_cell_index])
+      total_mde_abs = mde_pct * treatment_conversion_volume
 
-    # Calculate budget.
-    # 1. For GO_DARK and HEAVY_UP:
-    #    - If constraints.budget is set, use it.
-    #    - If constraints.budget_percent is set, use
-    #      treatment_geo_cost * budget_percent.
-    #    - Otherwise, use treatment_geo_cost.
-    #    - Defaults to 0 if spend data is missing.
-    # 2. For HOLDBACK:
-    #    - Use MDE * treatment_conversion_volume * CPIC.
-    # TODO: Add output estimated cpic for go dark and heavy up
-    # studies.
-    if is_go_dark_or_heavy_up:
-      if estimation_eval_spend_np is None:
-        logging.warning(
-            'Spend data missing for GO_DARK or HEAVY_UP experiment. '
-            'Setting budget to 0.'
-        )
-        required_budget = 0.0
-      elif budget is not None:
-        required_budget = budget
-      else:
-        treatment_geo_cost = float(
-            np.sum(estimation_eval_spend_np[:, all_treated_indices])
-        )
-        if budget_percent is not None:
-          required_budget = treatment_geo_cost * budget_percent
+      # Calculate budget.
+      # 1. For GO_DARK and HEAVY_UP:
+      #    - If constraints.budget_percent is set, use
+      #      treatment_geo_cost * budget_percent.
+      #    - Otherwise, use treatment_geo_cost.
+      #    - Defaults to 0 if spend data is missing.
+      # 2. For HOLDBACK:
+      #    - Use MDE * treatment_conversion_volume * CPIC.
+      # TODO: Add output estimated cpic for go dark and heavy up
+      # studies.
+      budget = budgets.get(cell_name)
+      if util.is_go_dark_or_heavy_up(experiment_type):
+        estimation_eval_spend_np = estimation_eval_spend_np_dict.get(cell_name)
+        budget_percent = budget_percents.get(cell_name)
+        if estimation_eval_spend_np is None:
+          logging.warning(
+              'Spend data missing for GO_DARK or HEAVY_UP experiment. '
+              'Setting budget to 0.'
+          )
+          required_budget = 0.0
         else:
-          required_budget = treatment_geo_cost
-    else:
-      treatment_conversion_volume = np.sum(
-          estimation_eval_np[:, all_treated_indices]
-      )
-      required_budget = (
-          mde_pct_np[i]
-          * treatment_conversion_volume
-          * cost_per_incremental_conversion
-      )
-      if budget is not None and budget < required_budget:
-        logging.warning(
-            'Budget input (%.2f) is less than required budget (%.2f).',
-            budget,
-            required_budget,
-        )
+          treatment_geo_cost = float(
+              np.sum(estimation_eval_spend_np[:, treatment_indices])
+          )
+          if budget_percent is not None:
+            required_budget = treatment_geo_cost * budget_percent
+          else:
+            logging.warning(
+                '%s budget_percent is not provided for this cell, '
+                'assuming the budget_percent change is 100%%',
+                cell_name,
+            )
+            required_budget = treatment_geo_cost
+      else:
+        # cpic is guaranteed to be set for HOLDBACK cells by validation.
+        cpic = cpics[cell_name]
+        required_budget = total_mde_abs * cpic
+        if budget is not None and budget < required_budget:
+          logging.warning(
+              'Budget input (%.2f) is less than required budget (%.2f).',
+              budget,
+              required_budget,
+          )
 
-    design_id = str(uuid.uuid4())
-
-    # TODO: Add multicell support for metrics.
-    # Currently only a single metric is calculated for the whole design.
-    # We assign this metric to all cells for now.
-    cell_designs = {}
-    for cell_name, treatment_geos in treatment_geos_dict.items():
       cell_designs[cell_name] = api.PerCellDesign(
           treatment_geos=treatment_geos,
-          minimum_detectable_effect=float(mde_pct_np[i]),
-          p_value=float(p_values_np[i]),
+          minimum_detectable_effect=mde_pct,
+          p_value=float(p_values_np[i][metrics_cell_index]),
           budget=float(required_budget),
           counterfactual_conversions=pd.DataFrame({
               'index': full_dates,
-              'observed': observed_conversions_np[i],
-              'counterfactual': counterfactual_conversions_np[i],
+              'observed': observed_conversions_np[i][metrics_cell_index],
+              'counterfactual': counterfactual_conversions_np[i][
+                  metrics_cell_index
+              ],
           }),
       )
+
+      metrics_list.append({
+          'design_id': design_id,
+          'cell': cell_name,
+          'design_methodology': (
+              f'{design_config.geo_assignment_rule.name}-'
+              f'{design_config.methodology.name}'
+          ),
+          'r2': r2_scores_np[i][metrics_cell_index],
+          'mde_abs': total_mde_abs,
+          'mde_pct': mde_pct,
+          'p_value': p_values_np[i][metrics_cell_index],
+          'budget': required_budget,
+      })
 
     design_obj = api.Design(
         designs=cell_designs,
@@ -385,28 +381,24 @@ def _get_design_summary(
     )
     designs[design_id] = design_obj
 
-    metrics_list.append({
-        'design_id': design_id,
-        'cell_id': 'cell_1',
-        'design_methodology': (
-            f'{design_config.geo_assignment_rule.name}-'
-            f'{design_config.methodology.name}'
-        ),
-        'r2': r2_scores_np[i],
-        'mde_abs': mde_abs_np[i],
-        'mde_pct': mde_pct_np[i],
-        'p_value': p_values_np[i],
-        'budget': required_budget,
-    })
   design_metrics = pd.DataFrame(metrics_list)
 
   # TODO: Add more design metrics to rank the designs.
-  design_metrics = design_metrics.sort_values(by='mde_pct').head(
+  # Rank by max_mde_pct across cells.
+  max_mde_df = (
+      design_metrics.groupby('design_id')['mde_pct']
+      .max()
+      .reset_index(name='max_mde_pct')
+  )
+  top_design_ids = max_mde_df.sort_values(by='max_mde_pct').head(
       design_config.design_output_count
-  ).reset_index(drop=True)
-  designs = {
-      design_id: designs[design_id] for design_id in design_metrics['design_id']
-  }
+  )['design_id']
+  design_metrics = (
+      design_metrics[design_metrics['design_id'].isin(top_design_ids)]
+      .sort_values(by='mde_pct')
+      .reset_index(drop=True)
+  )
+  designs = {design_id: designs[design_id] for design_id in top_design_ids}
 
   # TODO: Populate design_data.
   design_data = pd.DataFrame()
@@ -435,6 +427,13 @@ def run_design(
 
   # TODO: Complete the design method following the steps below.
   # 1. Preprocess data.
+  # Normalization handles scalar-to-dict conversion in DesignConfig and
+  # Constraints.
+  experiment_types: dict[str, api.ExperimentType] = (
+      design_config.experiment_types  # type: ignore
+  )
+  constraints.normalize(experiment_types)
+
   error_messages: list[str] = util.validate_design_input(
       data, design_config, constraints
   )
@@ -459,9 +458,7 @@ def run_design(
         constraints=constraints,
         key=candidates_key,
         selection_train=processed_data.selection_train,
-        selection_train_spend=processed_data.selection_train_spend.get(
-            api.CELL_1
-        ),
+        selection_train_spend=processed_data.selection_train_spend,
     )
   elif (
       design_config.geo_assignment_rule
@@ -481,9 +478,7 @@ def run_design(
             constraints=constraints,
             geo_stratum_labels=geo_stratum_labels,
             key=sampling_key,
-            selection_train_spend=processed_data.selection_train_spend.get(
-                api.CELL_1
-            ),
+            selection_train_spend=processed_data.selection_train_spend,
         )
     )
   else:
@@ -493,15 +488,13 @@ def run_design(
 
   # 3. Fast score based on out of sample R2 and select top X candidates for full
   # scoring.
+  cell_ids = jnp.arange(1, design_config.cell_count + 1).astype(jnp.float32)
   if design_config.methodology == api.Methodology.TBR:
-    treatment_cell_labels = jnp.arange(1, design_config.cell_count + 1).astype(
-        jnp.float32
-    )
     r2_scores: jnp.ndarray = tbr.get_r2(
         processed_data.selection_train,
         processed_data.selection_eval,
         candidates,
-        treatment_cell_labels,
+        cell_ids,
     )
   else:
     raise ValueError(f'Unsupported methodology: {design_config.methodology}')
@@ -520,6 +513,7 @@ def run_design(
         design_config.n_aa_test_iterations,
         mde_params.z_score_sum,
         design_config.test_type,
+        cell_ids=cell_ids,
     )
   else:
     raise ValueError(f'Unsupported methodology: {design_config.methodology}')

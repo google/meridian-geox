@@ -153,6 +153,9 @@ def get_percent_lift(
   p_value = (1.0 + n_extreme) / (1.0 + n_placebo)
   estimate = jnp.exp(log_estimate) - 1.0
 
+  se_log = compute_se(log_rmse, t_placebo)
+  standard_deviation = jnp.exp(log_estimate) * se_log
+
   if experiment_type == api.ExperimentType.GO_DARK:
     estimate = -estimate
     lower_ci, upper_ci = -upper_ci, -lower_ci
@@ -161,7 +164,6 @@ def get_percent_lift(
       point_estimate=float(estimate),
       lower_bound=float(lower_ci),
       upper_bound=float(upper_ci),
-      # TODO: Update this to the actual standard deviation.
-      standard_deviation=float(1.0),
+      standard_deviation=float(standard_deviation),
       p_value=float(p_value),
   )

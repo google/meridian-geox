@@ -121,15 +121,15 @@ def _get_placebo_masks(
   )
 
   if design_config.geo_assignment_rule == api.GeoAssignmentRule.RANDOM:
-    placebo_masks_without_treatment_geos = generate_candidates.get_random_candidates(
-        filtered_data=processed_placebo_data.filtered_data,
-        design_config=design_config,
-        constraints=design_obj.constraints,
-        key=key,
-        selection_train=processed_placebo_data.selection_train,
-        selection_train_spend=processed_placebo_data.selection_train_spend.get(
-            api.CELL_1
-        ),
+    placebo_masks_without_treatment_geos = (
+        generate_candidates.get_random_candidates(
+            filtered_data=processed_placebo_data.filtered_data,
+            design_config=design_config,
+            constraints=design_obj.constraints,
+            key=key,
+            selection_train=processed_placebo_data.selection_train,
+            selection_train_spend=processed_placebo_data.selection_train_spend,
+        )
     )
   elif (
       design_config.geo_assignment_rule
@@ -139,16 +139,18 @@ def _get_placebo_masks(
       raise ValueError(
           'geo_stratum_labels is required for stratified sampling.'
       )
-    placebo_masks_without_treatment_geos = generate_candidates.get_stratified_sampling_candidates(
-        selection_train=processed_placebo_data.selection_train,
-        filtered_data=processed_placebo_data.filtered_data,
-        design_config=design_config,
-        constraints=design_obj.constraints,
-        geo_stratum_labels=design_obj.geo_stratum_labels[treatment.mask == 0],
-        key=key,
-        selection_train_spend=processed_placebo_data.selection_train_spend.get(
-            api.CELL_1
-        ),
+    placebo_masks_without_treatment_geos = (
+        generate_candidates.get_stratified_sampling_candidates(
+            selection_train=processed_placebo_data.selection_train,
+            filtered_data=processed_placebo_data.filtered_data,
+            design_config=design_config,
+            constraints=design_obj.constraints,
+            geo_stratum_labels=design_obj.geo_stratum_labels[
+                treatment.mask == 0
+            ],
+            key=key,
+            selection_train_spend=processed_placebo_data.selection_train_spend,
+        )
     )
   else:
     raise ValueError(
@@ -161,6 +163,7 @@ def _get_placebo_masks(
 
 
 def _prepare_design_config(
+    data: pd.DataFrame,
     analysis_config: api.AnalysisConfig,
 ) -> api.DesignConfig:
   """Prepares the design config for analysis."""
@@ -177,6 +180,20 @@ def _prepare_design_config(
 
   if analysis_config.test_type is None:
     analysis_config.test_type = design_config.test_type
+
+  if design_config.methodology != api.Methodology.TBR:
+    raise ValueError(
+        f'Unsupported methodology: {design_config.methodology}. Only TBR is'
+        ' supported.'
+    )
+
+  if analysis_config.design.data is not None and set(data[api.LOCATION]) != set(
+      analysis_config.design.data[api.LOCATION]
+  ):
+    raise ValueError(
+        'The locations in the analysis data do not match the locations in the'
+        ' design.'
+    )
 
   return design_config
 
@@ -282,24 +299,13 @@ def analyze(
   # checks to the data quality check function.
   del data_quality_check_config
 
-  if analysis_config.methodology != api.Methodology.TBR:
-    raise ValueError(
-        f'Unsupported methodology: {analysis_config.methodology}. Only TBR is'
-        ' supported.'
-    )
-
-  if set(data[api.LOCATION]) != set(analysis_config.design.data[api.LOCATION]):
-    raise ValueError(
-        'The locations in the analysis data do not match the locations in the'
-        ' design.'
-    )
-
   error_messages: list[str] = util.validate_schema(data)
   if error_messages:
     raise ValueError(f'Data validation failed: {error_messages}')
 
   # 1. Prepare configuration.
-  design_config = _prepare_design_config(analysis_config)
+  design_config = _prepare_design_config(data, analysis_config)
+
   experiment_type = _get_experiment_type(design_config)
 
   # 2. Prepare data and masks.

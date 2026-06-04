@@ -396,12 +396,12 @@ def _get_expanded_mask(reduced_mask, expanded_mask_size, filtered_geo_indices):
 
 
 def _should_apply_slope_filter(
-    design_config: api.DesignConfig,
+    experiment_type: api.ExperimentType,
     selection_train_spend: Optional[jnp.ndarray],
 ) -> bool:
   """Checks if slope filter should be applied."""
   return (
-      util.is_go_dark_or_heavy_up(design_config.experiment_types)
+      util.is_go_dark_or_heavy_up(experiment_type)
       and selection_train_spend is not None
   )
 
@@ -431,7 +431,7 @@ def get_stratified_sampling_candidates(
     constraints: api.Constraints,
     geo_stratum_labels: jnp.ndarray,
     key: jax.Array,
-    selection_train_spend: Optional[jnp.ndarray] = None,
+    selection_train_spend: Optional[dict[str, jnp.ndarray]] = None,
 ):
   """Generates stratified sampling study candidates subject to constraints.
 
@@ -443,7 +443,7 @@ def get_stratified_sampling_candidates(
     geo_stratum_labels: An array representing the stratum label of each geo.
       geo_stratum_labels[i] is the stratum to which geo i belongs.
     key: The JAX PRNG key.
-    selection_train_spend: The pre-period spend data.
+    selection_train_spend: The pre-period spend data, keyed by cell name.
 
   Returns:
     A boolean mask of treatment geos of shape (n_candidates, n_geos). For a
@@ -465,9 +465,6 @@ def get_stratified_sampling_candidates(
   sorted_strata_indices = np.argsort(strata)
   filtered_stratum_counts = np.take(counts, sorted_strata_indices)
 
-  apply_slope_filter = _should_apply_slope_filter(
-      design_config, selection_train_spend
-  )
   n_designs = design_config.n_candidates
   max_retries = design_config.max_candidate_generation_retries
   valid_candidates_list = []
@@ -519,14 +516,23 @@ def get_stratified_sampling_candidates(
     n_control_batch = len(geo_conversions) - n_treated_batch
     valid_indices = (n_treated_batch >= 2) & (n_control_batch >= 2)
 
-    if apply_slope_filter:
-      slope_mask = tbr.check_slope_similarity(
-          candidates_batch,
-          selection_train,
-          selection_train_spend,
-          design_config.slope_tolerance,
-      )
-      valid_indices = jnp.logical_and(valid_indices, slope_mask)
+    # Filter by slope similarity criteria if applicable.
+    if selection_train_spend is not None:
+      experiment_types = design_config.experiment_types
+      if isinstance(experiment_types, api.ExperimentType):
+        experiment_types = {api.CELL_1: experiment_types}
+      for cell_name, experiment_type in experiment_types.items():
+        if _should_apply_slope_filter(
+            experiment_type, selection_train_spend.get(cell_name)
+        ):
+          slope_mask = tbr.check_slope_similarity(
+              candidates_batch,
+              selection_train,
+              selection_train_spend[cell_name],
+              design_config.slope_tolerance,
+              util.cell_id_from_cell_name(cell_name),
+          )
+          valid_indices = jnp.logical_and(valid_indices, slope_mask)
 
     valid_batch = candidates_batch[valid_indices]
 
@@ -602,7 +608,7 @@ def get_random_candidates(
     constraints: api.Constraints,
     key: jax.Array,
     selection_train: jnp.ndarray,
-    selection_train_spend: Optional[jnp.ndarray] = None,
+    selection_train_spend: Optional[dict[str, jnp.ndarray]] = None,
 ) -> jnp.ndarray:
   """Generates random candidates for experiment design."""
   # Generate a batch of valid treatment masks (N_designs, Geos) satisfying
@@ -656,9 +662,6 @@ def get_random_candidates(
   geo_weights = jnp.array(geo_conversions.reindex(geos).fillna(0).values)
   total_volume = jnp.sum(geo_weights)
 
-  apply_slope_filter = _should_apply_slope_filter(
-      design_config, selection_train_spend
-  )
   # Generate candidates in batches until we have enough.
   valid_candidates_list = []
   current_count = 0
@@ -689,14 +692,23 @@ def get_random_candidates(
     treated_pcts = treated_volumes / total_volume
     valid_indices = treated_pcts <= max_conversions_percent
 
-    if apply_slope_filter:
-      slope_mask = tbr.check_slope_similarity(
-          candidates_batch,
-          selection_train,
-          selection_train_spend,
-          design_config.slope_tolerance,
-      )
-      valid_indices = jnp.logical_and(valid_indices, slope_mask)
+    # Filter by slope similarity criteria if applicable.
+    if selection_train_spend is not None:
+      experiment_types = design_config.experiment_types
+      if isinstance(experiment_types, api.ExperimentType):
+        experiment_types = {api.CELL_1: experiment_types}
+      for cell_name, experiment_type in experiment_types.items():
+        if _should_apply_slope_filter(
+            experiment_type, selection_train_spend.get(cell_name)
+        ):
+          slope_mask = tbr.check_slope_similarity(
+              candidates_batch,
+              selection_train,
+              selection_train_spend[cell_name],
+              design_config.slope_tolerance,
+              util.cell_id_from_cell_name(cell_name),
+          )
+          valid_indices = jnp.logical_and(valid_indices, slope_mask)
 
     valid_batch = candidates_batch[valid_indices]
 

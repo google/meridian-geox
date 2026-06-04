@@ -171,7 +171,8 @@ class DesignConfig:
 
   # TODO: Figure out if need to support weekly granularity.
   experiment_duration: Annotated[int, pydantic.Field(gt=0)]
-  # Supports using different experiment types in different cells.
+  # For multi-cell experiments, different types can be assigned per cell using
+  # a dictionary; otherwise, a single provided type is applied to all cells.
   experiment_types: Union[
       ExperimentType,
       dict[str, ExperimentType],
@@ -179,7 +180,7 @@ class DesignConfig:
   # The methodologies to be considered for the experiment design.
   methodology: Methodology = Methodology.TBR
   geo_assignment_rule: GeoAssignmentRule = (
-      GeoAssignmentRule.RANDOM
+      GeoAssignmentRule.STRATIFIED_SAMPLING
   )
   # TODO: If needed, add per-methodology configs.
   cell_count: Annotated[int, pydantic.Field(gt=0)] = 1
@@ -188,10 +189,31 @@ class DesignConfig:
   test_type: TestType = TestType.TWO_SIDED
   # The number of output design options.
   design_output_count: Annotated[int, pydantic.Field(gt=0)] = 10
-  # This is needed for an accurate estimate of budget.
-  cost_per_incremental_conversion: Union[float, dict[str, float], None] = 1.0
+  # Used to estimate budget requirements for Holdback experiment (cell). For
+  # multi-cell experiments, different values can be assigned per Holdback cell
+  # using a dictionary. If a single float is provided for a multi-cell
+  # design, it will be applied to all Holdback cells.
+  cost_per_incremental_conversion: Union[float, dict[str, float]] = 1.0
   # TODO: Consider moving this to a method specific config.
   covariate_columns: list[str] = dataclasses.field(default_factory=list)
+
+  @pydantic.model_validator(mode="after")
+  def _normalize(self) -> "DesignConfig":
+    """Normalizes the config to a standard format."""
+    if isinstance(self.experiment_types, ExperimentType):
+      self.experiment_types = {
+          f"cell_{i}": self.experiment_types
+          for i in range(1, self.cell_count + 1)
+      }
+
+    if isinstance(self.cost_per_incremental_conversion, float):
+      cpic_val = self.cost_per_incremental_conversion
+      self.cost_per_incremental_conversion = {
+          cell: cpic_val
+          for cell, et in self.experiment_types.items()
+          if et == ExperimentType.HOLDBACK
+      }
+    return self
 
   # Advanced design search parameters.
   # Number of candidates for the fast scoring step.
@@ -230,13 +252,39 @@ class Constraints:
   excluded_geos: SortedSet[str] = dataclasses.field(default_factory=set)
   # Dates to exclude from the experiment design.
   excluded_dates: SortedSet[Timestamp] = dataclasses.field(default_factory=set)
-  # The maximum budget for the experiment design (per cell).
+  # The maximum budget for the Holdback experiment design (per cell), specified
+  # as a total budget amount. For multi-cell experiments, different values can
+  # be assigned per Holdback cell using a dictionary. If a single value is
+  # provided for a multi-cell study, it will be applied to all Holdback cells.
   budget: Union[float, dict[str, float], None] = None
-  # The maximum budget percentage change for the experiment design. This can
-  # only be used if the spend data is provided (per cell).
+  # The maximum budget percentage change for the Go dark or Heavy up experiment
+  # design (per cell). For multi-cell experiments, different values can be
+  # assigned per Go dark or Heavy up cell using a dictionary. If a single value
+  # is provided for a multi-cell study, it will be applied to all Go dark and
+  # Heavy up cells. If not provided, the default value will be 100%.
   budget_percent: Union[float, dict[str, float], None] = None
-  # The maximum conversions volume for any treatment group (per cell).
+  # The maximum conversion volume allowed for the treatment group. For
+  # multi-cell designs, this percentage refers to the total for all
+  # treatment cells.
   max_conversions_percent: Optional[float] = 0.3
+
+  def normalize(self, experiment_types: dict[str, ExperimentType]):
+    """Normalizes budget and budget_percent based on experiment types."""
+    if isinstance(self.budget, float):
+      budget_val = self.budget
+      self.budget = {
+          cell: budget_val
+          for cell, et in experiment_types.items()
+          if et == ExperimentType.HOLDBACK
+      }
+
+    if isinstance(self.budget_percent, float):
+      bp_val = self.budget_percent
+      self.budget_percent = {
+          cell: bp_val
+          for cell, et in experiment_types.items()
+          if et in (ExperimentType.GO_DARK, ExperimentType.HEAVY_UP)
+      }
 
 
 @dataclasses.dataclass
@@ -308,7 +356,6 @@ class AnalysisConfig:
 
   __pydantic_config__ = pydantic.ConfigDict(arbitrary_types_allowed=True)
 
-  methodology: Methodology
   # The design (including geo splits, geo assignment rule, other design input
   # parameters) used for the experiment.
   design: Design
@@ -333,7 +380,7 @@ class Estimate:
   lower_bound: float
   upper_bound: float
   standard_deviation: float
-  p_value: Optional[float] = None
+  p_value: float
 
 
 @dataclasses.dataclass

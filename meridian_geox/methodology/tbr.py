@@ -70,17 +70,24 @@ class IcpdResults:
     cumulative_icpd: (T,) Cumulative ICPD.
     lower_bound: (T,) Lower bound of the cumulative ICPD.
     upper_bound: (T,) Upper bound of the cumulative ICPD.
+    cumulative_incremental_spend: (T,) Cumulative incremental spend.
   """
 
   cumulative_icpd: jnp.ndarray
   lower_bound: jnp.ndarray
   upper_bound: jnp.ndarray
+  cumulative_incremental_spend: jnp.ndarray
 
 
 jax.tree_util.register_pytree_node(
     IcpdResults,
     lambda node: (
-        (node.cumulative_icpd, node.lower_bound, node.upper_bound),
+        (
+            node.cumulative_icpd,
+            node.lower_bound,
+            node.upper_bound,
+            node.cumulative_incremental_spend,
+        ),
         None,
     ),
     lambda _, children: IcpdResults(*children),
@@ -147,19 +154,19 @@ def _fit_linear_regression(
 def _compute_group_mean(
     data: jnp.ndarray,
     mask: jnp.ndarray,
-    cell_label: float,
+    cell_id: float,
 ) -> jnp.ndarray:
   """Computes mean time series for a given cell.
 
   Args:
     data: (T, N) Time series data.
     mask: (N,) Treatment mask (0.0 for control, positive integer for treatment).
-    cell_label: Cell label.
+    cell_id: Cell ID.
 
   Returns:
     mean_ts: (T,) Average time series for the cell.
   """
-  binary_mask = (mask == cell_label).astype(jnp.float32)
+  binary_mask = (mask == cell_id).astype(jnp.float32)
   n_geos = jnp.sum(binary_mask)
   mean_ts = jnp.dot(data, binary_mask) / jnp.maximum(n_geos, 1.0)
 
@@ -231,7 +238,7 @@ def get_r2(
     data_pre: jnp.ndarray,
     data_val: jnp.ndarray,
     treatment_masks: jnp.ndarray,
-    treatment_cell_labels: jnp.ndarray,
+    cell_ids: jnp.ndarray,
 ) -> jnp.ndarray:
   """Calculates validation R-squared for a batch of designs.
 
@@ -239,7 +246,7 @@ def get_r2(
     data_pre: (T_pre, Geos) Pre-period data.
     data_val: (T_val, Geos) Validation-period data.
     treatment_masks: (N_designs, Geos) Batch of treatment masks.
-    treatment_cell_labels: (k_cells,) Treatment cell labels.
+    cell_ids: (k_cells,) Cell IDs.
 
   Returns:
     r2_vals: (N_designs, k_cells) Out-of-sample R-squared on validation period.
@@ -252,7 +259,7 @@ def get_r2(
     # Calculate means for treated and control groups in pre-period.
     x_pre = _compute_group_mean(data_pre, mask, 0.0)
     y_pre_by_cell = jax.vmap(_compute_group_mean, in_axes=(None, None, 0))(
-        data_pre, mask, treatment_cell_labels
+        data_pre, mask, cell_ids
     )
 
     # Simple Linear Regression: y_pre ~ alpha + beta * x_pre.
@@ -263,7 +270,7 @@ def get_r2(
     # Validation period.
     x_val = _compute_group_mean(data_val, mask, 0.0)
     y_val_by_cell = jax.vmap(_compute_group_mean, in_axes=(None, None, 0))(
-        data_val, mask, treatment_cell_labels
+        data_val, mask, cell_ids
     )
 
     # Predict.
@@ -284,13 +291,13 @@ def get_r2(
     n_control = jnp.sum((mask == 0.0).astype(jnp.float32))
 
     n_treated_by_cell = jnp.sum(
-        (mask == treatment_cell_labels[:, None]).astype(jnp.float32), axis=1
+        (mask == cell_ids[:, None]).astype(jnp.float32), axis=1
     )
     is_valid = (n_control > 0) & jnp.all(n_treated_by_cell > 0)
     return jnp.where(
         is_valid,
         r2_by_cell,
-        jnp.full(len(treatment_cell_labels), jnp.nan),
+        jnp.full(len(cell_ids), jnp.nan),
     )
 
   return jax.vmap(_get_one_r2)(treatment_masks)
@@ -373,16 +380,16 @@ def _get_mde_simplified_design_aware_placebo(
     data_val: jnp.ndarray,
     treatment_masks: jnp.ndarray,
     z_score_sum: float,
-    treatment_cell_labels: jnp.ndarray,
+    cell_ids: jnp.ndarray,
     test_type: api.TestType = api.TestType.TWO_SIDED,
 ) -> MdeResults:
   """Calculates MDE using simplified design aware placebo method."""
 
-  def _get_effect(mask, treatment_cell_label):
-    y_pre = _compute_group_mean(data_pre, mask, treatment_cell_label)
+  def _get_effect(mask, treatment_cell_id):
+    y_pre = _compute_group_mean(data_pre, mask, treatment_cell_id)
     x_pre = _compute_group_mean(data_pre, mask, 0.0)
     alpha, beta = _fit_linear_regression(x_pre, y_pre)
-    y_val = _compute_group_mean(data_val, mask, treatment_cell_label)
+    y_val = _compute_group_mean(data_val, mask, treatment_cell_id)
     x_val = _compute_group_mean(data_val, mask, 0.0)
     y_pred = alpha + beta * x_val
 
@@ -422,7 +429,7 @@ def _get_mde_simplified_design_aware_placebo(
   effects, baselines, observed, counterfactual = jax.vmap(
       _get_effect_over_masks,
       in_axes=(None, 0),
-  )(treatment_masks, treatment_cell_labels)
+  )(treatment_masks, cell_ids)
 
   # shapes:
   # mde_abs, mde_pct, p_values: (k_cells, N_designs)
@@ -542,31 +549,30 @@ def check_slope_similarity(
     conversion_data: jnp.ndarray,
     spend_data: jnp.ndarray,
     tolerance: float,
+    cell_id: float,
 ) -> jnp.ndarray:
   """Checks if the slope between conversion and spend is similar.
 
   Args:
-    candidates: (N_designs, N_geos) Treatment masks (1 for treated, 0 for
-      control).
+    candidates: (N_designs, N_geos) Treatment masks.
     conversion_data: (T, N_geos) Conversion time series data.
     spend_data: (T, N_geos) Spend time series data.
     tolerance: Maximum allowed symmetric difference.
+    cell_id: Cell ID for multicell designs.
 
   Returns:
     mask: (N_designs,) Boolean mask where True indicates the design passed the
       check.
   """
-  # TODO: Add multicell support.
   def _get_single_slope_diff(mask):
     # 1. Conversion slope.
     # y = treated, x = control.
-    # TODO: Add multicell support.
-    y_conv = _compute_group_mean(conversion_data, mask, 1.0)
+    y_conv = _compute_group_mean(conversion_data, mask, cell_id)
     x_conv = _compute_group_mean(conversion_data, mask, 0.0)
     _, b_conv = _fit_linear_regression(x_conv, y_conv)
 
     # 2. Spend slope.
-    y_spend = _compute_group_mean(spend_data, mask, 1.0)
+    y_spend = _compute_group_mean(spend_data, mask, cell_id)
     x_spend = _compute_group_mean(spend_data, mask, 0.0)
     _, b_spend = _fit_linear_regression(x_spend, y_spend)
 
@@ -595,7 +601,7 @@ def get_mde(
     z_score_sum: float,
     test_type: api.TestType = api.TestType.TWO_SIDED,
     se_method: api.SeMethod = api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO,
-    treatment_cell_labels: Optional[jnp.ndarray] = None,
+    cell_ids: Optional[jnp.ndarray] = None,
 ) -> MdeResults:
   """Runs placebo check and calculates MDE for a batch of designs.
 
@@ -611,14 +617,13 @@ def get_mde(
       simulations for each design. 'simplified_design_aware_placebo' calculates
       SE based on the distribution of effects across the provided treatment
       masks.
-    treatment_cell_labels: (k_cells,) Treatment cell labels for multicell
-      designs.
+    cell_ids: (k_cells,) Cell IDs for multicell designs.
 
   Returns:
     MdeResults object.
   """
-  if treatment_cell_labels is None:
-    treatment_cell_labels = jnp.array([1.0])
+  if cell_ids is None:
+    cell_ids = jnp.array([1.0])
 
   if se_method == api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO:
     return _get_mde_simplified_design_aware_placebo(
@@ -626,12 +631,12 @@ def get_mde(
         data_val,
         treatment_masks,
         z_score_sum,
-        treatment_cell_labels,
+        cell_ids,
         test_type,
     )
 
   # TODO: Add multicell support for _get_mde_placebo.
-  if len(treatment_cell_labels) > 1:
+  if len(cell_ids) > 1:
     raise NotImplementedError(
         'Multicell support is not implemented for _get_mde_placebo.'
     )
@@ -682,6 +687,7 @@ def _compute_icpd(
       cumulative_icpd=cumulative_icpd,
       lower_bound=icpd_lower,
       upper_bound=icpd_upper,
+      cumulative_incremental_spend=cumulative_incremental_spend,
   )
 
 
@@ -752,12 +758,14 @@ def analyze(
       signed_t_placebo[:, -1],
       test_type,
   )
+  lift_standard_deviation = n_treatment_geos * methodology_util.compute_se(
+      rmse, signed_t_placebo[:, -1]
+  )
   lift = api.Estimate(
       point_estimate=float(signed_total_cumul_effect[-1]),
       lower_bound=float(total_lower_cis[-1]),
       upper_bound=float(total_upper_cis[-1]),
-      # TODO: Update this to the actual standard deviation.
-      standard_deviation=float(1.0),
+      standard_deviation=float(lift_standard_deviation),
       p_value=float(p_value),
   )
   percent_lift = methodology_util.get_percent_lift(
@@ -861,12 +869,14 @@ def analyze(
         total_upper_cis,
         sign,
     )
+    icpd_standard_deviation = (
+        lift_standard_deviation / icpd_results.cumulative_incremental_spend[-1]
+    )
     icpd = api.Estimate(
         point_estimate=float(icpd_results.cumulative_icpd[-1]),
         lower_bound=float(icpd_results.lower_bound[-1]),
         upper_bound=float(icpd_results.upper_bound[-1]),
-        # TODO: Update this to the actual standard deviation.
-        standard_deviation=float(1.0),
+        standard_deviation=float(icpd_standard_deviation),
         p_value=float(p_value),
     )
     cumulative_icpd_with_cis = np.array(

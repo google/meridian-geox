@@ -100,7 +100,6 @@ class SingleCellE2ETest(absltest.TestCase):
 
     # 3. Run single cell experiment analysis.
     analysis_config = api.AnalysisConfig(
-        methodology=api.Methodology.TBR,
         design=selected_design,
         analysis_start_date=pd.Timestamp('2020-04-01'),
         analysis_end_date=pd.Timestamp('2020-04-30'),
@@ -178,7 +177,6 @@ class SingleCellE2ETest(absltest.TestCase):
 
     # 3. Run single cell experiment analysis.
     analysis_config = api.AnalysisConfig(
-        methodology=api.Methodology.TBR,
         design=selected_design,
         analysis_start_date=pd.Timestamp('2020-04-01'),
         analysis_end_date=pd.Timestamp('2020-04-30'),

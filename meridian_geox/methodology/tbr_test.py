@@ -98,8 +98,8 @@ class TbrTest(parameterized.TestCase):
     mask = jnp.array([1.0, 1.0, 2.0, 2.0, 0.0, 0.0])
     treatment_masks = mask[None, :]  # Batch of size 1.
 
-    treatment_cell_labels = jnp.array([1.0, 2.0])
-    r2 = tbr.get_r2(data_pre, data_val, treatment_masks, treatment_cell_labels)
+    cell_ids = jnp.array([1.0, 2.0])
+    r2 = tbr.get_r2(data_pre, data_val, treatment_masks, cell_ids)
 
     # Verify that R2 is close to 1.0 for both cells due to perfect linear
     # relationship. Shape should be (1, 2)
@@ -324,8 +324,8 @@ class TbrTest(parameterized.TestCase):
     t_val = 5
     n_geos = 12
     n_designs = 3
-    treatment_cell_labels = jnp.array([1.0, 2.0])
-    k_cells = len(treatment_cell_labels)
+    cell_ids = jnp.array([1.0, 2.0])
+    k_cells = len(cell_ids)
 
     key = jax.random.PRNGKey(42)
     # Generate random data.
@@ -352,7 +352,7 @@ class TbrTest(parameterized.TestCase):
         z_score_sum=z_score_sum,
         test_type=test_type,
         se_method=api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO,
-        treatment_cell_labels=treatment_cell_labels,
+        cell_ids=cell_ids,
     )
 
     self.assertEqual(results.mde_abs.shape, (n_designs, k_cells))
@@ -374,15 +374,15 @@ class TbrTest(parameterized.TestCase):
 
     # Verify that standard calculation matches.
     for c in range(k_cells):
-      cell_label = treatment_cell_labels[c]
+      cell_id = cell_ids[c]
       effects = []
       baselines = []
       for i in range(n_designs):
         mask = masks[i]
-        y_pre = tbr._compute_group_mean(data_pre, mask, cell_label)
+        y_pre = tbr._compute_group_mean(data_pre, mask, cell_id)
         x_pre = tbr._compute_group_mean(data_pre, mask, 0.0)
         alpha, beta = tbr._fit_linear_regression(x_pre, y_pre)
-        y_val = tbr._compute_group_mean(data_val, mask, cell_label)
+        y_val = tbr._compute_group_mean(data_val, mask, cell_id)
         x_val = tbr._compute_group_mean(data_val, mask, 0.0)
         y_pred = alpha + beta * x_val
         real_effect = jnp.mean(y_val - y_pred)
@@ -418,7 +418,7 @@ class TbrTest(parameterized.TestCase):
     t_pre = 10
     t_val = 5
     n_geos = 6
-    treatment_cell_labels = jnp.array([1.0, 2.0])
+    cell_ids = jnp.array([1.0, 2.0])
 
     # Create identical data for all geos.
     time_series = jnp.arange(t_pre + t_val, dtype=jnp.float32)
@@ -440,7 +440,7 @@ class TbrTest(parameterized.TestCase):
         n_permutations=100,
         z_score_sum=1.96,
         se_method=api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO,
-        treatment_cell_labels=treatment_cell_labels,
+        cell_ids=cell_ids,
     )
 
     # MDE should be 0 because all effects are exactly 0 (SE=0).
@@ -451,7 +451,7 @@ class TbrTest(parameterized.TestCase):
     t_pre = 10
     t_val = 5
     n_geos = 6
-    treatment_cell_labels = jnp.array([1.0, 2.0])
+    cell_ids = jnp.array([1.0, 2.0])
 
     data_pre = jnp.zeros((t_pre, n_geos))
     data_val = jnp.zeros((t_val, n_geos))
@@ -472,7 +472,7 @@ class TbrTest(parameterized.TestCase):
           n_permutations=20,
           z_score_sum=1.96,
           se_method=api.SeMethod.PLACEBO,
-          treatment_cell_labels=treatment_cell_labels,
+          cell_ids=cell_ids,
       )
 
   @parameterized.named_parameters(
@@ -1030,6 +1030,7 @@ class TbrTest(parameterized.TestCase):
     )
     self.assertIsInstance(estimate.lower_bound, float)
     self.assertIsInstance(estimate.upper_bound, float)
+    self.assertIsInstance(estimate.standard_deviation, float)
     self.assertIsInstance(estimate.p_value, float)
 
   def test_compute_placebo_effect_from_mask(self):

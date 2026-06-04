@@ -35,6 +35,7 @@ class UtilTest(parameterized.TestCase):
 
     self.design_config = api.DesignConfig(
         experiment_duration=10,
+        experiment_types=api.ExperimentType.HOLDBACK,
         alpha=0.1,
         power=0.8,
     )
@@ -76,7 +77,9 @@ class UtilTest(parameterized.TestCase):
   def test_validate_design_input_not_enough_dates(self):
     # experiment_duration is 10, need at least 30 dates.
     # We have exactly 30 dates in setUp. Let's set duration to 11.
-    design_config = api.DesignConfig(experiment_duration=11)
+    design_config = api.DesignConfig(
+        experiment_duration=11, experiment_types=api.ExperimentType.HOLDBACK
+    )
     errors = util.validate_design_input(
         self.data, design_config, self.constraints
     )
@@ -117,6 +120,7 @@ class UtilTest(parameterized.TestCase):
   ):
     design_config = api.DesignConfig(
         experiment_duration=5,
+        experiment_types=api.ExperimentType.HOLDBACK,
         alpha=alpha,
         power=power,
     )
@@ -127,17 +131,18 @@ class UtilTest(parameterized.TestCase):
     self.assertIn(expected_error, errors[0])
 
   def test_validate_design_input_holdback_missing_cpic(self):
+    # It must be > 0.0 if methodology is HOLDBACK.
     design_config = api.DesignConfig(
         experiment_duration=5,
         experiment_types=api.ExperimentType.HOLDBACK,
-        cost_per_incremental_conversion=None,
+        cost_per_incremental_conversion=0.0,
     )
     errors = util.validate_design_input(
         self.data, design_config, self.constraints
     )
     self.assertLen(errors, 1)
     self.assertIn(
-        'Cost per incremental conversion must be set for HOLDBACK experiments',
+        'Cost per incremental conversion must be set and larger than 0',
         errors[0],
     )
 
@@ -146,12 +151,42 @@ class UtilTest(parameterized.TestCase):
     design_config = api.DesignConfig(
         experiment_duration=5,
         experiment_types=api.ExperimentType.GO_DARK,
-        cost_per_incremental_conversion=None,
+        cost_per_incremental_conversion=0.0,
     )
     errors = util.validate_design_input(
         self.data, design_config, self.constraints
     )
     self.assertEmpty(errors)
+
+  def test_validate_design_input_cell_count_mismatch(self):
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types={
+            'cell_1': api.ExperimentType.HOLDBACK,
+            'cell_2': api.ExperimentType.GO_DARK,
+        },
+        cell_count=3,  # Mismatch.
+    )
+    errors = util.validate_design_input(
+        self.data, design_config, self.constraints
+    )
+    self.assertLen(errors, 1)
+    self.assertIn('cell_count (3) must match', errors[0])
+
+  def test_cell_id_from_cell_name_success(self):
+    self.assertEqual(util.cell_id_from_cell_name('cell_3'), 3)
+    self.assertEqual(util.cell_id_from_cell_name('cell_123'), 123)
+
+  @parameterized.named_parameters(
+      ('zero', 'cell_0'),
+      ('negative', 'cell_-5'),
+      ('non_integer', 'cell_abc'),
+      ('wrong_prefix', 'cell1'),
+      ('other_string', 'group_1'),
+  )
+  def test_cell_id_from_cell_name_value_error(self, cell_name):
+    with self.assertRaises(ValueError):
+      util.cell_id_from_cell_name(cell_name)
 
 
 if __name__ == '__main__':

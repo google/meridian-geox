@@ -14,6 +14,8 @@
 
 """Utility functions for GeoX modules."""
 
+import re
+
 from meridian_geox import api
 import pandas as pd
 import pandera.pandas as pa
@@ -94,6 +96,17 @@ def validate_design_input(
   if constraints.excluded_geos & constraints.included_control_geos:
     errors.append('Excluded geos must not overlap with included control geos.')
 
+  # Check that cell_count matches the number of experiment types.
+  # Normalization in DesignConfig ensures experiment_types is a dictionary.
+  experiment_types: dict[str, api.ExperimentType] = (
+      design_config.experiment_types  # type: ignore
+  )
+  if design_config.cell_count != len(experiment_types):
+    errors.append(
+        f'cell_count ({design_config.cell_count}) must match the number of'
+        f' experiment_types ({len(experiment_types)}).'
+    )
+
   # Check that alpha and power are between 0 and 1.
   if design_config.alpha <= 0 or design_config.alpha >= 1:
     errors.append('Alpha must be between 0 and 1.')
@@ -101,16 +114,44 @@ def validate_design_input(
     errors.append('Power must be between 0 and 1.')
 
   # Check that CPIC is set for HOLDBACK experiments.
-  if isinstance(design_config.experiment_types, dict):
-    experiment_types = list(design_config.experiment_types.values())
-  else:
-    experiment_types = [design_config.experiment_types]
-  if (
-      api.ExperimentType.HOLDBACK in experiment_types
-      and not design_config.cost_per_incremental_conversion
-  ):
-    errors.append(
-        'Cost per incremental conversion must be set for HOLDBACK experiments.'
-    )
+  # Normalization in DesignConfig ensures experiment_types and
+  # cost_per_incremental_conversion are dictionaries.
+  experiment_types: dict[str, api.ExperimentType] = (
+      design_config.experiment_types  # type: ignore
+  )
+  cpics: dict[str, float] = (
+      design_config.cost_per_incremental_conversion  # type: ignore
+  )
+
+  for cell, et in experiment_types.items():
+    if et == api.ExperimentType.HOLDBACK and cpics.get(cell, 0) <= 0:
+      errors.append(
+          'Cost per incremental conversion must be set and larger than 0 '
+          f'for cell {cell} as it is a HOLDBACK experiment.'
+      )
+      break
 
   return errors
+
+
+def cell_id_from_cell_name(cell_name: str) -> int:
+  """Extracts the positive integer cell ID from a cell name.
+
+  Args:
+    cell_name: A cell name string of the form "cell_k" where k is a positive
+      integer.
+
+  Returns:
+    The cell ID as an integer.
+
+  Raises:
+    ValueError: If cell_name is not in the form "cell_k" where k is a positive
+      integer.
+  """
+  match = re.fullmatch(r'cell_(\d+)', cell_name)
+  if not match or int(match.group(1)) <= 0:
+    raise ValueError(
+        f'Invalid cell name: {cell_name}. Must be of the form "cell_k" '
+        'where k is a positive integer.'
+    )
+  return int(match.group(1))

@@ -126,6 +126,7 @@ class GenerateCandidatesTest(parameterized.TestCase):
   def test_get_unconstrained_stratified_sampling_candidates(self):
     design_config = api.DesignConfig(
         experiment_duration=1,
+        experiment_types=api.ExperimentType.HOLDBACK,
         n_candidates=10,
         seed=42,
         pad_length=20,
@@ -157,7 +158,11 @@ class GenerateCandidatesTest(parameterized.TestCase):
 
   def test_get_stratified_sampling_candidates(self):
     design_config = api.DesignConfig(
-        experiment_duration=1, n_candidates=10, seed=42, pad_length=20
+        experiment_duration=1,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        n_candidates=10,
+        seed=42,
+        pad_length=20,
     )
     constraints = api.Constraints(
         max_conversions_percent=0.4,
@@ -216,7 +221,11 @@ class GenerateCandidatesTest(parameterized.TestCase):
 
   def test_get_stratified_sampling_candidates_min_geos_filter(self):
     design_config = api.DesignConfig(
-        experiment_duration=1, n_candidates=10, seed=42, pad_length=20
+        experiment_duration=1,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        n_candidates=10,
+        seed=42,
+        pad_length=20,
     )
     # With 6 geos and max_conversions_percent=0.2, only 1 geo can be treated
     # (1/6 = 0.166... < 0.2 while 2/6 = 0.333... > 0.2).
