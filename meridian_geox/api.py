@@ -237,6 +237,20 @@ class DesignConfig:
 
 
 @pydantic.dataclasses.dataclass
+class Budget:
+  """Budget constraint for a single cell."""
+
+  budget: Optional[float] = None
+  budget_pct: Optional[float] = None
+
+  def __post_init__(self):
+    if (self.budget is not None) == (self.budget_pct is not None):
+      raise ValueError(
+          "Exactly one of 'budget' or 'budget_pct' must be provided."
+      )
+
+
+@pydantic.dataclasses.dataclass
 class Constraints:
   """Constraints for designing a GeoX study."""
 
@@ -252,38 +266,20 @@ class Constraints:
   excluded_geos: SortedSet[str] = dataclasses.field(default_factory=set)
   # Dates to exclude from the experiment design.
   excluded_dates: SortedSet[Timestamp] = dataclasses.field(default_factory=set)
-  # The maximum budget for the Holdback experiment design (per cell), specified
-  # as a total budget amount. For multi-cell experiments, different values can
-  # be assigned per Holdback cell using a dictionary. If a single value is
-  # provided for a multi-cell study, it will be applied to all Holdback cells.
-  budget: Union[float, dict[str, float], None] = None
-  # The maximum budget percentage change for the Go dark or Heavy up experiment
-  # design (per cell). For multi-cell experiments, different values can be
-  # assigned per Go dark or Heavy up cell using a dictionary. If a single value
-  # is provided for a multi-cell study, it will be applied to all Go dark and
-  # Heavy up cells. If not provided, the default value will be 100%.
-  budget_percent: Union[float, dict[str, float], None] = None
+  # The budget constraint for the experiment design (per cell). For
+  # multi-cell experiments, different values can be assigned per cell using
+  # a dictionary; otherwise, a single provided budget is applied to all cells.
+  budget_constraint: Union[Budget, dict[str, Budget], None] = None
   # The maximum conversion volume allowed for the treatment group. For
   # multi-cell designs, this percentage refers to the total for all
   # treatment cells.
   max_conversions_percent: Optional[float] = 0.3
 
   def normalize(self, experiment_types: dict[str, ExperimentType]):
-    """Normalizes budget and budget_percent based on experiment types."""
-    if isinstance(self.budget, float):
-      budget_val = self.budget
-      self.budget = {
-          cell: budget_val
-          for cell, et in experiment_types.items()
-          if et == ExperimentType.HOLDBACK
-      }
-
-    if isinstance(self.budget_percent, float):
-      bp_val = self.budget_percent
-      self.budget_percent = {
-          cell: bp_val
-          for cell, et in experiment_types.items()
-          if et in (ExperimentType.GO_DARK, ExperimentType.HEAVY_UP)
+    """Normalizes budget based on experiment types."""
+    if isinstance(self.budget_constraint, Budget):
+      self.budget_constraint = {
+          cell: self.budget_constraint for cell in experiment_types
       }
 
 

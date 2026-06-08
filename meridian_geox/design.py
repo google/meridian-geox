@@ -265,8 +265,10 @@ def _get_design_summary(
   experiment_types: dict[str, api.ExperimentType] = (
       design_config.experiment_types  # type: ignore
   )
-  budgets: dict[str, float] = constraints.budget or {}  # type: ignore
-  budget_percents: dict[str, float] = constraints.budget_percent or {}  # type: ignore
+  # After normalization, budget_constraint is guaranteed to be a dict.
+  budget_constraints: dict[str, api.Budget] = (
+      constraints.budget_constraint or {}  # type: ignore
+  )
   cpics: dict[str, float] = (
       design_config.cost_per_incremental_conversion  # type: ignore
   )
@@ -308,10 +310,28 @@ def _get_design_summary(
       #    - Use MDE * treatment_conversion_volume * CPIC.
       # TODO: Add output estimated cpic for go dark and heavy up
       # studies.
-      budget = budgets.get(cell_name)
+      budget_constraint = budget_constraints.get(cell_name)
       if util.is_go_dark_or_heavy_up(experiment_type):
+        budget_percent = (
+            budget_constraint.budget_pct if budget_constraint else None
+        )
+        if budget_percent is None:
+          logging.warning(
+              'Cell %s is %s but budget_pct is not provided. Using 100%% as'
+              ' default.',
+              cell_name,
+              experiment_type.name,
+          )
+          budget_percent = 1.0
+          if budget_constraint and budget_constraint.budget is not None:
+            logging.warning(
+                'Cell %s is %s but budget (absolute) is provided instead of'
+                ' budget_pct.',
+                cell_name,
+                experiment_type.name,
+            )
+
         estimation_eval_spend_np = estimation_eval_spend_np_dict.get(cell_name)
-        budget_percent = budget_percents.get(cell_name)
         if estimation_eval_spend_np is None:
           logging.warning(
               'Spend data missing for GO_DARK or HEAVY_UP experiment. '
@@ -322,23 +342,28 @@ def _get_design_summary(
           treatment_geo_cost = float(
               np.sum(estimation_eval_spend_np[:, treatment_indices])
           )
-          if budget_percent is not None:
-            required_budget = treatment_geo_cost * budget_percent
-          else:
+          required_budget = treatment_geo_cost * budget_percent
+      else:
+        # HOLDBACK
+        budget = budget_constraint.budget if budget_constraint else None
+        if budget is None:
+          logging.warning(
+              'Cell %s is HOLDBACK but no budget is provided.', cell_name
+          )
+          if budget_constraint and budget_constraint.budget_pct is not None:
             logging.warning(
-                '%s budget_percent is not provided for this cell, '
-                'assuming the budget_percent change is 100%%',
+                'Cell %s is HOLDBACK but budget_pct is provided.',
                 cell_name,
             )
-            required_budget = treatment_geo_cost
-      else:
+
         # cpic is guaranteed to be set for HOLDBACK cells by validation.
         cpic = cpics[cell_name]
         required_budget = total_mde_abs * cpic
         if budget is not None and budget < required_budget:
           logging.warning(
-              'Budget input (%.2f) is less than required budget (%.2f).',
+              'Budget input (%.2f) for %s is less than required budget (%.2f).',
               budget,
+              cell_name,
               required_budget,
           )
 

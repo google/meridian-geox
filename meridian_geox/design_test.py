@@ -407,6 +407,7 @@ class DesignTest(parameterized.TestCase):
   def test_design_json_serialization(self):
     constraints = api.Constraints(
         included_treatment_geos={'G1', 'G2'},
+        budget_constraint=api.Budget(budget=1000.0),
         excluded_dates={
             pd.Timestamp('2024-01-01'),
             pd.Timestamp('2024-01-02'),
@@ -627,7 +628,6 @@ class DesignTest(parameterized.TestCase):
           testcase_name='holdback',
           experiment_types=api.ExperimentType.HOLDBACK,
           budget_constraint=None,
-          budget_percent_constraint=None,
           has_spend=True,
           expected_budget=0.1 * 100 * 1.0,  # mde_pct * volume * cpic
       ),
@@ -635,23 +635,20 @@ class DesignTest(parameterized.TestCase):
           testcase_name='go_dark_no_constraints',
           experiment_types=api.ExperimentType.GO_DARK,
           budget_constraint=None,
-          budget_percent_constraint=None,
           has_spend=True,
           expected_budget=50.0,  # treatment_geo_cost
       ),
       dict(
           testcase_name='heavy_up_ignore_absolute_budget',
           experiment_types=api.ExperimentType.HEAVY_UP,
-          budget_constraint={'cell_1': 1000.0},
-          budget_percent_constraint=None,
+          budget_constraint={'cell_1': api.Budget(budget=1000.0)},
           has_spend=True,
           expected_budget=50.0,
       ),
       dict(
           testcase_name='go_dark_budget_percent',
           experiment_types=api.ExperimentType.GO_DARK,
-          budget_constraint=None,
-          budget_percent_constraint=0.5,
+          budget_constraint=api.Budget(budget_pct=0.5),
           has_spend=True,
           expected_budget=50.0 * 0.5,
       ),
@@ -659,7 +656,6 @@ class DesignTest(parameterized.TestCase):
           testcase_name='go_dark_missing_spend',
           experiment_types=api.ExperimentType.GO_DARK,
           budget_constraint=None,
-          budget_percent_constraint=None,
           has_spend=False,
           expected_budget=0.0,
       ),
@@ -668,7 +664,6 @@ class DesignTest(parameterized.TestCase):
       self,
       experiment_types,
       budget_constraint,
-      budget_percent_constraint,
       has_spend,
       expected_budget,
   ):
@@ -695,10 +690,7 @@ class DesignTest(parameterized.TestCase):
         cost_per_incremental_conversion=1.0,
         design_output_count=1,
     )
-    constraints = api.Constraints(
-        budget=budget_constraint,
-        budget_percent=budget_percent_constraint,
-    )
+    constraints = api.Constraints(budget_constraint=budget_constraint)
     geos = ['geo_1', 'geo_2', 'geo_3', 'geo_4']
     geo_stratum_labels = jnp.array([0, 0, 1, 1])
 
@@ -775,7 +767,7 @@ class DesignTest(parameterized.TestCase):
     )
     constraints = api.Constraints(
         # For holdback cell_1, use this budget or calculated budget.
-        budget={'cell_1': 1000.0},
+        budget_constraint={'cell_1': api.Budget(budget=1000.0)},
     )
     geos = ['geo_1', 'geo_2', 'geo_3', 'geo_4']
     geo_stratum_labels = jnp.array([0, 0, 1, 1])

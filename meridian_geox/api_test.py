@@ -69,29 +69,47 @@ class ApiTest(parameterized.TestCase):
     self.assertEqual(config.cost_per_incremental_conversion, {'cell_1': 3.0})
 
   def test_constraints_normalize_budget_holdback(self):
-    constraints = api.Constraints(budget=1000.0)
+    constraints = api.Constraints(
+        budget_constraint=api.Budget(budget=1000.0)
+    )
     experiment_types = {
         'cell_1': api.ExperimentType.HOLDBACK,
         'cell_2': api.ExperimentType.GO_DARK,
     }
     constraints.normalize(experiment_types)
-    # Budget only for HOLDBACK cell.
-    self.assertEqual(constraints.budget, {'cell_1': 1000.0})
+    # After normalization, budget_constraint is a dict.
+    self.assertIsInstance(constraints.budget_constraint, dict)
+    # Both cells get the same Budget object.
+    self.assertEqual(constraints.budget_constraint['cell_1'].budget, 1000.0)
+    self.assertEqual(constraints.budget_constraint['cell_2'].budget, 1000.0)
 
   def test_constraints_normalize_budget_percent_godark(self):
-    constraints = api.Constraints(budget_percent=0.5)
+    constraints = api.Constraints(
+        budget_constraint=api.Budget(budget_pct=0.5)
+    )
     experiment_types = {
         'cell_1': api.ExperimentType.HOLDBACK,
         'cell_2': api.ExperimentType.GO_DARK,
         'cell_3': api.ExperimentType.HEAVY_UP,
     }
     constraints.normalize(experiment_types)
-    # Budget percent for GO_DARK and HEAVY_UP cells.
-    expected_bp = {
-        'cell_2': 0.5,
-        'cell_3': 0.5,
-    }
-    self.assertEqual(constraints.budget_percent, expected_bp)
+    # After normalization, budget_constraint is a dict.
+    self.assertIsInstance(constraints.budget_constraint, dict)
+    # All cells get the same Budget object.
+    self.assertEqual(constraints.budget_constraint['cell_1'].budget_pct, 0.5)
+    self.assertEqual(constraints.budget_constraint['cell_2'].budget_pct, 0.5)
+    self.assertEqual(constraints.budget_constraint['cell_3'].budget_pct, 0.5)
+
+  def test_budget_post_init_validation(self):
+    with self.assertRaisesRegex(
+        ValueError, "Exactly one of 'budget' or 'budget_pct' must be provided."
+    ):
+      api.Budget(budget=100, budget_pct=0.5)
+
+    with self.assertRaisesRegex(
+        ValueError, "Exactly one of 'budget' or 'budget_pct' must be provided."
+    ):
+      api.Budget()
 
   def test_design_config_default_cpic(self):
     config = api.DesignConfig(

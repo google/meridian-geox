@@ -57,7 +57,9 @@ class SingleCellE2ETest(absltest.TestCase):
         cell_count=1,
     )
 
-    constraints = api.Constraints(excluded_geos={'105'}, budget=50000)
+    constraints = api.Constraints(
+        excluded_geos={'105'}, budget_constraint=api.Budget(budget=50000)
+    )
     design_set = design.run_design(design_data, design_config, constraints)
 
     self.assertNotEmpty(design_set.designs)
@@ -134,7 +136,9 @@ class SingleCellE2ETest(absltest.TestCase):
         cell_count=1,
     )
 
-    constraints = api.Constraints(excluded_geos={'105'}, budget_percent=1)
+    constraints = api.Constraints(
+        excluded_geos={'105'}, budget_constraint=api.Budget(budget_pct=1.0)
+    )
     design_set = design.run_design(design_data, design_config, constraints)
 
     self.assertNotEmpty(design_set.designs)
@@ -211,7 +215,7 @@ class SingleCellE2ETest(absltest.TestCase):
         cell_count=1,
     )
 
-    constraints = api.Constraints(budget=50000)
+    constraints = api.Constraints(budget_constraint=api.Budget(budget=50000))
     design_set = design.run_design(design_data, design_config, constraints)
 
     self.assertNotEmpty(design_set.designs)
