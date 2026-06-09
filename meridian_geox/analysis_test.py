@@ -49,6 +49,7 @@ class AnalysisTest(parameterized.TestCase):
             '1': api.PerCellDesign(
                 treatment_geos={'G1'},
                 minimum_detectable_effect=0.0,
+                design_implied_cpic=0.0,
                 p_value=0.0,
                 budget=0.0,
             )
@@ -142,6 +143,7 @@ class AnalysisTest(parameterized.TestCase):
             'cell_1': api.PerCellDesign(
                 treatment_geos={'G1', 'G3'},
                 minimum_detectable_effect=0.0,
+                design_implied_cpic=0.0,
                 p_value=0.0,
                 budget=0.0,
             )
@@ -184,6 +186,7 @@ class AnalysisTest(parameterized.TestCase):
             '1': api.PerCellDesign(
                 treatment_geos={'G1', 'G2'},
                 minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
                 p_value=0.5,
                 budget=1000.0,
             )
@@ -288,6 +291,7 @@ class AnalysisTest(parameterized.TestCase):
             '1': api.PerCellDesign(
                 treatment_geos={'G1'},
                 minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
                 p_value=0.5,
                 budget=1000.0,
             )
@@ -371,6 +375,7 @@ class AnalysisTest(parameterized.TestCase):
             '1': api.PerCellDesign(
                 treatment_geos={'G1'},
                 minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
                 p_value=0.5,
                 budget=1000.0,
             )
@@ -412,6 +417,7 @@ class AnalysisTest(parameterized.TestCase):
             '1': api.PerCellDesign(
                 treatment_geos={'G1'},
                 minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
                 p_value=0.5,
                 budget=1000.0,
             )
@@ -461,6 +467,7 @@ class AnalysisTest(parameterized.TestCase):
             '1': api.PerCellDesign(
                 treatment_geos={'G1'},
                 minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
                 p_value=0.5,
                 budget=1000.0,
             )

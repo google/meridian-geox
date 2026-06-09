@@ -14,6 +14,7 @@
 
 """Utility functions for GeoX modules."""
 
+import logging
 import re
 
 from meridian_geox import api
@@ -131,7 +132,52 @@ def validate_design_input(
       )
       break
 
+  # After normalization, budget_constraint is guaranteed to be a dict.
+  budget_constraints: dict[str, api.Budget] = (
+      constraints.budget_constraint or {}  # type: ignore
+  )
+  _validate_budget_constraints(experiment_types, budget_constraints)
+
   return errors
+
+
+def _validate_budget_constraints(
+    experiment_types: dict[str, api.ExperimentType],
+    budget_constraints: dict[str, api.Budget],
+) -> None:
+  """Validates budget constraints and logs warnings for missing values."""
+  for cell_name, experiment_type in experiment_types.items():
+    budget_constraint = budget_constraints.get(cell_name)
+    if is_go_dark_or_heavy_up(experiment_type):
+      budget_percent = (
+          budget_constraint.budget_pct if budget_constraint else None
+      )
+      if budget_percent is None:
+        logging.warning(
+            'Cell %s is %s but budget_pct is not provided. Using 100%% as'
+            ' default.',
+            cell_name,
+            experiment_type.name,
+        )
+        if budget_constraint and budget_constraint.budget is not None:
+          logging.warning(
+              'Cell %s is %s but budget (absolute) is provided instead of'
+              ' budget_pct.',
+              cell_name,
+              experiment_type.name,
+          )
+    else:
+      # HOLDBACK
+      budget = budget_constraint.budget if budget_constraint else None
+      if budget is None:
+        logging.warning(
+            'Cell %s is HOLDBACK but no budget is provided.', cell_name
+        )
+        if budget_constraint and budget_constraint.budget_pct is not None:
+          logging.warning(
+              'Cell %s is HOLDBACK but budget_pct is provided.',
+              cell_name,
+          )
 
 
 def cell_id_from_cell_name(cell_name: str) -> int:

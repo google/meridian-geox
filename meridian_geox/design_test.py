@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import itertools
+import logging
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -427,6 +428,7 @@ class DesignTest(parameterized.TestCase):
             'cell_1': api.PerCellDesign(
                 treatment_geos={'G1', 'G2'},
                 minimum_detectable_effect=0.1,
+                design_implied_cpic=100.0,
                 p_value=0.5,
                 budget=1000.0,
                 counterfactual_conversions=pd.DataFrame({'cf': [1, 2]}),
@@ -468,6 +470,10 @@ class DesignTest(parameterized.TestCase):
         loaded_design.designs['cell_1'].budget,
         original_design.designs['cell_1'].budget,
     )
+    self.assertEqual(
+        loaded_design.designs['cell_1'].design_implied_cpic,
+        original_design.designs['cell_1'].design_implied_cpic,
+    )
 
     np.testing.assert_array_equal(
         loaded_design.geo_stratum_labels, original_design.geo_stratum_labels
@@ -489,6 +495,7 @@ class DesignTest(parameterized.TestCase):
             'cell_1': api.PerCellDesign(
                 treatment_geos={'geo_1'},
                 minimum_detectable_effect=0.8,
+                design_implied_cpic=1.25,
                 p_value=0.5,
                 budget=1000.0,
             )
@@ -515,6 +522,7 @@ class DesignTest(parameterized.TestCase):
             'cell_1': api.PerCellDesign(
                 treatment_geos={'geo_3'},
                 minimum_detectable_effect=0.9,
+                design_implied_cpic=1.11,
                 p_value=0.5,
                 budget=1000.0,
             )
@@ -566,6 +574,7 @@ class DesignTest(parameterized.TestCase):
             'cell_1': api.PerCellDesign(
                 treatment_geos={'geo_1'},
                 minimum_detectable_effect=0.8,
+                design_implied_cpic=1.25,
                 p_value=0.5,
                 budget=1000.0,
             )
@@ -590,6 +599,7 @@ class DesignTest(parameterized.TestCase):
             'cell_1': api.PerCellDesign(
                 treatment_geos={'geo_3'},
                 minimum_detectable_effect=0.7,
+                design_implied_cpic=1.43,
                 p_value=0.5,
                 budget=1000.0,
             )
@@ -697,9 +707,10 @@ class DesignTest(parameterized.TestCase):
     # 2 treated geos (geo_3 and geo_4) with 50 conversions and 25 spend each.
     # Total treated volume = 100, total treated spend = 50.
     estimation_eval = jnp.array([[0, 0, 50, 50]])
-    estimation_eval_spend = (
-        {api.CELL_1: jnp.array([[0, 0, 25, 25]])} if has_spend else {}
-    )
+    if has_spend:
+      estimation_eval_spend = {api.CELL_1: jnp.array([[0, 0, 25, 25]])}
+    else:
+      estimation_eval_spend = {api.CELL_1: jnp.zeros((1, 4))}
 
     processed_data = design.ProcessedData(
         selection_train=jnp.array([]),
@@ -819,6 +830,9 @@ class DesignTest(parameterized.TestCase):
     self.assertAlmostEqual(cell1_design.p_value, 0.5, places=5)
     # budget for cell_1: mde_pct * volume * cpic = 0.1 * 50 * 10.0 = 50.0
     self.assertAlmostEqual(cell1_design.budget, 50.0, places=5)
+    # design_implied_cpic for cell_1:
+    # budget / (mde_pct * volume) = 50 / (0.1 * 50) = 10.0
+    self.assertAlmostEqual(cell1_design.design_implied_cpic, 10.0, places=5)
 
     # Verify cell_2 PerCellDesign.
     cell2_design = design_obj.designs['cell_2']
@@ -829,6 +843,9 @@ class DesignTest(parameterized.TestCase):
     self.assertAlmostEqual(cell2_design.p_value, 0.6, places=5)
     # budget for cell_2: defaults to treatment_geo_cost = 25.0
     self.assertAlmostEqual(cell2_design.budget, 25.0, places=5)
+    # design_implied_cpic for cell_2:
+    # budget / (mde_pct * volume) = 25 / (0.2 * 50) = 2.5
+    self.assertAlmostEqual(cell2_design.design_implied_cpic, 2.5, places=5)
 
     # Verify control geos.
     self.assertEqual(design_obj.control_geos, {'geo_1', 'geo_2'})
@@ -906,6 +923,7 @@ class DesignTest(parameterized.TestCase):
         estimation_eval=jnp.array([[0, 0, 50, 50]]),
         training_period=[],
         filtered_data=pd.DataFrame(),
+        estimation_eval_spend={api.CELL_1: jnp.zeros((1, 4))},
     )
 
     result = design._get_design_summary(
@@ -920,6 +938,81 @@ class DesignTest(parameterized.TestCase):
 
     for _, design_obj in result.designs.items():
       pd.testing.assert_frame_equal(design_obj.data, data)
+
+  def test_get_design_summary_budget_exceeded_warning(self):
+    # Candidate exceeds budget for HOLDBACK cell.
+    scored_candidates = design.ScoredCandidates(
+        candidates=jnp.array([[0, 0, 1, 1]]),
+        mde_abs=jnp.array([10.0])[:, None],
+        mde_pct=jnp.array([0.1])[:, None],
+        p_values=jnp.array([0.5])[:, None],
+        r2_scores=jnp.array([0.9])[:, None],
+        observed_conversions=jnp.zeros((1, 1))[:, None, :],
+        counterfactual_conversions=jnp.zeros((1, 1))[:, None, :],
+    )
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        cost_per_incremental_conversion=10.0,
+        design_output_count=1,
+    )
+    # Required budget = 0.1 * 100 * 10.0 = 100.0.
+    # Provided budget = 50.0.
+    constraints = api.Constraints(
+        budget_constraint={'cell_1': api.Budget(budget=50.0)}
+    )
+    geos = ['geo_1', 'geo_2', 'geo_3', 'geo_4']
+    geo_stratum_labels = jnp.array([0, 0, 1, 1])
+    data = pd.DataFrame({
+        api.DATE: [pd.Timestamp('2023-01-01')],
+        api.LOCATION: ['geo_1'],
+        api.CONVERSIONS: [10.0],
+    })
+
+    processed_data = design.ProcessedData(
+        selection_train=jnp.array([]),
+        selection_eval=jnp.array([]),
+        estimation_train=jnp.array([]),
+        estimation_eval=jnp.array([[0, 0, 50, 50]]),
+        training_period=[],
+        filtered_data=pd.DataFrame(),
+        estimation_eval_spend={api.CELL_1: jnp.zeros((1, 4))},
+    )
+
+    constraints.normalize(design_config.experiment_types)
+
+    with absltest.mock.patch.object(logging, 'warning') as mock_warning:
+      design._get_design_summary(
+          scored_candidates,
+          design_config,
+          constraints,
+          geos,
+          geo_stratum_labels,
+          processed_data,
+          data=data,
+      )
+      # Check if warning was logged with correct arguments.
+      # We don't know the uuid design_id exactly, so we check for sub-strings
+      # or use any() to find the call.
+      warning_found = False
+      for call in mock_warning.call_args_list:
+        args = call[0]
+        # args[0] is the format string.
+        # args[1] is design_id (uuid)
+        # args[2] is cell_name ('cell_1')
+        # args[3] is required_budget (~100.0)
+        # args[4] is provided_budget (50.0)
+        if (
+            'required budget (%.2f) exceeds provided budget (%.2f)' in args[0]
+            and args[2] == 'cell_1'
+            and abs(args[3] - 100.0) < 1e-4
+            and abs(args[4] - 50.0) < 1e-4
+        ):
+          warning_found = True
+          break
+      self.assertTrue(
+          warning_found, f'Actual calls: {mock_warning.call_args_list}'
+      )
 
   def test_prepare_data_multicell_spend(self):
     dates = pd.date_range(start='2023-01-01', periods=10)

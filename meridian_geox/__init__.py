@@ -23,6 +23,7 @@ from .analysis import plot_analysis
 from .api import AnalysisConfig
 from .api import AnalysisMetrics
 from .api import AnalysisResult
+from .api import Budget
 from .api import Constraints
 from .api import DataSchema
 from .api import Design

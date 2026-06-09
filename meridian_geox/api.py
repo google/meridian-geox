@@ -291,6 +291,7 @@ class PerCellDesign:
 
   treatment_geos: SortedSet[str]
   minimum_detectable_effect: float
+  design_implied_cpic: float
   p_value: float
   budget: float
   # Counterfactual conversion time series. Includes date, observed, and

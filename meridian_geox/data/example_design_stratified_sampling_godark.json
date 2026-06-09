@@ -32,6 +32,7 @@
         "77"
       ],
       "minimum_detectable_effect": 0.013428452424705029,
+      "design_implied_cpic": 0.0,
       "p_value": 0.6507909297943115,
       "budget": 6236.453125
     }

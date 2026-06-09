@@ -305,71 +305,32 @@ def _get_design_summary(
       #    - If constraints.budget_percent is set, use
       #      treatment_geo_cost * budget_percent.
       #    - Otherwise, use treatment_geo_cost.
-      #    - Defaults to 0 if spend data is missing.
       # 2. For HOLDBACK:
       #    - Use MDE * treatment_conversion_volume * CPIC.
-      # TODO: Add output estimated cpic for go dark and heavy up
-      # studies.
       budget_constraint = budget_constraints.get(cell_name)
       if util.is_go_dark_or_heavy_up(experiment_type):
         budget_percent = (
-            budget_constraint.budget_pct if budget_constraint else None
+            budget_constraint.budget_pct
+            if budget_constraint and budget_constraint.budget_pct is not None
+            else 1.0
         )
-        if budget_percent is None:
-          logging.warning(
-              'Cell %s is %s but budget_pct is not provided. Using 100%% as'
-              ' default.',
-              cell_name,
-              experiment_type.name,
-          )
-          budget_percent = 1.0
-          if budget_constraint and budget_constraint.budget is not None:
-            logging.warning(
-                'Cell %s is %s but budget (absolute) is provided instead of'
-                ' budget_pct.',
-                cell_name,
-                experiment_type.name,
-            )
-
-        estimation_eval_spend_np = estimation_eval_spend_np_dict.get(cell_name)
-        if estimation_eval_spend_np is None:
-          logging.warning(
-              'Spend data missing for GO_DARK or HEAVY_UP experiment. '
-              'Setting budget to 0.'
-          )
-          required_budget = 0.0
-        else:
-          treatment_geo_cost = float(
-              np.sum(estimation_eval_spend_np[:, treatment_indices])
-          )
-          required_budget = treatment_geo_cost * budget_percent
+        estimation_eval_spend_np = estimation_eval_spend_np_dict[cell_name]
+        treatment_geo_cost = float(
+            np.sum(estimation_eval_spend_np[:, treatment_indices])
+        )
+        required_budget = treatment_geo_cost * budget_percent
       else:
         # HOLDBACK
-        budget = budget_constraint.budget if budget_constraint else None
-        if budget is None:
-          logging.warning(
-              'Cell %s is HOLDBACK but no budget is provided.', cell_name
-          )
-          if budget_constraint and budget_constraint.budget_pct is not None:
-            logging.warning(
-                'Cell %s is HOLDBACK but budget_pct is provided.',
-                cell_name,
-            )
-
         # cpic is guaranteed to be set for HOLDBACK cells by validation.
         cpic = cpics[cell_name]
         required_budget = total_mde_abs * cpic
-        if budget is not None and budget < required_budget:
-          logging.warning(
-              'Budget input (%.2f) for %s is less than required budget (%.2f).',
-              budget,
-              cell_name,
-              required_budget,
-          )
 
       cell_designs[cell_name] = api.PerCellDesign(
           treatment_geos=treatment_geos,
           minimum_detectable_effect=mde_pct,
+          design_implied_cpic=(
+              required_budget / total_mde_abs if total_mde_abs > 0 else 0.0
+          ),
           p_value=float(p_values_np[i][metrics_cell_index]),
           budget=float(required_budget),
           counterfactual_conversions=pd.DataFrame({
@@ -424,6 +385,22 @@ def _get_design_summary(
       .reset_index(drop=True)
   )
   designs = {design_id: designs[design_id] for design_id in top_design_ids}
+
+  # Log warnings for returned candidates that exceed budget.
+  for design_id, design_obj in designs.items():
+    for cell_name, per_cell_design in design_obj.designs.items():
+      if experiment_types.get(cell_name) == api.ExperimentType.HOLDBACK:
+        provided_budget = budget_constraints.get(cell_name)
+        if provided_budget and provided_budget.budget is not None:
+          if per_cell_design.budget > provided_budget.budget:
+            logging.warning(
+                'Design %s: Cell %s required budget (%.2f) exceeds provided '
+                'budget (%.2f).',
+                design_id,
+                cell_name,
+                per_cell_design.budget,
+                provided_budget.budget,
+            )
 
   # TODO: Populate design_data.
   design_data = pd.DataFrame()

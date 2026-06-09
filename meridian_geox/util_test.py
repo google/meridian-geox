@@ -14,6 +14,7 @@
 
 """Tests for GeoX utility functions."""
 
+import logging
 from absl.testing import absltest
 from absl.testing import parameterized
 from meridian_geox import api
@@ -157,6 +158,68 @@ class UtilTest(parameterized.TestCase):
         self.data, design_config, self.constraints
     )
     self.assertEmpty(errors)
+
+  def test_validate_design_input_holdback_no_budget_warning(self):
+    # Cell 1 is HOLDBACK but no budget provided.
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types={'cell_1': api.ExperimentType.HOLDBACK},
+        cost_per_incremental_conversion={'cell_1': 1.0},
+    )
+    with absltest.mock.patch.object(logging, 'warning') as mock_warning:
+      util.validate_design_input(self.data, design_config, self.constraints)
+      mock_warning.assert_any_call(
+          'Cell %s is HOLDBACK but no budget is provided.', 'cell_1'
+      )
+
+  def test_validate_design_input_holdback_budget_pct_warning(self):
+    # Cell 1 is HOLDBACK but budget_pct provided instead of budget.
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types={'cell_1': api.ExperimentType.HOLDBACK},
+        cost_per_incremental_conversion={'cell_1': 1.0},
+    )
+    constraints = api.Constraints(
+        budget_constraint={'cell_1': api.Budget(budget_pct=0.1)}
+    )
+    with absltest.mock.patch.object(logging, 'warning') as mock_warning:
+      util.validate_design_input(self.data, design_config, constraints)
+      mock_warning.assert_any_call(
+          'Cell %s is HOLDBACK but budget_pct is provided.', 'cell_1'
+      )
+
+  def test_validate_design_input_go_dark_no_budget_pct_warning(self):
+    # Cell 1 is GO_DARK but no budget_pct provided.
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types={'cell_1': api.ExperimentType.GO_DARK},
+    )
+    with absltest.mock.patch.object(logging, 'warning') as mock_warning:
+      util.validate_design_input(self.data, design_config, self.constraints)
+      mock_warning.assert_any_call(
+          'Cell %s is %s but budget_pct is not provided. Using 100%% as'
+          ' default.',
+          'cell_1',
+          'GO_DARK',
+      )
+
+  def test_validate_design_input_go_dark_absolute_budget_warning(self):
+    # Cell 1 is GO_DARK but absolute budget provided instead of budget_pct.
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types={'cell_1': api.ExperimentType.GO_DARK},
+    )
+    constraints = api.Constraints(
+        budget_constraint={'cell_1': api.Budget(budget=1000.0)}
+    )
+    with absltest.mock.patch.object(logging, 'warning') as mock_warning:
+      util.validate_design_input(self.data, design_config, constraints)
+      mock_warning.assert_any_call(
+          'Cell %s is %s but budget (absolute) is provided instead of'
+          ' budget_pct.',
+          'cell_1',
+          'GO_DARK',
+      )
 
   def test_validate_design_input_cell_count_mismatch(self):
     design_config = api.DesignConfig(
