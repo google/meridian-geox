@@ -15,7 +15,7 @@
 """GeoX analysis library API."""
 
 import dataclasses
-from typing import Optional
+import re
 
 import jax
 import jax.numpy as jnp
@@ -84,9 +84,14 @@ def _get_time_series(
 ) -> TimeSeries:
   """Extracts pre-test and test time series for a given column."""
   pivoted_data = util.pivot_and_sort_data(data, column)
-  pretest_data = pivoted_data[
-      pivoted_data.index < analysis_config.analysis_start_date
-  ]
+  if analysis_config.pretest_end_date is not None:
+    pretest_data = pivoted_data[
+        pivoted_data.index <= analysis_config.pretest_end_date
+    ]
+  else:
+    pretest_data = pivoted_data[
+        pivoted_data.index < analysis_config.analysis_start_date
+    ]
   pretest = jnp.array(pretest_data.values)
   test_data = pivoted_data[
       (pivoted_data.index >= analysis_config.analysis_start_date)
@@ -198,92 +203,87 @@ def _prepare_design_config(
   return design_config
 
 
-def _get_experiment_type(
+def _get_experiment_types(
     design_config: api.DesignConfig,
-) -> api.ExperimentType:
-  """Extracts and validates a single experiment type."""
+) -> dict[str, api.ExperimentType]:
+  """Extracts experiment types for analysis."""
   experiment_types = design_config.experiment_types
   if isinstance(experiment_types, api.ExperimentType):
-    experiment_types = [experiment_types]
-  elif isinstance(experiment_types, dict):
-    experiment_types = list(experiment_types.values())
+    experiment_types = {api.CELL_1: experiment_types}
 
-  # TODO: Add multicell support.
-  if len(experiment_types) != 1:
-    raise ValueError(
-        'We currently only support studies with a single experiment type.'
-    )
-
-  return experiment_types[0]
+  return experiment_types
 
 
 def _get_treatment_mask(
     data: pd.DataFrame,
     design_obj: api.Design,
 ) -> TreatmentMask:
-  """Creates a binary treatment mask and returns treatment geo names."""
+  """Creates a treatment mask and returns treatment geo names."""
   geos = sorted(data[api.LOCATION].unique())
-  # TODO Add multicell support.
-  treatment_geos = sorted(
-      list(list(design_obj.designs.values())[0].treatment_geos)
-  )
-  treatment_mask = np.isin(geos, treatment_geos).astype(int)
+  geo_to_idx = {geo: i for i, geo in enumerate(geos)}
+  treatment_mask = np.zeros(len(geos), dtype=np.float32)
+  all_treatment_geos = set()
+
+  for cell_name, per_cell_design in design_obj.designs.items():
+    cell_id = util.cell_id_from_cell_name(cell_name)
+    cell_geos = per_cell_design.treatment_geos
+    all_treatment_geos.update(cell_geos)
+    for geo in cell_geos:
+      treatment_mask[geo_to_idx[geo]] = float(cell_id)
+
+  treatment_geos = sorted(list(all_treatment_geos))
   return TreatmentMask(mask=jnp.array(treatment_mask), geos=treatment_geos)
 
 
 def _get_analysis_summary(
-    lift: api.Estimate,
-    cumulative_lift_with_cis: np.ndarray,
-    percent_lift: api.Estimate,
-    icpd: Optional[api.Estimate],
-    cumulative_icpd_with_cis: Optional[np.ndarray],
-    counterfactual_conversions_with_cis: np.ndarray,
-    pointwise_difference_with_cis: np.ndarray,
+    tbr_results: dict[str, tbr.TbrAnalysisResult],
     pretest_dates: pd.Index,
     test_dates: pd.Index,
-    cell_names: list[str],
     analysis_config: api.AnalysisConfig,
 ) -> api.AnalysisResult:
   """Converts raw analysis results into an AnalysisResult object."""
-  cumulative_lift = pd.DataFrame(
-      data=cumulative_lift_with_cis,
-      index=test_dates,
-      columns=['lift', 'lower_bound', 'upper_bound'],
-  )
+  results = {}
+  full_dates = pretest_dates.append(test_dates)
 
-  cumulative_icpd = None
-  if cumulative_icpd_with_cis is not None:
-    cumulative_icpd = pd.DataFrame(
-        data=cumulative_icpd_with_cis,
+  for cell, tbr_result in tbr_results.items():
+    cumulative_lift = pd.DataFrame(
+        data=tbr_result.cumulative_lift_with_cis,
         index=test_dates,
-        columns=['icpd', 'lower_bound', 'upper_bound'],
+        columns=['lift', 'lower_bound', 'upper_bound'],
     )
 
-  full_dates = pretest_dates.append(test_dates)
-  counterfactual_conversions = pd.DataFrame(
-      data=counterfactual_conversions_with_cis,
-      index=full_dates,
-      columns=['observed', 'counterfactual', 'lower_bound', 'upper_bound'],
-  )
+    cumulative_icpd = None
+    if tbr_result.cumulative_icpd_with_cis is not None:
+      cumulative_icpd = pd.DataFrame(
+          data=tbr_result.cumulative_icpd_with_cis,
+          index=test_dates,
+          columns=['icpd', 'lower_bound', 'upper_bound'],
+      )
 
-  pointwise_difference = pd.DataFrame(
-      data=pointwise_difference_with_cis,
-      index=full_dates,
-      columns=['difference', 'lower_bound', 'upper_bound'],
-  )
+    counterfactual_conversions = pd.DataFrame(
+        data=tbr_result.counterfactual_conversions_with_cis,
+        index=full_dates,
+        columns=['observed', 'counterfactual', 'lower_bound', 'upper_bound'],
+    )
+
+    pointwise_difference = pd.DataFrame(
+        data=tbr_result.pointwise_difference_with_cis,
+        index=full_dates,
+        columns=['difference', 'lower_bound', 'upper_bound'],
+    )
+
+    results[cell] = api.AnalysisMetrics(
+        lift=tbr_result.lift,
+        percent_lift=tbr_result.percent_lift,
+        cumulative_lift=cumulative_lift,
+        counterfactual_conversions=counterfactual_conversions,
+        pointwise_difference=pointwise_difference,
+        icpd=tbr_result.icpd,
+        cumulative_icpd=cumulative_icpd,
+    )
 
   return api.AnalysisResult(
-      results={
-          cell_names[0]: api.AnalysisMetrics(
-              lift=lift,
-              percent_lift=percent_lift,
-              cumulative_lift=cumulative_lift,
-              counterfactual_conversions=counterfactual_conversions,
-              pointwise_difference=pointwise_difference,
-              icpd=icpd,
-              cumulative_icpd=cumulative_icpd,
-          )
-      },
+      results=results,
       analysis_config=analysis_config,
   )
 
@@ -306,7 +306,7 @@ def analyze(
   # 1. Prepare configuration.
   design_config = _prepare_design_config(data, analysis_config)
 
-  experiment_type = _get_experiment_type(design_config)
+  experiment_types = _get_experiment_types(design_config)
 
   # 2. Prepare data and masks.
   data = _prepare_data(data, analysis_config)
@@ -315,9 +315,15 @@ def analyze(
   # 3. Extract time series arrays.
   conversions = _get_time_series(data, api.CONVERSIONS, analysis_config)
 
-  spend = None
-  if api.SPEND in data.columns:
-    spend = _get_time_series(data, api.SPEND, analysis_config)
+  spend = {}
+  if design_config.cell_count == 1:
+    if api.SPEND in data.columns:
+      spend[api.CELL_1] = _get_time_series(data, api.SPEND, analysis_config)
+  elif design_config.cell_count > 1:
+    for col in data.columns:
+      if re.match(api.MULTICELL_SPEND_REGEX, col):
+        cell_name = col[len('spend_') :]  # Removes "spend_" prefix.
+        spend[cell_name] = _get_time_series(data, col, analysis_config)
 
   # 4. Generate placebo masks.
   # We use a key derived from the design config seed to ensure that placebo
@@ -334,30 +340,26 @@ def analyze(
   )
 
   # 5. Run methodology analysis.
-  tbr_result = tbr.analyze(
-      pretest_conversions=conversions.pretest,
-      test_conversions=conversions.test,
-      treatment_mask=treatment.mask,
-      placebo_masks=placebo_masks,
-      alpha=analysis_config.alpha,
-      experiment_type=experiment_type,
-      test_type=analysis_config.test_type,
-      pretest_spend=spend.pretest if spend else None,
-      test_spend=spend.test if spend else None,
-  )
+  tbr_results = {}
+  for cell, experiment_type in experiment_types.items():
+    tbr_results[cell] = tbr.analyze(
+        pretest_conversions=conversions.pretest,
+        test_conversions=conversions.test,
+        treatment_mask=treatment.mask,
+        placebo_masks=placebo_masks,
+        alpha=analysis_config.alpha,
+        experiment_type=experiment_type,
+        test_type=analysis_config.test_type,
+        treatment_cell_id=util.cell_id_from_cell_name(cell),
+        pretest_spend=spend[cell].pretest if cell in spend else None,
+        test_spend=spend[cell].test if cell in spend else None,
+    )
 
   # 6. Package and return results.
   return _get_analysis_summary(
-      lift=tbr_result.lift,
-      cumulative_lift_with_cis=tbr_result.cumulative_lift_with_cis,
-      percent_lift=tbr_result.percent_lift,
-      icpd=tbr_result.icpd,
-      cumulative_icpd_with_cis=tbr_result.cumulative_icpd_with_cis,
-      counterfactual_conversions_with_cis=tbr_result.counterfactual_conversions_with_cis,
-      pointwise_difference_with_cis=tbr_result.pointwise_difference_with_cis,
+      tbr_results=tbr_results,
       pretest_dates=conversions.pretest_dates,
       test_dates=conversions.test_dates,
-      cell_names=list(analysis_config.design.designs.keys()),
       analysis_config=analysis_config,
   )
 
@@ -662,7 +664,8 @@ def plot_analysis(analysis_result: api.AnalysisResult):
         )
 
   # Final Layout Formatting with Divider
-  for ax in axes.flatten():
+  pretest_end_date = analysis_result.analysis_config.pretest_end_date
+  for i, ax in enumerate(axes.flatten()):
     ax.axvline(
         start_dt,
         color='grey',
@@ -671,6 +674,18 @@ def plot_analysis(analysis_result: api.AnalysisResult):
         alpha=0.8,
         label='Test start date',
     )  # Period Divider
+
+    # Add pretest end line for the first two plots if it is set.
+    if pretest_end_date is not None and i < 2:
+      ax.axvline(
+          pretest_end_date,
+          color='grey',
+          linestyle='-',
+          linewidth=1.5,
+          alpha=0.8,
+          label='Pretest end date',
+      )
+
     # Deduplicate labels in the legend
     handles, labels = ax.get_legend_handles_labels()
     unique_labels = {}

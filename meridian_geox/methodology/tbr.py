@@ -181,6 +181,7 @@ def _compute_placebo_effect_from_mask(
     data_test: jnp.ndarray,
     mask: jnp.ndarray,
     p_mask: jnp.ndarray,
+    treatment_cell_id: float,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
   """Computes the effect for a single placebo simulation.
 
@@ -190,16 +191,18 @@ def _compute_placebo_effect_from_mask(
     mask: (Geos,) Treatment mask (1.0 for treated, 0.0 for control).
     p_mask: (Geos,) Placebo treatment mask (1.0 for placebo treated, 0.0 for
       control).
+    treatment_cell_id: The Cell ID to use for the treated group.
 
   Returns:
     Placebo treatment response, Placebo predicted response, Placebo RMSE,
     Placebo log RMSE.
   """
   # Create a mask for valid control units (excluding original treated units).
-  # p_mask is 1.0 for placebo treated, 0.0 otherwise.
-  # mask is 1.0 for original treated, 0.0 otherwise.
-  # We want placebo controls to be: (1 - p_mask) * (1 - mask).
-  valid_control_mask = (1.0 - p_mask) * (1.0 - mask)
+  # p_mask is positive for placebo treated, 0.0 otherwise.
+  # mask is positive for original treated, 0.0 otherwise.
+  valid_control_mask = ((mask == 0.0) & (p_mask == 0.0)).astype(jnp.float32)
+  # We only want to compare against the specified treatment cell.
+  p_treatment_mask = (p_mask == treatment_cell_id).astype(jnp.float32)
 
   def _compute_placebo_means(data, t_mask, c_mask):
     n_t = jnp.sum(t_mask)
@@ -210,7 +213,7 @@ def _compute_placebo_effect_from_mask(
 
   # Fit on pre.
   py_pretest, px_pretest = _compute_placebo_means(
-      data_pretest, p_mask, valid_control_mask
+      data_pretest, p_treatment_mask, valid_control_mask
   )
   p_alpha, p_beta = _fit_linear_regression(px_pretest, py_pretest)
 
@@ -393,7 +396,7 @@ def _get_mde_simplified_design_aware_placebo(
     x_val = _compute_group_mean(data_val, mask, 0.0)
     y_pred = alpha + beta * x_val
 
-    n_treated = jnp.sum(mask)
+    n_treated = jnp.sum(mask == treatment_cell_id)
     real_effect = jnp.mean(y_val - y_pred)
     baseline = jnp.mean(y_val)
 
@@ -660,19 +663,25 @@ def _compute_icpd(
     total_lower_cis: jnp.ndarray,
     total_upper_cis: jnp.ndarray,
     incremental_spend_sign: float,
+    treatment_cell_id: float = 1.0,
 ):
   """Computes ICPD metrics using JAX arrays."""
-  # TODO: Add multicell support.
-  y_spend_pre = _compute_group_mean(pretest_spend, treatment_mask, 1.0)
+  y_spend_pre = _compute_group_mean(
+      pretest_spend, treatment_mask, treatment_cell_id
+  )
   x_spend_pre = _compute_group_mean(pretest_spend, treatment_mask, 0.0)
   pred_alpha_spend, pred_beta_spend = _fit_linear_regression(
       x_spend_pre, y_spend_pre
   )
 
-  y_spend_test = _compute_group_mean(test_spend, treatment_mask, 1.0)
+  y_spend_test = _compute_group_mean(
+      test_spend, treatment_mask, treatment_cell_id
+  )
   x_spend_test = _compute_group_mean(test_spend, treatment_mask, 0.0)
   y_spend_pred = pred_alpha_spend + pred_beta_spend * x_spend_test
-  n_treatment_geos = jnp.sum(treatment_mask)
+  n_treatment_geos = jnp.sum(
+      (treatment_mask == treatment_cell_id).astype(jnp.float32)
+  )
 
   incremental_spend = (
       incremental_spend_sign * n_treatment_geos * (y_spend_test - y_spend_pred)
@@ -699,12 +708,14 @@ def analyze(
     alpha: float,
     experiment_type: api.ExperimentType,
     test_type: api.TestType = api.TestType.TWO_SIDED,
+    treatment_cell_id: float = 1.0,
     pretest_spend: Optional[jnp.ndarray] = None,
     test_spend: Optional[jnp.ndarray] = None,
 ) -> TbrAnalysisResult:
   """Generates analysis metrics for a GeoX experiment using JAX inputs."""
-  # TODO: Add multicell support.
-  y_pretest = _compute_group_mean(pretest_conversions, treatment_mask, 1.0)
+  y_pretest = _compute_group_mean(
+      pretest_conversions, treatment_mask, treatment_cell_id
+  )
   x_pretest = _compute_group_mean(pretest_conversions, treatment_mask, 0.0)
   pred_alpha, pred_beta = _fit_linear_regression(x_pretest, y_pretest)
 
@@ -712,14 +723,18 @@ def analyze(
   rmse = jnp.sqrt(jnp.mean((y_pretest - y_pred_pre) ** 2))
   log_rmse = jnp.sqrt(jnp.mean((jnp.log(y_pretest) - jnp.log(y_pred_pre)) ** 2))
 
-  y_test = _compute_group_mean(test_conversions, treatment_mask, 1.0)
+  y_test = _compute_group_mean(
+      test_conversions, treatment_mask, treatment_cell_id
+  )
   x_test = _compute_group_mean(test_conversions, treatment_mask, 0.0)
   y_pred = pred_alpha + pred_beta * x_test
   y_pred_cumul = jnp.cumsum(y_pred)
   y_test_cumul = jnp.cumsum(y_test)
 
   geo_avg_cumul_effect = y_test_cumul - y_pred_cumul
-  n_treatment_geos = jnp.sum(treatment_mask)
+  n_treatment_geos = jnp.sum(
+      (treatment_mask == treatment_cell_id).astype(float)
+  )
   total_cumul_effect = n_treatment_geos * geo_avg_cumul_effect
   total_y_test_cumul = n_treatment_geos * y_test_cumul
   total_y_pred_cumul = n_treatment_geos * y_pred_cumul
@@ -730,9 +745,13 @@ def analyze(
       placebo_rmses,
       placebo_log_rmses,
   ) = jax.vmap(
-      _compute_placebo_effect_from_mask, in_axes=(None, None, None, 0)
+      _compute_placebo_effect_from_mask, in_axes=(None, None, None, 0, None)
   )(
-      pretest_conversions, test_conversions, treatment_mask, placebo_masks
+      pretest_conversions,
+      test_conversions,
+      treatment_mask,
+      placebo_masks,
+      treatment_cell_id,
   )
 
   placebo_y_test_cumul = jnp.cumsum(placebo_y_test, axis=1)
@@ -868,6 +887,7 @@ def analyze(
         total_lower_cis,
         total_upper_cis,
         sign,
+        treatment_cell_id,
     )
     icpd_standard_deviation = (
         lift_standard_deviation / icpd_results.cumulative_incremental_spend[-1]

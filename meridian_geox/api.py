@@ -281,6 +281,8 @@ class Constraints:
       self.budget_constraint = {
           cell: self.budget_constraint for cell in experiment_types
       }
+    elif self.budget_constraint is None:
+      self.budget_constraint = {}
 
 
 @dataclasses.dataclass
@@ -359,12 +361,26 @@ class AnalysisConfig:
   analysis_start_date: Timestamp
   # If needed, extend this to include a cooldown period.
   analysis_end_date: Timestamp
+  # The end date of the pretest period. If not provided, the pretest period
+  # will be all dates before the analysis_start_date.
+  pretest_end_date: Optional[Timestamp] = None
   # The dates to be excluded from the analysis.
   excluded_dates: SortedSet[Timestamp] = dataclasses.field(default_factory=set)
   # If not provided, will be inferred from the design config.
   alpha: Optional[float] = None
   # If not provided, will be inferred from the design config.
   test_type: Optional[TestType] = None
+
+  @pydantic.model_validator(mode="after")
+  def validate_pretest_end_date(self) -> "AnalysisConfig":
+    if (
+        self.pretest_end_date is not None
+        and self.pretest_end_date >= self.analysis_start_date
+    ):
+      raise ValueError(
+          "pretest_end_date must be strictly before analysis_start_date."
+      )
+    return self
 
 
 @dataclasses.dataclass

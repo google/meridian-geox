@@ -87,26 +87,15 @@ def validate_design_input(
   filtered_data = data[
       ~data[api.LOCATION].isin(list(constraints.excluded_geos))
   ]
-  if filtered_data[api.LOCATION].nunique() < 4:
+  if filtered_data[api.LOCATION].nunique() < 2 * (design_config.cell_count + 1):
     errors.append(
-        'Not enough geos left after excluding excluded geos. Need at least 4'
-        ' geos.'
+        'Not enough geos left after excluding excluded geos. Need at least 2'
+        ' geos in each group.'
     )
 
   # Check that excluded geos do not overlap with included control geos.
   if constraints.excluded_geos & constraints.included_control_geos:
     errors.append('Excluded geos must not overlap with included control geos.')
-
-  # Check that cell_count matches the number of experiment types.
-  # Normalization in DesignConfig ensures experiment_types is a dictionary.
-  experiment_types: dict[str, api.ExperimentType] = (
-      design_config.experiment_types  # type: ignore
-  )
-  if design_config.cell_count != len(experiment_types):
-    errors.append(
-        f'cell_count ({design_config.cell_count}) must match the number of'
-        f' experiment_types ({len(experiment_types)}).'
-    )
 
   # Check that alpha and power are between 0 and 1.
   if design_config.alpha <= 0 or design_config.alpha >= 1:
@@ -114,16 +103,27 @@ def validate_design_input(
   if design_config.power <= 0 or design_config.power >= 1:
     errors.append('Power must be between 0 and 1.')
 
-  # Check that CPIC is set for HOLDBACK experiments.
   # Normalization in DesignConfig ensures experiment_types and
   # cost_per_incremental_conversion are dictionaries.
   experiment_types: dict[str, api.ExperimentType] = (
       design_config.experiment_types  # type: ignore
   )
+  if len(experiment_types) != design_config.cell_count:
+    errors.append(
+        f'Experiment types must be set for {design_config.cell_count} cells,'
+        f' but {len(experiment_types)} cells are set.'
+    )
+    return errors
+  for cell_id in range(1, design_config.cell_count + 1):
+    cell = f'cell_{cell_id}'
+    if cell not in experiment_types:
+      errors.append(
+          f'Experiment type must be set for {cell} in multicell experiments.'
+      )
+
   cpics: dict[str, float] = (
       design_config.cost_per_incremental_conversion  # type: ignore
   )
-
   for cell, et in experiment_types.items():
     if et == api.ExperimentType.HOLDBACK and cpics.get(cell, 0) <= 0:
       errors.append(
@@ -134,9 +134,40 @@ def validate_design_input(
 
   # After normalization, budget_constraint is guaranteed to be a dict.
   budget_constraints: dict[str, api.Budget] = (
-      constraints.budget_constraint or {}  # type: ignore
+      constraints.budget_constraint  # type: ignore
   )
   _validate_budget_constraints(experiment_types, budget_constraints)
+
+  # Check that max_conversions_percent per cell is at least 0.1 and that
+  # the total max_conversions_percent is at most 0.5.
+  if (
+      constraints.max_conversions_percent / design_config.cell_count <= 0.1
+      or constraints.max_conversions_percent >= 0.5
+  ):
+    errors.append(
+        'Max conversions percent must be less than 0.5 and at least 0.1'
+        ' times the number of cells.'
+    )
+
+  # Check that go dark and heavy up cells have the appropriate spend column.
+  for cell, experiment_type in experiment_types.items():
+    if experiment_type in (
+        api.ExperimentType.GO_DARK,
+        api.ExperimentType.HEAVY_UP,
+    ):
+      if cell == 'cell_1':
+        if 'spend' not in data.columns and 'spend_cell_1' not in data.columns:
+          errors.append(
+              f'Spend column must be set for {experiment_type.name} experiments'
+              f' in cell {cell}. Expected spend or spend_cell_1.'
+          )
+      else:
+        spend_col = f'spend_{cell}'
+        if spend_col not in data.columns:
+          errors.append(
+              f'Spend column must be set for {experiment_type.name} experiments'
+              f' in cell {cell}. Expected {spend_col}.'
+          )
 
   return errors
 
@@ -154,14 +185,13 @@ def _validate_budget_constraints(
       )
       if budget_percent is None:
         logging.warning(
-            'Cell %s is %s but budget_pct is not provided. Using 100%% as'
-            ' default.',
+            '%s is %s but budget_pct is not provided. Using 100%% as default.',
             cell_name,
             experiment_type.name,
         )
         if budget_constraint and budget_constraint.budget is not None:
           logging.warning(
-              'Cell %s is %s but budget (absolute) is provided instead of'
+              '%s is %s but budget (absolute) is provided instead of'
               ' budget_pct.',
               cell_name,
               experiment_type.name,
@@ -170,12 +200,10 @@ def _validate_budget_constraints(
       # HOLDBACK
       budget = budget_constraint.budget if budget_constraint else None
       if budget is None:
-        logging.warning(
-            'Cell %s is HOLDBACK but no budget is provided.', cell_name
-        )
+        logging.warning('%s is HOLDBACK but no budget is provided.', cell_name)
         if budget_constraint and budget_constraint.budget_pct is not None:
           logging.warning(
-              'Cell %s is HOLDBACK but budget_pct is provided.',
+              '%s is HOLDBACK but budget_pct is provided.',
               cell_name,
           )
 

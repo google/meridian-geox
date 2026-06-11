@@ -46,7 +46,7 @@ class AnalysisTest(parameterized.TestCase):
     # G3 is excluded, and 2024-01-05 is excluded.
     design_obj = api.Design(
         designs={
-            '1': api.PerCellDesign(
+            'cell_1': api.PerCellDesign(
                 treatment_geos={'G1'},
                 minimum_detectable_effect=0.0,
                 design_implied_cpic=0.0,
@@ -91,6 +91,27 @@ class AnalysisTest(parameterized.TestCase):
     self.assertLen(time_series.test_dates, 3)
     self.assertEqual(time_series.test_dates[0], pd.Timestamp('2024-01-06'))
 
+  def test_get_time_series_with_gap(self):
+    data = self._create_sample_data(n_days=10, n_geos=2)
+    config = api.AnalysisConfig(
+        design=api.Design(designs={}, control_geos=set(), excluded_geos=set()),
+        analysis_start_date=pd.Timestamp('2024-01-08'),
+        analysis_end_date=pd.Timestamp('2024-01-10'),
+        pretest_end_date=pd.Timestamp('2024-01-04'),
+    )
+
+    time_series = analysis._get_time_series(data, api.CONVERSIONS, config)
+
+    # Pretest: 2024-01-01 to 2024-01-04 (4 days)
+    # Test: 2024-01-08 to 2024-01-10 (3 days)
+    # Gap: 2024-01-05 to 2024-01-07
+    self.assertEqual(time_series.pretest.shape, (4, 2))
+    self.assertEqual(time_series.test.shape, (3, 2))
+    self.assertLen(time_series.pretest_dates, 4)
+    self.assertLen(time_series.test_dates, 3)
+    self.assertEqual(time_series.pretest_dates[-1], pd.Timestamp('2024-01-04'))
+    self.assertEqual(time_series.test_dates[0], pd.Timestamp('2024-01-08'))
+
   def test_prepare_design_config_overrides(self):
     design_config = api.DesignConfig(
         experiment_duration=2,
@@ -117,13 +138,14 @@ class AnalysisTest(parameterized.TestCase):
     self.assertEqual(config.alpha, 0.05)
     self.assertEqual(config.test_type, api.TestType.TWO_SIDED)
 
-  def test_get_experiment_type(self):
+  def test_get_experiment_types(self):
     # Case 1: Single enum
     config = api.DesignConfig(
         experiment_duration=1, experiment_types=api.ExperimentType.GO_DARK
     )
     self.assertEqual(
-        analysis._get_experiment_type(config), api.ExperimentType.GO_DARK
+        analysis._get_experiment_types(config),
+        {api.CELL_1: api.ExperimentType.GO_DARK},
     )
 
     # Case 2: Singleton map
@@ -132,7 +154,8 @@ class AnalysisTest(parameterized.TestCase):
         experiment_types={'cell_1': api.ExperimentType.HOLDBACK},
     )
     self.assertEqual(
-        analysis._get_experiment_type(config), api.ExperimentType.HOLDBACK
+        analysis._get_experiment_types(config),
+        {'cell_1': api.ExperimentType.HOLDBACK},
     )
 
   def test_get_treatment_mask(self):
@@ -159,6 +182,42 @@ class AnalysisTest(parameterized.TestCase):
     np.testing.assert_array_equal(treatment.mask, jnp.array([1, 0, 1, 0]))
     self.assertEqual(treatment.geos, ['G1', 'G3'])
 
+  def test_get_treatment_mask_multicell(self):
+    data = self._create_sample_data(n_days=1, n_geos=5)
+    # Geos are G1, G2, G3, G4, G5.
+    design_obj = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1', 'G3'},
+                minimum_detectable_effect=0.0,
+                design_implied_cpic=0.0,
+                p_value=0.0,
+                budget=0.0,
+            ),
+            'cell_2': api.PerCellDesign(
+                treatment_geos={'G4'},
+                minimum_detectable_effect=0.0,
+                design_implied_cpic=0.0,
+                p_value=0.0,
+                budget=0.0,
+            ),
+        },
+        control_geos={'G2', 'G5'},
+        excluded_geos=set(),
+    )
+
+    treatment = analysis._get_treatment_mask(data, design_obj)
+
+    # Sorted geos: G1, G2, G3, G4, G5.
+    # Treatment cell_1: G1, G3 (expected mask value = 1.0).
+    # Treatment cell_2: G4 (expected mask value = 2.0).
+    # Control: G2, G5 (expected mask value = 0.0).
+    # Expected mask: [1.0, 0.0, 1.0, 2.0, 0.0]
+    np.testing.assert_array_equal(
+        treatment.mask, jnp.array([1.0, 0.0, 1.0, 2.0, 0.0])
+    )
+    self.assertEqual(treatment.geos, ['G1', 'G3', 'G4'])
+
   def test_get_full_mask(self):
     treatment_mask = jnp.array([1, 0, 0, 1, 0])
     # control indices are [1, 2, 4]
@@ -183,7 +242,7 @@ class AnalysisTest(parameterized.TestCase):
 
     study_design = api.Design(
         designs={
-            '1': api.PerCellDesign(
+            'cell_1': api.PerCellDesign(
                 treatment_geos={'G1', 'G2'},
                 minimum_detectable_effect=0.1,
                 design_implied_cpic=0.0,
@@ -219,13 +278,13 @@ class AnalysisTest(parameterized.TestCase):
     self.assertEqual(result.analysis_config.alpha, 0.1)
     self.assertEqual(result.analysis_config.test_type, api.TestType.TWO_SIDED)
 
-    self.assertIn('1', result.results)
+    self.assertIn('cell_1', result.results)
 
-    metrics = result.results['1']
+    metrics = result.results['cell_1']
 
     # Test reproducibility
     result2 = analysis.analyze(data, config)
-    metrics2 = result2.results['1']
+    metrics2 = result2.results['cell_1']
 
     self.assertEqual(metrics.lift.point_estimate, metrics2.lift.point_estimate)
     self.assertEqual(metrics.lift.lower_bound, metrics2.lift.lower_bound)
@@ -288,7 +347,7 @@ class AnalysisTest(parameterized.TestCase):
 
     study_design = api.Design(
         designs={
-            '1': api.PerCellDesign(
+            'cell_1': api.PerCellDesign(
                 treatment_geos={'G1'},
                 minimum_detectable_effect=0.1,
                 design_implied_cpic=0.0,
@@ -316,12 +375,12 @@ class AnalysisTest(parameterized.TestCase):
 
     self.assertIsInstance(result, api.AnalysisResult)
     self.assertIs(result.analysis_config, config)
-    self.assertIn('1', result.results)
-    metrics = result.results['1']
+    self.assertIn('cell_1', result.results)
+    metrics = result.results['cell_1']
 
     # Test reproducibility
     result2 = analysis.analyze(data, config)
-    metrics2 = result2.results['1']
+    metrics2 = result2.results['cell_1']
 
     self.assertEqual(metrics.lift.point_estimate, metrics2.lift.point_estimate)
     self.assertEqual(metrics.lift.lower_bound, metrics2.lift.lower_bound)
@@ -372,7 +431,7 @@ class AnalysisTest(parameterized.TestCase):
     )
     study_design = api.Design(
         designs={
-            '1': api.PerCellDesign(
+            'cell_1': api.PerCellDesign(
                 treatment_geos={'G1'},
                 minimum_detectable_effect=0.1,
                 design_implied_cpic=0.0,
@@ -414,7 +473,7 @@ class AnalysisTest(parameterized.TestCase):
     # G10 is excluded
     study_design = api.Design(
         designs={
-            '1': api.PerCellDesign(
+            'cell_1': api.PerCellDesign(
                 treatment_geos={'G1'},
                 minimum_detectable_effect=0.1,
                 design_implied_cpic=0.0,
@@ -443,11 +502,65 @@ class AnalysisTest(parameterized.TestCase):
 
     self.assertIsInstance(result, api.AnalysisResult)
     self.assertIs(result.analysis_config, config)
-    self.assertIn('1', result.results)
-    metrics = result.results['1']
+    self.assertIn('cell_1', result.results)
+    metrics = result.results['cell_1']
 
     self.assertAlmostEqual(metrics.lift.point_estimate, 0.0, places=1)
     self.assertAlmostEqual(metrics.percent_lift.point_estimate, 0.0, places=1)
+
+  def test_analyze_with_gap(self):
+    data = self._create_sample_data(n_days=15, n_geos=10)
+
+    design_config = api.DesignConfig(
+        experiment_duration=2,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        seed=42,
+        n_candidates=3,
+        n_aa_test_iterations=5,
+    )
+
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={f'G{i}' for i in range(2, 10)},
+        excluded_geos={'G10'},
+        design_config=design_config,
+        constraints=api.Constraints(
+            excluded_geos={'G10'}, max_conversions_percent=0.5
+        ),
+        data=data,
+    )
+
+    config = api.AnalysisConfig(
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-11'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+        pretest_end_date=pd.Timestamp('2024-01-08'),
+        alpha=0.1,
+        test_type=api.TestType.TWO_SIDED,
+    )
+
+    result = analysis.analyze(data, config)
+
+    self.assertIsInstance(result, api.AnalysisResult)
+    self.assertIs(result.analysis_config, config)
+    self.assertIn('cell_1', result.results)
+    metrics = result.results['cell_1']
+    self.assertAlmostEqual(metrics.lift.point_estimate, 0.0, places=1)
+    self.assertNotIn(
+        pd.Timestamp('2024-01-09'), metrics.counterfactual_conversions.index
+    )
+    self.assertNotIn(
+        pd.Timestamp('2024-01-10'), metrics.counterfactual_conversions.index
+    )
 
   def test_analyze_locations_mismatch(self):
     data = self._create_sample_data(n_days=5, n_geos=3)
@@ -464,7 +577,7 @@ class AnalysisTest(parameterized.TestCase):
 
     study_design = api.Design(
         designs={
-            '1': api.PerCellDesign(
+            'cell_1': api.PerCellDesign(
                 treatment_geos={'G1'},
                 minimum_detectable_effect=0.1,
                 design_implied_cpic=0.0,
@@ -490,6 +603,133 @@ class AnalysisTest(parameterized.TestCase):
         ValueError, 'locations in the analysis data do not match'
     ):
       analysis.analyze(analysis_data, config)
+
+  def test_plot_analysis_with_gap(self):
+    data = self._create_sample_data(n_days=15, n_geos=10)
+
+    design_config = api.DesignConfig(
+        experiment_duration=2,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        seed=42,
+        n_candidates=3,
+        n_aa_test_iterations=5,
+    )
+
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={f'G{i}' for i in range(2, 10)},
+        excluded_geos={'G10'},
+        design_config=design_config,
+        constraints=api.Constraints(
+            excluded_geos={'G10'}, max_conversions_percent=0.5
+        ),
+        data=data,
+    )
+
+    config = api.AnalysisConfig(
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-11'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+        pretest_end_date=pd.Timestamp('2024-01-08'),
+        alpha=0.1,
+        test_type=api.TestType.TWO_SIDED,
+    )
+
+    result = analysis.analyze(data, config)
+
+    with absltest.mock.patch.object(analysis.plt, 'show') as mock_show:
+      analysis.plot_analysis(result)
+      mock_show.assert_called_once()
+
+  def _create_multicell_sample_data(
+      self, n_days=15, n_geos=10, cell_names=None
+  ) -> pd.DataFrame:
+    """Helper to create sample data with multicell spend."""
+    if cell_names is None:
+      cell_names = ['cell_1', 'cell_2']
+    dates = pd.date_range('2024-01-01', periods=n_days)
+    geos = [f'G{i}' for i in range(1, n_geos + 1)]
+    data_rows = []
+    for d in dates:
+      for i, g in enumerate(geos):
+        val = 100.0 + i * 10.0 + (d.day % 7) * 5.0
+        row = {api.DATE: d, api.LOCATION: g, api.CONVERSIONS: val}
+        for cell in cell_names:
+          row[f'spend_{cell}'] = val * 0.5
+        data_rows.append(row)
+    return pd.DataFrame(data_rows)
+
+  def test_analyze_multicell(self):
+    data = self._create_multicell_sample_data(n_days=15, n_geos=10)
+    cell_names = ['cell_1', 'cell_2']
+
+    design_config = api.DesignConfig(
+        experiment_duration=3,
+        experiment_types={
+            'cell_1': api.ExperimentType.HOLDBACK,
+            'cell_2': api.ExperimentType.HOLDBACK,
+        },
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        seed=42,
+        cell_count=2,
+        n_candidates=5,
+        n_aa_test_iterations=10,
+    )
+
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1', 'G2'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            ),
+            'cell_2': api.PerCellDesign(
+                treatment_geos={'G3', 'G4'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            ),
+        },
+        control_geos={f'G{i}' for i in range(5, 11)},
+        excluded_geos=set(),
+        design_config=design_config,
+        constraints=api.Constraints(max_conversions_percent=0.5),
+        data=data,
+    )
+
+    config = api.AnalysisConfig(
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-11'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+        alpha=0.1,
+        test_type=api.TestType.TWO_SIDED,
+    )
+
+    result = analysis.analyze(data, config)
+
+    self.assertIsInstance(result, api.AnalysisResult)
+    self.assertIs(result.analysis_config, config)
+    self.assertEqual(sorted(list(result.results.keys())), ['cell_1', 'cell_2'])
+
+    for cell in cell_names:
+      metrics = result.results[cell]
+      self.assertIsInstance(metrics, api.AnalysisMetrics)
+      self.assertLen(metrics.counterfactual_conversions, 15)
+      self.assertLen(metrics.pointwise_difference, 15)
+      self.assertLen(metrics.cumulative_lift, 5)
+      self.assertIsNotNone(metrics.icpd)
 
 
 if __name__ == '__main__':

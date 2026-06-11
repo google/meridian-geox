@@ -714,6 +714,7 @@ class TbrTest(parameterized.TestCase):
         placebo_masks=placebo_masks,
         alpha=0.1,
         experiment_type=api.ExperimentType.HOLDBACK,
+        treatment_cell_id=1.0,
         pretest_spend=pretest_spend,
         test_spend=test_spend,
     )
@@ -869,6 +870,7 @@ class TbrTest(parameterized.TestCase):
         placebo_masks=placebo_masks,
         alpha=0.1,
         experiment_type=api.ExperimentType.GO_DARK,
+        treatment_cell_id=1.0,
         pretest_spend=pretest_spend,
         test_spend=test_spend,
     )
@@ -920,6 +922,114 @@ class TbrTest(parameterized.TestCase):
     # ICPD = 100.0 / 100.0 = 1.0.
     assert metrics.icpd is not None
     self.assertAlmostEqual(metrics.icpd.point_estimate, 1.0, delta=0.01)
+
+  def test_generate_analysis_with_treatment_cell_id(self):
+    # Setup 6 geos: 1 treatment in cell 1, 1 treatment in cell 2, 4 control
+    treatment_geos = {'cell_1': {'G0'}, 'cell_2': {'G1'}}
+    geos = sorted(['G0', 'G1', 'G2', 'G3', 'G4', 'G5'])
+
+    # Setup data: 10 days pre, 5 days test. G1 (cell 2) gets lift.
+    dates = pd.date_range('2024-01-01', periods=15)
+    data_list = []
+    for date in dates:
+      for geo in geos:
+        val = 100.0
+        spend = 10.0
+        if (
+            date >= pd.Timestamp('2024-01-11')
+            and geo in treatment_geos['cell_2']
+        ):
+          val += 10.0  # 10% lift
+          spend = 20.0
+        elif (
+            date >= pd.Timestamp('2024-01-11')
+            and geo in treatment_geos['cell_1']
+        ):
+          val += 5.0  # some lift in cell 1, ignored by cell 2 analysis
+          spend = 15.0
+        data_list.append({
+            'date': date,
+            'location': geo,
+            'conversions': val,
+            'spend': spend,
+        })
+
+    conversions_data = pd.DataFrame(data_list)
+
+    # Use 1.0 for cell 1, 2.0 for cell 2, 0.0 for control
+    treatment_mask = jnp.array([1, 2, 0, 0, 0, 0])
+    placebo_masks = jnp.array([
+        [0, 0, 1, 2, 0, 0],
+        [0, 0, 0, 0, 1, 2],
+        [0, 0, 1, 0, 2, 0],
+        [0, 0, 0, 1, 0, 2],
+        [0, 0, 1, 0, 0, 2],
+        [0, 0, 0, 1, 2, 0],
+        [0, 0, 1, 2, 0, 0],
+        [0, 0, 0, 0, 1, 2],
+        [0, 0, 1, 0, 2, 0],
+        [0, 0, 0, 1, 0, 2],
+    ])
+
+    pivoted_conversions = (
+        conversions_data.pivot_table(
+            index='date',
+            columns='location',
+            values='conversions',
+            aggfunc='sum',
+        )
+        .sort_index()
+        .reindex(sorted(geos), axis=1)
+    )
+    pretest_conversions = jnp.array(
+        pivoted_conversions[
+            pivoted_conversions.index < pd.Timestamp('2024-01-11')
+        ].values
+    )
+    test_conversions = jnp.array(
+        pivoted_conversions[
+            (pivoted_conversions.index >= pd.Timestamp('2024-01-11'))
+            & (pivoted_conversions.index <= pd.Timestamp('2024-01-15'))
+        ].values
+    )
+
+    pivoted_spend = (
+        conversions_data.pivot_table(
+            index='date', columns='location', values='spend', aggfunc='sum'
+        )
+        .sort_index()
+        .reindex(sorted(geos), axis=1)
+    )
+    pretest_spend = jnp.array(
+        pivoted_spend[pivoted_spend.index < pd.Timestamp('2024-01-11')].values
+    )
+    test_spend = jnp.array(
+        pivoted_spend[
+            (pivoted_spend.index >= pd.Timestamp('2024-01-11'))
+            & (pivoted_spend.index <= pd.Timestamp('2024-01-15'))
+        ].values
+    )
+
+    tbr_result = tbr.analyze(
+        pretest_conversions=pretest_conversions,
+        test_conversions=test_conversions,
+        treatment_mask=treatment_mask,
+        placebo_masks=placebo_masks,
+        alpha=0.1,
+        experiment_type=api.ExperimentType.HOLDBACK,
+        treatment_cell_id=2.0,
+        pretest_spend=pretest_spend,
+        test_spend=test_spend,
+    )
+
+    # G1 is only 1 treated geo for cell 2:
+    # 1 geo * 10 lift/day * 5 days = 50.0 total lift
+    self.assertAlmostEqual(tbr_result.lift.point_estimate, 50.0, delta=1.0)
+    self.assertLess(tbr_result.lift.p_value, 0.5)
+    self.assertIsNotNone(tbr_result.icpd)
+    icpd = tbr_result.icpd
+    assert icpd is not None
+    self.assertAlmostEqual(icpd.point_estimate, 1.0, delta=0.01)
 
   def test_compute_studentized_p_value(self):
     p_val = methodology_util.compute_studentized_p_value(
@@ -1052,7 +1162,7 @@ class TbrTest(parameterized.TestCase):
         rmse,
         log_rmse,
     ) = tbr._compute_placebo_effect_from_mask(
-        data_pretest, data_test, mask, p_mask
+        data_pretest, data_test, mask, p_mask, 1.0
     )
     effect = y_test - y_pred
     # p_mask=1 selects G1. valid_control_mask selects G2.
@@ -1061,6 +1171,35 @@ class TbrTest(parameterized.TestCase):
     # test: py_test = [30], px_test = [30].
     # py_pred = 0 + 1 * 30 = 30.
     # effect = 30 - 30 = 0.
+    self.assertAlmostEqual(float(rmse), 0.0, delta=1e-4)
+    self.assertAlmostEqual(float(effect[0]), 0.0, delta=1e-4)
+    self.assertAlmostEqual(float(log_rmse), 0.0, delta=1e-4)
+
+  def test_compute_placebo_effect_from_mask_multicell(self):
+    # Setup simple data with 5 geos
+    data_pretest = jnp.array([
+        [10.0, 10.0, 10.0, 10.0, 10.0],
+        [20.0, 20.0, 20.0, 20.0, 20.0],
+    ])
+    data_test = jnp.array([
+        [30.0, 30.0, 30.0, 30.0, 30.0],
+    ])
+    # G0 is cell 1, G1 is cell 2, G2-G4 are control
+    mask = jnp.array([1, 2, 0, 0, 0])
+    # G2 is placebo cell 2, G3 is placebo cell 1, G4 is control
+    # Note that non-zero placebo mask entries are strictly restricted to
+    # indices originally assigned to control (where mask == 0).
+    p_mask = jnp.array([0, 0, 2, 1, 0])
+
+    (
+        y_test,
+        y_pred,
+        rmse,
+        log_rmse,
+    ) = tbr._compute_placebo_effect_from_mask(
+        data_pretest, data_test, mask, p_mask, 2.0
+    )
+    effect = y_test - y_pred
     self.assertAlmostEqual(float(rmse), 0.0, delta=1e-4)
     self.assertAlmostEqual(float(effect[0]), 0.0, delta=1e-4)
     self.assertAlmostEqual(float(log_rmse), 0.0, delta=1e-4)

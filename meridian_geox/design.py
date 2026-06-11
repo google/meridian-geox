@@ -350,8 +350,8 @@ def _get_design_summary(
               f'{design_config.methodology.name}'
           ),
           'r2': r2_scores_np[i][metrics_cell_index],
+          'mde': mde_pct,
           'mde_abs': total_mde_abs,
-          'mde_pct': mde_pct,
           'p_value': p_values_np[i][metrics_cell_index],
           'budget': required_budget,
       })
@@ -369,19 +369,18 @@ def _get_design_summary(
 
   design_metrics = pd.DataFrame(metrics_list)
 
-  # TODO: Add more design metrics to rank the designs.
-  # Rank by max_mde_pct across cells.
+  # Rank by max_mde across cells.
   max_mde_df = (
-      design_metrics.groupby('design_id')['mde_pct']
+      design_metrics.groupby('design_id')['mde']
       .max()
-      .reset_index(name='max_mde_pct')
+      .reset_index(name='max_mde')
   )
-  top_design_ids = max_mde_df.sort_values(by='max_mde_pct').head(
+  top_design_ids = max_mde_df.sort_values(by='max_mde').head(
       design_config.design_output_count
   )['design_id']
   design_metrics = (
       design_metrics[design_metrics['design_id'].isin(top_design_ids)]
-      .sort_values(by='mde_pct')
+      .sort_values(by='mde')
       .reset_index(drop=True)
   )
   designs = {design_id: designs[design_id] for design_id in top_design_ids}
@@ -394,7 +393,7 @@ def _get_design_summary(
         if provided_budget and provided_budget.budget is not None:
           if per_cell_design.budget > provided_budget.budget:
             logging.warning(
-                'Design %s: Cell %s required budget (%.2f) exceeds provided '
+                'Design %s: %s required budget (%.2f) exceeds provided '
                 'budget (%.2f).',
                 design_id,
                 cell_name,
@@ -584,9 +583,11 @@ def concat_design_reports(
   if combined_metrics.empty:
     raise ValueError('No design metrics to concatenate.')
 
-  top_metrics = combined_metrics.sort_values(by='mde_pct').head(
-      design_output_count
-  ).reset_index(drop=True)
+  top_metrics = (
+      combined_metrics.sort_values(by='mde')
+      .head(design_output_count)
+      .reset_index(drop=True)
+  )
   top_designs = {
       design_id: all_designs[design_id]
       for design_id in top_metrics['design_id']

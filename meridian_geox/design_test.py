@@ -92,7 +92,11 @@ class DesignTest(parameterized.TestCase):
       self.assertTrue(all_design_geos.issubset(set(locations)))
 
     self.assertFalse(result.design_metrics.empty)
-    self.assertIn('mde_pct', result.design_metrics.columns)
+    self.assertIn('mde', result.design_metrics.columns)
+    columns_list = list(result.design_metrics.columns)
+    mde_idx = columns_list.index('mde')
+    mde_abs_idx = columns_list.index('mde_abs')
+    self.assertEqual(mde_abs_idx, mde_idx + 1)
     self.assertIn('p_value', result.design_metrics.columns)
     self.assertIn('cell', result.design_metrics.columns)
     self.assertIn('design_methodology', result.design_metrics.columns)
@@ -108,7 +112,7 @@ class DesignTest(parameterized.TestCase):
         experiment_types=api.ExperimentType.HOLDBACK,
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
     )
-    constraints = api.Constraints()
+    constraints = api.Constraints(budget_constraint=api.Budget(budget=1000.0))
 
     # 3 geos: 2 treatment + 2 control = 4 required for RANDOM.
     locations = ['geo_1', 'geo_2', 'geo_3']
@@ -119,21 +123,10 @@ class DesignTest(parameterized.TestCase):
     with self.assertRaisesRegex(ValueError, 'Not enough geos.'):
       design.run_design(data_3, design_config, constraints)
 
-    # 4 geos, but max_conversions_percent=0.8 means n_treated=3,
-    # so n_control=1, which is < 2.
-    locations_2 = ['geo_1', 'geo_2', 'geo_3', 'geo_4']
-    data_list_2 = []
-    for d, l in itertools.product(dates, locations_2):
-      data_list_2.append({api.DATE: d, api.LOCATION: l, api.CONVERSIONS: 10.0})
-    data_2 = pd.DataFrame(data_list_2)
-    constraints_2 = api.Constraints(max_conversions_percent=0.8)
-    with self.assertRaisesRegex(ValueError, 'Not enough geos.'):
-      design.run_design(data_2, design_config, constraints_2)
-
   def test_design_small_n_geos(self):
-    # 4 geos.
+    # 6 geos.
     dates = pd.date_range(start='2023-01-01', periods=10)
-    locations = ['geo_1', 'geo_2', 'geo_3', 'geo_4']
+    locations = [f'geo_{i}' for i in range(6)]
     data_list = []
     for d, l in itertools.product(dates, locations):
       data_list.append({api.DATE: d, api.LOCATION: l, api.CONVERSIONS: 10.0})
@@ -143,21 +136,25 @@ class DesignTest(parameterized.TestCase):
         experiment_types=api.ExperimentType.HOLDBACK,
         n_candidates=5,
     )
-    constraints = api.Constraints(max_conversions_percent=0.5)
+    constraints = api.Constraints(
+        max_conversions_percent=0.4,
+        budget_constraint=api.Budget(budget=1000.0),
+    )
 
     result = design.run_design(data, design_config, constraints)
 
     for _, design_obj in result.designs.items():
       # n_treated should be at least 2 and at most n_geos - 2.
-      # With 4 geos, 0.5 * 4 = 2 treated.
+      # With 6 geos and
+      # max_conversions_percent=0.4, 0.4 * 6 = 2.4 -> 2 treated, 4 control.
       t_geos = design_obj.designs['cell_1'].treatment_geos
       c_geos = design_obj.control_geos
       self.assertLen(t_geos, 2)
-      self.assertLen(c_geos, 2)
+      self.assertLen(c_geos, 4)
 
   def test_design_excluded_geos(self):
     dates = pd.date_range(start='2023-01-01', periods=30)
-    locations = ['geo_1', 'geo_2', 'geo_3', 'geo_4', 'geo_5']
+    locations = [f'geo_{i}' for i in range(10)]
     data_list = []
     for date, loc in itertools.product(dates, locations):
       data_list.append({
@@ -173,7 +170,9 @@ class DesignTest(parameterized.TestCase):
         n_candidates=10,
     )
     constraints = api.Constraints(
-        excluded_geos={'geo_1'}, max_conversions_percent=0.5
+        excluded_geos={'geo_1'},
+        max_conversions_percent=0.4,
+        budget_constraint=api.Budget(budget=1000.0),
     )
 
     result = design.run_design(data, design_config, constraints)
@@ -222,8 +221,16 @@ class DesignTest(parameterized.TestCase):
         geo_assignment_rule=rule,
     )
 
-    result1 = design.run_design(data, config1, api.Constraints())
-    result2 = design.run_design(data, config2, api.Constraints())
+    result1 = design.run_design(
+        data,
+        config1,
+        api.Constraints(budget_constraint=api.Budget(budget=1000.0)),
+    )
+    result2 = design.run_design(
+        data,
+        config2,
+        api.Constraints(budget_constraint=api.Budget(budget=1000.0)),
+    )
 
     # Check that design metrics are identical.
     pd.testing.assert_frame_equal(
@@ -301,7 +308,9 @@ class DesignTest(parameterized.TestCase):
     # Force geo_0 and geo_1 to be in control.
     included_control = {'geo_0', 'geo_1'}
     constraints = api.Constraints(
-        included_control_geos=included_control, max_conversions_percent=0.5
+        included_control_geos=included_control,
+        max_conversions_percent=0.4,
+        budget_constraint=api.Budget(budget=1000.0),
     )
 
     result = design.run_design(data, design_config, constraints)
@@ -328,7 +337,7 @@ class DesignTest(parameterized.TestCase):
         )
     data = pd.DataFrame(data_list)
 
-    # Max conversions percent = 0.5.
+    # Max conversions percent = 0.4.
     # geo_0 (60%) must be excluded from treatment.
     design_config = api.DesignConfig(
         experiment_duration=5,
@@ -337,7 +346,10 @@ class DesignTest(parameterized.TestCase):
         n_candidates=10,
         seed=42,
     )
-    constraints = api.Constraints(max_conversions_percent=0.5)
+    constraints = api.Constraints(
+        max_conversions_percent=0.4,
+        budget_constraint=api.Budget(budget=1000.0),
+    )
 
     result = design.run_design(data, design_config, constraints)
 
@@ -507,7 +519,7 @@ class DesignTest(parameterized.TestCase):
     )
     ds1_metrics = pd.DataFrame([{
         'design_id': d1_id,
-        'mde_pct': 0.8,
+        'mde': 0.8,
         'design_methodology': 'RANDOM-TBR',
     }])
     ds1 = api.DesignSet(
@@ -534,7 +546,7 @@ class DesignTest(parameterized.TestCase):
     )
     ds2_metrics = pd.DataFrame([{
         'design_id': d2_id,
-        'mde_pct': 0.9,
+        'mde': 0.9,
         'design_methodology': 'RANDOM-TBR',
     }])
     ds2 = api.DesignSet(
@@ -549,7 +561,7 @@ class DesignTest(parameterized.TestCase):
     self.assertLen(result.designs, 1)
     self.assertIn(d1_id, result.designs)
     self.assertEqual(result.design_metrics.iloc[0]['design_id'], d1_id)
-    self.assertEqual(result.design_metrics.iloc[0]['mde_pct'], 0.8)
+    self.assertEqual(result.design_metrics.iloc[0]['mde'], 0.8)
     self.assertEqual(
         result.design_metrics.iloc[0]['design_methodology'], 'RANDOM-TBR'
     )
@@ -584,7 +596,7 @@ class DesignTest(parameterized.TestCase):
     )
     ds1_metrics = pd.DataFrame([{
         'design_id': d1_id,
-        'mde_pct': 0.8,
+        'mde': 0.8,
         'design_methodology': 'RANDOM-TBR',
     }])
     ds1 = api.DesignSet(
@@ -609,7 +621,7 @@ class DesignTest(parameterized.TestCase):
     )
     ds2_metrics = pd.DataFrame([{
         'design_id': d2_id,
-        'mde_pct': 0.7,
+        'mde': 0.7,
         'design_methodology': 'RANDOM-TBR',
     }])
     ds2 = api.DesignSet(
@@ -627,11 +639,11 @@ class DesignTest(parameterized.TestCase):
     self.assertIsInstance(result, api.DesignSet)
     self.assertLen(result.designs, 2)
     self.assertLen(result.design_metrics, 2)
-    # Check that they are sorted by mde_pct (0.7 < 0.8).
+    # Check that they are sorted by mde (0.7 < 0.8).
     self.assertEqual(result.design_metrics.iloc[0]['design_id'], d2_id)
-    self.assertEqual(result.design_metrics.iloc[0]['mde_pct'], 0.7)
+    self.assertEqual(result.design_metrics.iloc[0]['mde'], 0.7)
     self.assertEqual(result.design_metrics.iloc[1]['design_id'], d1_id)
-    self.assertEqual(result.design_metrics.iloc[1]['mde_pct'], 0.8)
+    self.assertEqual(result.design_metrics.iloc[1]['mde'], 0.8)
 
   @parameterized.named_parameters(
       dict(
@@ -855,7 +867,7 @@ class DesignTest(parameterized.TestCase):
     cell1_metrics = result.design_metrics[
         result.design_metrics['cell'] == 'cell_1'
     ].iloc[0]
-    self.assertAlmostEqual(cell1_metrics['mde_pct'], 0.1, places=5)
+    self.assertAlmostEqual(cell1_metrics['mde'], 0.1, places=5)
     self.assertAlmostEqual(cell1_metrics['p_value'], 0.5, places=5)
     self.assertAlmostEqual(cell1_metrics['r2'], 0.9, places=5)
     self.assertAlmostEqual(cell1_metrics['mde_abs'], 5.0, places=5)
@@ -864,7 +876,7 @@ class DesignTest(parameterized.TestCase):
     cell2_metrics = result.design_metrics[
         result.design_metrics['cell'] == 'cell_2'
     ].iloc[0]
-    self.assertAlmostEqual(cell2_metrics['mde_pct'], 0.2, places=5)
+    self.assertAlmostEqual(cell2_metrics['mde'], 0.2, places=5)
     self.assertAlmostEqual(cell2_metrics['p_value'], 0.6, places=5)
     self.assertAlmostEqual(cell2_metrics['r2'], 0.8, places=5)
     self.assertAlmostEqual(cell2_metrics['mde_abs'], 10.0, places=5)
@@ -872,7 +884,7 @@ class DesignTest(parameterized.TestCase):
 
   def test_run_design_populates_data_field(self):
     dates = pd.date_range(start='2023-01-01', periods=10)
-    locations = ['geo_1', 'geo_2', 'geo_3', 'geo_4']
+    locations = [f'geo_{i}' for i in range(6)]
     data_list = []
     for d, l in itertools.product(dates, locations):
       data_list.append({api.DATE: d, api.LOCATION: l, api.CONVERSIONS: 10.0})
@@ -882,7 +894,10 @@ class DesignTest(parameterized.TestCase):
         experiment_types=api.ExperimentType.HOLDBACK,
         n_candidates=5,
     )
-    constraints = api.Constraints(max_conversions_percent=0.5)
+    constraints = api.Constraints(
+        max_conversions_percent=0.4,
+        budget_constraint=api.Budget(budget=1000.0),
+    )
 
     result = design.run_design(data, design_config, constraints)
 

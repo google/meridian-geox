@@ -31,7 +31,12 @@ class UtilTest(parameterized.TestCase):
     data_rows = []
     for d in self.dates:
       for g in self.geos:
-        data_rows.append({'date': d, 'location': g, 'conversions': 100.0})
+        data_rows.append({
+            'date': d,
+            'location': g,
+            'conversions': 100.0,
+            'spend': 10.0,
+        })
     self.data = pd.DataFrame(data_rows)
 
     self.design_config = api.DesignConfig(
@@ -40,7 +45,9 @@ class UtilTest(parameterized.TestCase):
         alpha=0.1,
         power=0.8,
     )
-    self.constraints = api.Constraints()
+    self.constraints = api.Constraints(
+        budget_constraint={'cell_1': api.Budget(budget=1000.0)}
+    )
 
   def test_validate_design_input_success(self):
     errors = util.validate_design_input(
@@ -89,7 +96,10 @@ class UtilTest(parameterized.TestCase):
 
   def test_validate_design_input_not_enough_geos_after_exclusion(self):
     # Exclude 7 out of 10 geos, leaving only 3. Need at least 4.
-    constraints = api.Constraints(excluded_geos={f'G{i}' for i in range(7)})
+    constraints = api.Constraints(
+        excluded_geos={f'G{i}' for i in range(7)},
+        budget_constraint={'cell_1': api.Budget(budget=1000.0)},
+    )
     errors = util.validate_design_input(
         self.data, self.design_config, constraints
     )
@@ -100,7 +110,9 @@ class UtilTest(parameterized.TestCase):
 
   def test_validate_design_input_overlap_excluded_included_control(self):
     constraints = api.Constraints(
-        excluded_geos={'G1'}, included_control_geos={'G1'}
+        excluded_geos={'G1'},
+        included_control_geos={'G1'},
+        budget_constraint={'cell_1': api.Budget(budget=1000.0)},
     )
     errors = util.validate_design_input(
         self.data, self.design_config, constraints
@@ -154,9 +166,10 @@ class UtilTest(parameterized.TestCase):
         experiment_types=api.ExperimentType.GO_DARK,
         cost_per_incremental_conversion=0.0,
     )
-    errors = util.validate_design_input(
-        self.data, design_config, self.constraints
+    constraints = api.Constraints(
+        budget_constraint={'cell_1': api.Budget(budget_pct=0.5)}
     )
+    errors = util.validate_design_input(self.data, design_config, constraints)
     self.assertEmpty(errors)
 
   def test_validate_design_input_holdback_no_budget_warning(self):
@@ -166,10 +179,11 @@ class UtilTest(parameterized.TestCase):
         experiment_types={'cell_1': api.ExperimentType.HOLDBACK},
         cost_per_incremental_conversion={'cell_1': 1.0},
     )
+    constraints = api.Constraints(budget_constraint={})
     with absltest.mock.patch.object(logging, 'warning') as mock_warning:
-      util.validate_design_input(self.data, design_config, self.constraints)
+      util.validate_design_input(self.data, design_config, constraints)
       mock_warning.assert_any_call(
-          'Cell %s is HOLDBACK but no budget is provided.', 'cell_1'
+          '%s is HOLDBACK but no budget is provided.', 'cell_1'
       )
 
   def test_validate_design_input_holdback_budget_pct_warning(self):
@@ -185,7 +199,7 @@ class UtilTest(parameterized.TestCase):
     with absltest.mock.patch.object(logging, 'warning') as mock_warning:
       util.validate_design_input(self.data, design_config, constraints)
       mock_warning.assert_any_call(
-          'Cell %s is HOLDBACK but budget_pct is provided.', 'cell_1'
+          '%s is HOLDBACK but budget_pct is provided.', 'cell_1'
       )
 
   def test_validate_design_input_go_dark_no_budget_pct_warning(self):
@@ -197,8 +211,7 @@ class UtilTest(parameterized.TestCase):
     with absltest.mock.patch.object(logging, 'warning') as mock_warning:
       util.validate_design_input(self.data, design_config, self.constraints)
       mock_warning.assert_any_call(
-          'Cell %s is %s but budget_pct is not provided. Using 100%% as'
-          ' default.',
+          '%s is %s but budget_pct is not provided. Using 100%% as default.',
           'cell_1',
           'GO_DARK',
       )
@@ -215,8 +228,7 @@ class UtilTest(parameterized.TestCase):
     with absltest.mock.patch.object(logging, 'warning') as mock_warning:
       util.validate_design_input(self.data, design_config, constraints)
       mock_warning.assert_any_call(
-          'Cell %s is %s but budget (absolute) is provided instead of'
-          ' budget_pct.',
+          '%s is %s but budget (absolute) is provided instead of budget_pct.',
           'cell_1',
           'GO_DARK',
       )
@@ -234,7 +246,51 @@ class UtilTest(parameterized.TestCase):
         self.data, design_config, self.constraints
     )
     self.assertLen(errors, 1)
-    self.assertIn('cell_count (3) must match', errors[0])
+    self.assertIn('Experiment types must be set for 3 cells', errors[0])
+
+  def test_validate_design_input_single_cell_godark_missing_spend_error(self):
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types=api.ExperimentType.GO_DARK,
+    )
+    constraints = api.Constraints(
+        budget_constraint={'cell_1': api.Budget(budget_pct=0.5)}
+    )
+    data = self.data.drop(columns=['spend'])
+    errors = util.validate_design_input(data, design_config, constraints)
+    self.assertLen(errors, 1)
+    self.assertIn(
+        'Spend column must be set for GO_DARK experiments in cell cell_1. '
+        'Expected spend or spend_cell_1.',
+        errors[0],
+    )
+
+  def test_validate_design_input_multicell_godark_missing_cell_2_spend_error(
+      self,
+  ):
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        cell_count=2,
+        experiment_types={
+            'cell_1': api.ExperimentType.GO_DARK,
+            'cell_2': api.ExperimentType.GO_DARK,
+        },
+    )
+    constraints = api.Constraints(
+        budget_constraint={
+            'cell_1': api.Budget(budget_pct=0.5),
+            'cell_2': api.Budget(budget_pct=0.5),
+        }
+    )
+    data = self.data.copy()
+    data['spend_cell_1'] = 10.0
+    errors = util.validate_design_input(data, design_config, constraints)
+    self.assertLen(errors, 1)
+    self.assertIn(
+        'Spend column must be set for GO_DARK experiments in cell cell_2. '
+        'Expected spend_cell_2.',
+        errors[0],
+    )
 
   def test_cell_id_from_cell_name_success(self):
     self.assertEqual(util.cell_id_from_cell_name('cell_3'), 3)
