@@ -426,6 +426,9 @@ def run_design(
   """Designs GeoX experiments."""
   del data_quality_check_config, design_scorer  # Unused in skeleton.
 
+  if design_config.cell_count > 1:
+    raise ValueError('We currently only support single-cell studies.')
+
   # TODO: Complete the design method following the steps below.
   # 1. Preprocess data.
   # Normalization handles scalar-to-dict conversion in DesignConfig and

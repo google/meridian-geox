@@ -256,10 +256,6 @@ class Constraints:
 
   __pydantic_config__ = pydantic.ConfigDict(arbitrary_types_allowed=True)
 
-  # The geos to be included in a treatment group.
-  included_treatment_geos: SortedSet[str] = dataclasses.field(
-      default_factory=set
-  )
   # The geos to be included in the control group.
   included_control_geos: SortedSet[str] = dataclasses.field(default_factory=set)
   # The geos to be excluded from the experiment design.

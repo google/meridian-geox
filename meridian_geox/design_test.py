@@ -419,7 +419,6 @@ class DesignTest(parameterized.TestCase):
 
   def test_design_json_serialization(self):
     constraints = api.Constraints(
-        included_treatment_geos={'G1', 'G2'},
         budget_constraint=api.Budget(budget=1000.0),
         excluded_dates={
             pd.Timestamp('2024-01-01'),
