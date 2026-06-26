@@ -374,31 +374,30 @@ def plot_analysis(analysis_result: api.AnalysisResult):
   )
   n_rows = 3 + has_icpd
 
-  _, axes = plt.subplots(
-      n_rows,
-      1,
-      figsize=(15, 7 * n_rows),
-      squeeze=False,
-      constrained_layout=True,
-      gridspec_kw={'hspace': 0.3},
-  )
-
   cells = sorted(analysis_result.results.keys())
-  blues = sns.color_palette('Blues_d', len(cells))
-  greens = sns.color_palette('Greens_d', len(cells))
-  oranges = sns.color_palette('Oranges_d', len(cells))
+  color_b = 'tab:blue'
+  color_g = 'tab:green'
+  color_o = 'tab:orange'
 
-  # 1. Initialize global min/max for Y-axis scaling across all cells.
-  global_min_cf, global_max_cf = np.inf, -np.inf
-  global_min_pw, global_max_pw = np.inf, -np.inf
-  global_min_l, global_max_l = np.inf, -np.inf
-  global_min_i, global_max_i = np.inf, -np.inf
-
-  # 2. First Pass: Collect all finite values to determine global y-limits.
   for cell_id in cells:
-    metrics = analysis_result.results[cell_id]
-    start_dt = analysis_result.analysis_config.analysis_start_date
+    _, axes = plt.subplots(
+        n_rows,
+        1,
+        figsize=(15, 7 * n_rows),
+        squeeze=False,
+        constrained_layout=True,
+        gridspec_kw={'hspace': 0.3},
+    )
 
+    metrics = analysis_result.results[cell_id]
+
+    # 1. Initialize local min/max for Y-axis scaling for the current cell.
+    local_min_cf, local_max_cf = np.inf, -np.inf
+    local_min_pw, local_max_pw = np.inf, -np.inf
+    local_min_l, local_max_l = np.inf, -np.inf
+    local_min_i, local_max_i = np.inf, -np.inf
+
+    # 2. Collect all finite values to determine local y-limits.
     # Observed vs. Counterfactual
     df_cf = metrics.counterfactual_conversions
     df_cf_test = df_cf[df_cf.index >= start_dt].copy()
@@ -412,8 +411,8 @@ def plot_analysis(analysis_result: api.AnalysisResult):
         [valid_obs, valid_cf, valid_low_cf, valid_high_cf]
     )
     if not all_finite_cf.empty:
-      global_min_cf = min(global_min_cf, all_finite_cf.min())
-      global_max_cf = max(global_max_cf, all_finite_cf.max())
+      local_min_cf = all_finite_cf.min()
+      local_max_cf = all_finite_cf.max()
 
     # Pointwise Differences
     df_pw = metrics.pointwise_difference
@@ -425,8 +424,8 @@ def plot_analysis(analysis_result: api.AnalysisResult):
     valid_high_pw = high_pw[np.isfinite(high_pw)]
     all_finite_pw = pd.concat([valid_diff, valid_low_pw, valid_high_pw])
     if not all_finite_pw.empty:
-      global_min_pw = min(global_min_pw, all_finite_pw.min())
-      global_max_pw = max(global_max_pw, all_finite_pw.max())
+      local_min_pw = all_finite_pw.min()
+      local_max_pw = all_finite_pw.max()
 
     # Cumulative Lift
     df_l_test = metrics.cumulative_lift[
@@ -439,8 +438,8 @@ def plot_analysis(analysis_result: api.AnalysisResult):
     valid_high_l = high_l[np.isfinite(high_l)]
     all_finite_l = pd.concat([valid_lift, valid_low_l, valid_high_l])
     if not all_finite_l.empty:
-      global_min_l = min(global_min_l, all_finite_l.min())
-      global_max_l = max(global_max_l, all_finite_l.max())
+      local_min_l = all_finite_l.min()
+      local_max_l = all_finite_l.max()
 
     # Cumulative iCPD
     if has_icpd and metrics.cumulative_icpd is not None:
@@ -454,46 +453,40 @@ def plot_analysis(analysis_result: api.AnalysisResult):
       valid_high_i = high_i[np.isfinite(high_i)]
       all_finite_vals = pd.concat([valid_icpd, valid_low_i, valid_high_i])
       if not all_finite_vals.empty:
-        global_min_i = min(global_min_i, all_finite_vals.min())
-        global_max_i = max(global_max_i, all_finite_vals.max())
+        local_min_i = all_finite_vals.min()
+        local_max_i = all_finite_vals.max()
 
-  # 3. Calculate and Set Global Y-limits.
-  def calculate_ylim(global_min, global_max):
-    if global_min == np.inf:  # No finite data found
-      return 0, 1, 0.15
-    y_range = global_max - global_min
-    buffer = max(1, y_range * 0.15)
-    y_min_final = global_min - buffer
-    y_max_final = global_max + buffer
-    return y_min_final, y_max_final, buffer
+    # 3. Calculate and Set Y-limits.
+    def calculate_ylim(local_min, local_max):
+      if local_min == np.inf:  # No finite data found
+        return 0, 1, 0.15
+      y_range = local_max - local_min
+      buffer = max(1, y_range * 0.15)
+      y_min_final = local_min - buffer
+      y_max_final = local_max + buffer
+      return y_min_final, y_max_final, buffer
 
-  y_min_cf_final, y_max_cf_final, buffer_cf = calculate_ylim(
-      global_min_cf, global_max_cf
-  )
-  axes[0, 0].set_ylim(y_min_cf_final, y_max_cf_final)
-
-  y_min_pw_final, y_max_pw_final, buffer_pw = calculate_ylim(
-      global_min_pw, global_max_pw
-  )
-  axes[1, 0].set_ylim(y_min_pw_final, y_max_pw_final)
-
-  y_min_l_final, y_max_l_final, buffer_l = calculate_ylim(
-      global_min_l, global_max_l
-  )
-  axes[2, 0].set_ylim(y_min_l_final, y_max_l_final)
-
-  y_min_i_final, y_max_i_final, buffer_i = None, None, None
-  if has_icpd:
-    y_min_i_final, y_max_i_final, buffer_i = calculate_ylim(
-        global_min_i, global_max_i
+    y_min_cf_final, y_max_cf_final, buffer_cf = calculate_ylim(
+        local_min_cf, local_max_cf
     )
-    axes[3, 0].set_ylim(y_min_i_final, y_max_i_final)
+    axes[0, 0].set_ylim(y_min_cf_final, y_max_cf_final)
 
-  # 4. Second Pass: Plot all lines and fill_between areas.
-  for i, cell_id in enumerate(cells):
-    metrics = analysis_result.results[cell_id]
-    color_b, color_g, color_o = blues[i], greens[i], oranges[i]
-    start_dt = analysis_result.analysis_config.analysis_start_date
+    y_min_pw_final, y_max_pw_final, buffer_pw = calculate_ylim(
+        local_min_pw, local_max_pw
+    )
+    axes[1, 0].set_ylim(y_min_pw_final, y_max_pw_final)
+
+    y_min_l_final, y_max_l_final, buffer_l = calculate_ylim(
+        local_min_l, local_max_l
+    )
+    axes[2, 0].set_ylim(y_min_l_final, y_max_l_final)
+
+    y_min_i_final, y_max_i_final, buffer_i = None, None, None
+    if has_icpd:
+      y_min_i_final, y_max_i_final, buffer_i = calculate_ylim(
+          local_min_i, local_max_i
+      )
+      axes[3, 0].set_ylim(y_min_i_final, y_max_i_final)
 
     # --- Plot 1: Observed vs. Counterfactual (Full Timeline) ---
     ax_diag = axes[0, 0]
@@ -538,9 +531,11 @@ def plot_analysis(analysis_result: api.AnalysisResult):
           low_cf,
           high_cf,
           where=(low_cf <= high_cf),
-          alpha=0.1,
+          alpha=0.25,
           color=color_g,
-          label=f'CI on Counterfactual conversions of {cell_id}',
+          label=(
+              f'Confidence interval on counterfactual conversions of {cell_id}'
+          ),
       )
 
     # --- Plot 2: Pointwise Differences (Full Timeline) ---
@@ -567,7 +562,7 @@ def plot_analysis(analysis_result: api.AnalysisResult):
           temp_low_pw,
           temp_high_pw,
           where=(temp_low_pw <= temp_high_pw),
-          alpha=0.15,
+          alpha=0.25,
           color=color_o,
           label=f'Confidence interval of {cell_id}',
       )
@@ -577,7 +572,7 @@ def plot_analysis(analysis_result: api.AnalysisResult):
           low_pw,
           high_pw,
           where=(low_pw <= high_pw),
-          alpha=0.15,
+          alpha=0.25,
           color=color_o,
           label=f'Confidence interval of {cell_id}',
       )
@@ -607,7 +602,7 @@ def plot_analysis(analysis_result: api.AnalysisResult):
           temp_low_l,
           temp_high_l,
           where=(temp_low_l <= temp_high_l),
-          alpha=0.15,
+          alpha=0.25,
           color=color_b,
           label=f'Confidence interval of {cell_id}',
       )
@@ -617,7 +612,7 @@ def plot_analysis(analysis_result: api.AnalysisResult):
           low_l,
           high_l,
           where=(low_l <= high_l),
-          alpha=0.15,
+          alpha=0.25,
           color=color_b,
           label=f'Confidence interval of {cell_id}',
       )
@@ -648,7 +643,7 @@ def plot_analysis(analysis_result: api.AnalysisResult):
             temp_low_i,
             temp_high_i,
             where=(temp_low_i <= temp_high_i),
-            alpha=0.15,
+            alpha=0.25,
             color=color_b,
             label=f'Confidence interval of {cell_id}',
         )
@@ -658,68 +653,75 @@ def plot_analysis(analysis_result: api.AnalysisResult):
             low_i,
             high_i,
             where=(low_i <= high_i),
-            alpha=0.15,
+            alpha=0.25,
             color=color_b,
             label=f'Confidence interval of {cell_id}',
         )
 
-  # Final Layout Formatting with Divider
-  pretest_end_date = analysis_result.analysis_config.pretest_end_date
-  for i, ax in enumerate(axes.flatten()):
-    ax.axvline(
-        start_dt,
-        color='grey',
-        linestyle='--',
-        linewidth=1.5,
-        alpha=0.8,
-        label='Test start date',
-    )  # Period Divider
-
-    # Add pretest end line for the first two plots if it is set.
-    if pretest_end_date is not None and i < 2:
+    # Final Layout Formatting with Divider
+    pretest_end_date = analysis_result.analysis_config.pretest_end_date
+    for j, ax in enumerate(axes.flatten()):
       ax.axvline(
-          pretest_end_date,
+          start_dt,
           color='grey',
-          linestyle='-',
+          linestyle='--',
           linewidth=1.5,
           alpha=0.8,
-          label='Pretest end date',
-      )
+          label='Test start date',
+      )  # Period Divider
 
-    # Deduplicate labels in the legend
-    handles, labels = ax.get_legend_handles_labels()
-    unique_labels = {}
-    for handle, label in zip(handles, labels):
-      unique_labels[label] = handle
-    ax.legend(
-        unique_labels.values(),
-        unique_labels.keys(),
-        bbox_to_anchor=(1.02, 1),
-        loc='upper left',
-        frameon=False,
-    )
-    ax.grid(
-        True,
-        which='major',
-        axis='both',
-        linestyle=':',
-        alpha=0.6,
-        linewidth=0.8,
-    )
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-    ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=7, prune='both'))
+      # Add pretest end line for the first two plots if it is set.
+      if pretest_end_date is not None and j < 2:
+        ax.axvline(
+            pretest_end_date,
+            color='grey',
+            linestyle='-',
+            linewidth=1.5,
+            alpha=0.8,
+            label='Pretest end date',
+        )
+
+      # Deduplicate labels in the legend
+      handles, labels = ax.get_legend_handles_labels()
+      unique_labels = {}
+      for handle, label in zip(handles, labels):
+        unique_labels[label] = handle
+      ax.legend(
+          unique_labels.values(),
+          unique_labels.keys(),
+          bbox_to_anchor=(1.02, 1),
+          loc='upper left',
+          frameon=False,
+      )
+      ax.grid(
+          True,
+          which='major',
+          axis='both',
+          linestyle=':',
+          alpha=0.6,
+          linewidth=0.8,
+      )
+      ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+      ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=7, prune='both'))
 
     # Set Ordered Titles and Labels
     axes[0, 0].set_title(
-        'Observed vs. Counterfactual total conversions', fontsize=14
+        f'Observed vs. Counterfactual total conversions ({cell_id})',
+        fontsize=14,
     )
     axes[0, 0].set_ylabel('Total conversions')
-    axes[1, 0].set_title('Pointwise differences time series', fontsize=14)
+    axes[1, 0].set_title(
+        f'Pointwise differences time series ({cell_id})', fontsize=14
+    )
     axes[1, 0].set_ylabel('Pointwise differences')
-    axes[2, 0].set_title('Cumulative lift time series', fontsize=14)
+    axes[2, 0].set_title(
+        f'Cumulative lift time series ({cell_id})', fontsize=14
+    )
     axes[2, 0].set_ylabel('Cumulative incremental conversions')
     if has_icpd:
-      axes[3, 0].set_title('Cumulative iCPD time series', fontsize=14)
+      axes[3, 0].set_title(
+          f'Cumulative iCPD time series ({cell_id})', fontsize=14
+      )
       axes[3, 0].set_ylabel('Cumulative iCPD')
 
   plt.show()

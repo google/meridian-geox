@@ -227,6 +227,43 @@ def _filter_results_by_aa_test(
   )
 
 
+def _rank_and_filter_metrics(
+    metrics: pd.DataFrame, limit: int
+) -> tuple[pd.DataFrame, pd.Series]:
+  """Ranks design candidates by max_mde and returns top candidates.
+
+  Args:
+    metrics: A DataFrame containing design metrics, including 'design_id',
+      'cell', and 'mde' columns.
+    limit: The maximum number of designs to return.
+
+  Returns:
+    A tuple containing:
+      - The sorted, filtered metrics DataFrame.
+      - A Series containing the top design IDs in order of ranking.
+  """
+  # Rank by max_mde across cells.
+  max_mde_df = (
+      metrics.groupby('design_id')['mde']
+      .max()
+      .reset_index(name='max_mde')
+  )
+  top_design_ids = max_mde_df.sort_values(by='max_mde').head(
+      limit
+  )['design_id']
+  filtered_metrics = metrics[
+      metrics['design_id'].isin(top_design_ids)
+  ].copy()
+  filtered_metrics['design_id'] = pd.Categorical(
+      filtered_metrics['design_id'], categories=top_design_ids, ordered=True
+  )
+  top_metrics = (
+      filtered_metrics.sort_values(by=['design_id', 'cell'])
+      .reset_index(drop=True)
+  )
+  return top_metrics, top_design_ids
+
+
 def _get_design_summary(
     scored_candidates: ScoredCandidates,
     design_config: api.DesignConfig,
@@ -369,19 +406,8 @@ def _get_design_summary(
 
   design_metrics = pd.DataFrame(metrics_list)
 
-  # Rank by max_mde across cells.
-  max_mde_df = (
-      design_metrics.groupby('design_id')['mde']
-      .max()
-      .reset_index(name='max_mde')
-  )
-  top_design_ids = max_mde_df.sort_values(by='max_mde').head(
-      design_config.design_output_count
-  )['design_id']
-  design_metrics = (
-      design_metrics[design_metrics['design_id'].isin(top_design_ids)]
-      .sort_values(by='mde')
-      .reset_index(drop=True)
+  design_metrics, top_design_ids = _rank_and_filter_metrics(
+      design_metrics, design_config.design_output_count
   )
   designs = {design_id: designs[design_id] for design_id in top_design_ids}
 
@@ -425,9 +451,6 @@ def run_design(
 ) -> api.DesignSet:
   """Designs GeoX experiments."""
   del data_quality_check_config, design_scorer  # Unused in skeleton.
-
-  if design_config.cell_count > 1:
-    raise ValueError('We currently only support single-cell studies.')
 
   # TODO: Complete the design method following the steps below.
   # 1. Preprocess data.
@@ -586,14 +609,11 @@ def concat_design_reports(
   if combined_metrics.empty:
     raise ValueError('No design metrics to concatenate.')
 
-  top_metrics = (
-      combined_metrics.sort_values(by='mde')
-      .head(design_output_count)
-      .reset_index(drop=True)
+  top_metrics, top_design_ids = _rank_and_filter_metrics(
+      combined_metrics, design_output_count
   )
   top_designs = {
-      design_id: all_designs[design_id]
-      for design_id in top_metrics['design_id']
+      design_id: all_designs[design_id] for design_id in top_design_ids
   }
 
   return api.DesignSet(
@@ -604,20 +624,18 @@ def concat_design_reports(
 
 
 def plot_design(design_to_plot: api.Design):
-  """Visualizes pre-test alignment for all cells in a single shared plot."""
+  """Visualizes pre-test alignment for all cells in separate plots."""
   sns.set_style('ticks')
-  plt.figure(figsize=(15, 7))
-  ax = plt.gca()
-
   cells = sorted(design_to_plot.designs.keys())
-  # Using sequential palettes to distinguish multiple cells clearly
-  blues = sns.color_palette('Blues_d', len(cells))
-  greens = sns.color_palette('Greens_d', len(cells))
 
-  for i, cell_id in enumerate(cells):
+  for cell_id in cells:
+    plt.figure(figsize=(15, 7))
+    ax = plt.gca()
+
     cell_design = design_to_plot.designs[cell_id]
     df = cell_design.counterfactual_conversions
     if df is None or df.empty:
+      plt.close()
       continue
 
     # Plot Observed
@@ -625,7 +643,7 @@ def plot_design(design_to_plot: api.Design):
         df['index'],
         df['observed'],
         label=f'Observed conversions of {cell_id}',
-        color=blues[i],
+        color='tab:blue',
         linewidth=2.5,
     )
 
@@ -634,23 +652,29 @@ def plot_design(design_to_plot: api.Design):
         df['index'],
         df['counterfactual'],
         label=f'Counterfactual conversions of {cell_id}',
-        color=greens[i],
+        color='tab:green',
         linestyle='-',
         linewidth=2.5,
         alpha=0.8,
     )
 
-  ax.grid(
-      True, which='major', axis='both', linestyle=':', alpha=0.6, linewidth=0.8
-  )
-  ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-  ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=7, prune='both'))
+    ax.grid(
+        True,
+        which='major',
+        axis='both',
+        linestyle=':',
+        alpha=0.6,
+        linewidth=0.8,
+    )
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=7, prune='both'))
 
-  ax.set_title(
-      'Observed vs Counterfactual total conversions',
-      fontsize=14,
-      fontweight='bold',
-  )
-  ax.set_ylabel('Total conversions')
-  ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
+    ax.set_title(
+        f'Observed vs Counterfactual total conversions ({cell_id})',
+        fontsize=14,
+        fontweight='bold',
+    )
+    ax.set_ylabel('Total conversions')
+    ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
+
   plt.show()

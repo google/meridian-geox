@@ -283,6 +283,46 @@ class GenerateCandidatesTest(parameterized.TestCase):
           key=key,
       )
 
+  def test_get_random_candidates_multicell(self):
+    design_config = api.DesignConfig(
+        experiment_duration=1,
+        cell_count=2,
+        experiment_types={
+            'cell_1': api.ExperimentType.HOLDBACK,
+            'cell_2': api.ExperimentType.HOLDBACK,
+        },
+        n_candidates=10,
+        seed=42,
+    )
+    constraints = api.Constraints(
+        max_conversions_percent=0.5,
+    )
+    conversions_data = pd.DataFrame([
+        {
+            'date': pd.Timestamp('2024-01-01'),
+            'location': f'G{i}',
+            'conversions': 10.0,
+        }
+        for i in range(10)
+    ])
+    key = jax.random.PRNGKey(0)
+    selection_train = jnp.zeros((1, 10))
+    candidates = generate_candidates.get_random_candidates(
+        filtered_data=conversions_data,
+        design_config=design_config,
+        constraints=constraints,
+        key=key,
+        selection_train=selection_train,
+    )
+    self.assertEqual(candidates.shape, (10, 10))
+
+    # Verify that the sum of conversions of all treated cells (elements > 0)
+    # is <= max_conversions_percent * total_conversions.
+    geo_conversions = np.array([10.0] * 10)
+    for i in range(design_config.n_candidates):
+      treated_mask = candidates[i, :] > 0
+      self.assertLessEqual(np.sum(geo_conversions[treated_mask]), 50.0)
+
 
 if __name__ == '__main__':
   absltest.main()

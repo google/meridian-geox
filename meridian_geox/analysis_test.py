@@ -669,7 +669,7 @@ class AnalysisTest(parameterized.TestCase):
     return pd.DataFrame(data_rows)
 
   def test_analyze_multicell(self):
-    data = self._create_multicell_sample_data(n_days=15, n_geos=10)
+    data = self._create_multicell_sample_data(n_days=15, n_geos=14)
     cell_names = ['cell_1', 'cell_2']
 
     design_config = api.DesignConfig(
@@ -702,7 +702,7 @@ class AnalysisTest(parameterized.TestCase):
                 budget=1000.0,
             ),
         },
-        control_geos={f'G{i}' for i in range(5, 11)},
+        control_geos={f'G{i}' for i in range(5, 15)},
         excluded_geos=set(),
         design_config=design_config,
         constraints=api.Constraints(max_conversions_percent=0.5),

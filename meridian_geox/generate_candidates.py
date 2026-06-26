@@ -511,10 +511,14 @@ def get_stratified_sampling_candidates(
     )
     candidates_batch = jnp.array(candidates_batch)
 
-    # Ensure each candidate has at least 2 treated and 2 control geos.
-    n_treated_batch = jnp.sum(candidates_batch, axis=1)
-    n_control_batch = len(geo_conversions) - n_treated_batch
-    valid_indices = (n_treated_batch >= 2) & (n_control_batch >= 2)
+    # Ensure each candidate has at least 2 treated and 2 control geos per cell.
+    def _check_min_geos_per_cell(mask):
+      n_control = jnp.sum(mask == 0)
+      cell_ids = jnp.arange(1, design_config.cell_count + 1)
+      cell_counts = jnp.sum(mask == cell_ids[:, None], axis=1)
+      return (n_control >= 2) & jnp.all(cell_counts >= 2)
+
+    valid_indices = jax.vmap(_check_min_geos_per_cell)(candidates_batch)
 
     # Filter by slope similarity criteria if applicable.
     if selection_train_spend is not None:
@@ -566,18 +570,26 @@ def get_stratified_sampling_candidates(
 
 
 @functools.partial(
-    jax.jit, static_argnames=['n_designs', 'n_geos', 'n_treated']
+    jax.jit, static_argnames=['n_designs', 'n_geos', 'n_treated', 'n_cells']
 )
 def _generate_random_masks(
     n_designs: int,
     n_geos: int,
     n_treated: int,
+    n_cells: int,
     forced_control_mask: jnp.ndarray,
     key: jax.Array,
 ) -> jnp.ndarray:
   """Generates random treatment masks with fixed group sizes."""
 
-  def _generate_single_mask(single_key):
+  def get_cell(rank, cell_ranks):
+    return jax.lax.cond(
+        rank >= cell_ranks[-1],
+        lambda: 0.0,
+        lambda: jnp.argmax(rank < cell_ranks) + 1.0,
+    )
+
+  def _generate_single_mask(single_key, cell_ranks):
     # Generate random scores for shuffling. "Scores" here refers to random
     # values assigned to each geo, which are then used to determine the rank of
     # each geo for random assignment. By sorting these scores, we can randomly
@@ -593,13 +605,15 @@ def _generate_random_masks(
     # This allows us to select the top `n_treated` random scores efficiently.
     ranks = jnp.argsort(jnp.argsort(scores))
 
-    # Ranks 0 to n_treated-1 -> Treatment (1).
+    # Ranks 0 to (n_treated/n_cells) - 1 -> Cell 1.
+    # Ranks n_treated/n_cells to 2*n_treated/n_cells - 1 -> Cell 2.
+    # ...
     # Ranks n_treated to n_geos-1 -> Control (0).
-    mask = jnp.where(ranks < n_treated, 1, 0)
-    return mask.astype(jnp.int32)
+    return jax.vmap(get_cell, in_axes=(0, None))(ranks, cell_ranks)
 
+  cell_ranks = jnp.full((n_cells,), n_treated / n_cells).cumsum()
   keys = jax.random.split(key, n_designs)
-  return jax.vmap(_generate_single_mask)(keys)
+  return jax.vmap(_generate_single_mask, in_axes=(0, None))(keys, cell_ranks)
 
 
 def get_random_candidates(
@@ -614,7 +628,6 @@ def get_random_candidates(
   # Generate a batch of valid treatment masks (N_designs, Geos) satisfying
   # the design constraints and convert to jax array. 0 for control, 1 for
   # treatment1, 2 for treatment2, etc.
-  # TODO: Add multicell support.
 
   # Determine the number of geos.
   geos = sorted(filtered_data['location'].unique())
@@ -649,8 +662,10 @@ def get_random_candidates(
     )
     n_treated = int(n_available)
 
-  # Ensure at least 2 treatment geos.
-  n_treated = max(2, n_treated)
+  if 2 * design_config.cell_count > n_treated:
+    raise ValueError(
+        'Not enough geos to satisfy minimum treatment geos per cell constraint.'
+    )
 
   # Ensure at least 2 control units.
   if n_geos - n_treated < 2:
@@ -683,13 +698,19 @@ def get_random_candidates(
         n_designs,
         n_geos,
         n_treated,
+        design_config.cell_count,
         forced_control_mask_jax,
         loop_keys[i],
     )
 
     # Filter by volume constraint.
-    treated_volumes = jnp.dot(candidates_batch, geo_weights)
-    treated_pcts = treated_volumes / total_volume
+    def _get_treated_pct(mask):
+      cell_ids = jnp.arange(1, design_config.cell_count + 1, dtype=jnp.float32)
+      binary_cells = (mask == cell_ids[:, None]).astype(jnp.float32)
+      cell_volumes = jnp.dot(binary_cells, geo_weights)
+      return jnp.sum(cell_volumes) / total_volume
+
+    treated_pcts = jax.vmap(_get_treated_pct)(candidates_batch)
     valid_indices = treated_pcts <= max_conversions_percent
 
     # Filter by slope similarity criteria if applicable.

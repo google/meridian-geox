@@ -518,6 +518,7 @@ class DesignTest(parameterized.TestCase):
     )
     ds1_metrics = pd.DataFrame([{
         'design_id': d1_id,
+        'cell': 'cell_1',
         'mde': 0.8,
         'design_methodology': 'RANDOM-TBR',
     }])
@@ -545,6 +546,7 @@ class DesignTest(parameterized.TestCase):
     )
     ds2_metrics = pd.DataFrame([{
         'design_id': d2_id,
+        'cell': 'cell_1',
         'mde': 0.9,
         'design_methodology': 'RANDOM-TBR',
     }])
@@ -595,6 +597,7 @@ class DesignTest(parameterized.TestCase):
     )
     ds1_metrics = pd.DataFrame([{
         'design_id': d1_id,
+        'cell': 'cell_1',
         'mde': 0.8,
         'design_methodology': 'RANDOM-TBR',
     }])
@@ -620,6 +623,7 @@ class DesignTest(parameterized.TestCase):
     )
     ds2_metrics = pd.DataFrame([{
         'design_id': d2_id,
+        'cell': 'cell_1',
         'mde': 0.7,
         'design_methodology': 'RANDOM-TBR',
     }])
@@ -1099,6 +1103,43 @@ class DesignTest(parameterized.TestCase):
         processed_data.estimation_eval_spend[api.CELL_1].shape,
         (2, 4),
     )
+
+  def test_rank_and_filter_metrics(self):
+    # Test case with multiple cell columns to check grouping & sorting
+    metrics = pd.DataFrame([
+        {'design_id': 'd1', 'cell': 'cell_2', 'mde': 0.04},
+        {'design_id': 'd1', 'cell': 'cell_1', 'mde': 0.02},
+        {'design_id': 'd2', 'cell': 'cell_2', 'mde': 0.05},
+        {'design_id': 'd2', 'cell': 'cell_1', 'mde': 0.01},
+        {'design_id': 'd3', 'cell': 'cell_1', 'mde': 0.10},
+    ])
+
+    # limit = 2 means we keep d1 (max_mde 0.04) and d2 (max_mde 0.05) and drop
+    # d3 (max_mde 0.10)
+    top_metrics, top_design_ids = design._rank_and_filter_metrics(
+        metrics, limit=2
+    )
+
+    # Assert top design IDs are sorted by max_mde (d1 first, then d2)
+    self.assertEqual(list(top_design_ids), ['d1', 'd2'])
+
+    # Assert top_metrics is sorted by design_id (d1, then d2) and cell (cell_1,
+    # then cell_2)
+    self.assertEqual(top_metrics.iloc[0]['design_id'], 'd1')
+    self.assertEqual(top_metrics.iloc[0]['cell'], 'cell_1')
+    self.assertEqual(top_metrics.iloc[0]['mde'], 0.02)
+
+    self.assertEqual(top_metrics.iloc[1]['design_id'], 'd1')
+    self.assertEqual(top_metrics.iloc[1]['cell'], 'cell_2')
+    self.assertEqual(top_metrics.iloc[1]['mde'], 0.04)
+
+    self.assertEqual(top_metrics.iloc[2]['design_id'], 'd2')
+    self.assertEqual(top_metrics.iloc[2]['cell'], 'cell_1')
+    self.assertEqual(top_metrics.iloc[2]['mde'], 0.01)
+
+    self.assertEqual(top_metrics.iloc[3]['design_id'], 'd2')
+    self.assertEqual(top_metrics.iloc[3]['cell'], 'cell_2')
+    self.assertEqual(top_metrics.iloc[3]['mde'], 0.05)
 
 
 if __name__ == '__main__':
