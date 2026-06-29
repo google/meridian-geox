@@ -140,8 +140,8 @@ def validate_design_input(
 
   # Check that max_conversions_percent per cell is at least 0.1 and that
   # the total max_conversions_percent is at most 0.5.
-  if (
-      constraints.max_conversions_percent / design_config.cell_count <= 0.1
+  if constraints.max_conversions_percent is not None and (
+      constraints.max_conversions_percent / design_config.cell_count < 0.1
       or constraints.max_conversions_percent >= 0.5
   ):
     errors.append(
