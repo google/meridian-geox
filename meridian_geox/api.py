@@ -111,23 +111,46 @@ DataFrame = Annotated[
 ]
 
 
+@dataclasses.dataclass
+class QualityCheckConfig:
+  """Parameters for checking the quality of the input data."""
+
+  # This specific field is for design phase only.
+  exclude_geos_no_response: bool = True
+
+
+@dataclasses.dataclass
+class QualityCheckResult:
+  """Result of the quality check."""
+
+  quality_metrics: DataFrame = dataclasses.field(repr=False)
+  outlier_geos: set[str] = dataclasses.field(default_factory=set)
+  outlier_dates: set[Timestamp] = dataclasses.field(default_factory=set)
+
+
 class DataSchema(pa.DataFrameModel):
   """Schema for geo data."""
 
   # Required: Date.
-  date: pa.typing.Series[pd.Timestamp] = pa.Field(alias=DATE)
+  date: pa.typing.Series[pd.Timestamp] = pa.Field(alias=DATE, nullable=False)
   # Required: Location Name (String).
   # Must not contain null/empty strings.
-  location: pa.typing.Series[str] = pa.Field(alias=LOCATION, str_matches=r".+")
+  location: pa.typing.Series[str] = pa.Field(
+      alias=LOCATION, str_matches=r".+", nullable=False
+  )
   # Required: Conversions (Numeric).
-  conversions: pa.typing.Series[float] = pa.Field(alias=CONVERSIONS)
+  conversions: pa.typing.Series[float] = pa.Field(
+      alias=CONVERSIONS, nullable=False
+  )
   # Optional: Spend (Numeric).
   # Must not be negative if provided.
-  spend: Optional[pa.typing.Series[float]] = pa.Field(alias=SPEND, ge=0)
+  spend: Optional[pa.typing.Series[float]] = pa.Field(
+      alias=SPEND, ge=0, nullable=False
+  )
   # Optional: Spend per cell (Numeric).
   # Must not be negative if provided.
   spend_by_cell: Optional[pa.typing.Series[float]] = pa.Field(
-      alias=r"^spend_cell_[1-9]\d*$", regex=True, ge=0
+      alias=r"^spend_cell_[1-9]\d*$", regex=True, ge=0, nullable=False
   )
 
 
@@ -343,6 +366,7 @@ class DesignSet:
   # TODO: Consider including provenance information such as input
   # data and configs to make comparison/visualization easier.
   design_data: DataFrame = dataclasses.field(repr=False)
+  quality_check_result: Optional[QualityCheckResult] = None
 
 
 @pydantic.dataclasses.dataclass
@@ -368,7 +392,12 @@ class AnalysisConfig:
   test_type: Optional[TestType] = None
 
   @pydantic.model_validator(mode="after")
-  def validate_pretest_end_date(self) -> "AnalysisConfig":
+  def validate_dates(self) -> "AnalysisConfig":
+    """Validates the pretest and test date ranges."""
+    if self.analysis_start_date > self.analysis_end_date:
+      raise ValueError(
+          "analysis_start_date must be less than or equal to analysis_end_date."
+      )
     if (
         self.pretest_end_date is not None
         and self.pretest_end_date >= self.analysis_start_date
@@ -445,3 +474,4 @@ class AnalysisResult:
   results: dict[str, AnalysisMetrics]
   # The configuration used for the analysis.
   analysis_config: AnalysisConfig
+  quality_check_result: Optional[QualityCheckResult] = None

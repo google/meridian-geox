@@ -119,6 +119,58 @@ class ApiTest(parameterized.TestCase):
     # Default cpic is 1.0.
     self.assertEqual(config.cost_per_incremental_conversion, {'cell_1': 1.0})
 
+  def test_analysis_config_date_order_validation(self):
+    dummy_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G0', 'G1'},
+                minimum_detectable_effect=0.05,
+                design_implied_cpic=1.0,
+                p_value=0.05,
+                budget=1000.0,
+            )
+        },
+        control_geos={'G2'},
+        excluded_geos=set(),
+    )
+    # Pydantic dataclass validation error wraps the ValueError or raises
+    # ValidationError. Depending on Pydantic configuration, it might raise
+    # a ValidationError. We check for ValueError here.
+    with self.assertRaisesRegex(
+        (ValueError, Exception),
+        'analysis_start_date must be less than or equal to analysis_end_date.',
+    ):
+      api.AnalysisConfig(
+          design=dummy_design,
+          analysis_start_date='2024-01-25',
+          analysis_end_date='2024-01-20',
+      )
+
+  def test_analysis_config_pretest_overlap_validation(self):
+    dummy_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G0', 'G1'},
+                minimum_detectable_effect=0.05,
+                design_implied_cpic=1.0,
+                p_value=0.05,
+                budget=1000.0,
+            )
+        },
+        control_geos={'G2'},
+        excluded_geos=set(),
+    )
+    with self.assertRaisesRegex(
+        (ValueError, Exception),
+        'pretest_end_date must be strictly before analysis_start_date.',
+    ):
+      api.AnalysisConfig(
+          design=dummy_design,
+          analysis_start_date='2024-01-20',
+          analysis_end_date='2024-01-30',
+          pretest_end_date='2024-01-20',
+      )
+
 
 if __name__ == '__main__':
   absltest.main()

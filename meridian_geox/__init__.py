@@ -34,10 +34,11 @@ from .api import ExperimentType
 from .api import GeoAssignmentRule
 from .api import GeoGroup
 from .api import Methodology
+from .api import QualityCheckConfig
+from .api import QualityCheckResult
 from .api import TestType
-from .data_quality.data_quality import check_data_quality
-from .data_quality.data_quality import QualityCheckConfig
-from .data_quality.data_quality import QualityCheckResult
+from .data_quality.data_quality import check_analysis_data_quality
+from .data_quality.data_quality import check_design_data_quality
 from .design import compare_designs
 from .design import concat_design_reports
 from .design import plot_design

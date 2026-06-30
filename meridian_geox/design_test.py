@@ -14,6 +14,7 @@
 
 import itertools
 import logging
+from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -121,7 +122,11 @@ class DesignTest(parameterized.TestCase):
       data_list.append({api.DATE: d, api.LOCATION: l, api.CONVERSIONS: 10.0})
     data_3 = pd.DataFrame(data_list)
     with self.assertRaisesRegex(ValueError, 'Not enough geos.'):
-      design.run_design(data_3, design_config, constraints)
+      design.run_design(
+          data_3,
+          design_config,
+          constraints,
+      )
 
   def test_design_small_n_geos(self):
     # 6 geos.
@@ -183,6 +188,84 @@ class DesignTest(parameterized.TestCase):
       self.assertNotIn('geo_1', design_obj.control_geos)
       # geo_1 should be in excluded_geos.
       self.assertIn('geo_1', design_obj.excluded_geos)
+
+  @mock.patch(
+      'meridian_geox.data_quality.data_quality.check_design_data_quality'
+  )
+  def test_excluded_geos_removed_before_data_quality(
+      self, mock_check_design_data_quality
+  ):
+    def side_effect(passed_data, design_config, quality_check_config):
+      del design_config, quality_check_config
+      self.assertNotIn('geo_6', passed_data[api.LOCATION].unique())
+      raise ValueError('Short-circuit')
+
+    mock_check_design_data_quality.side_effect = side_effect
+
+    dates = pd.date_range(start='2023-01-01', periods=10)
+    locations = ['geo_1', 'geo_2', 'geo_3', 'geo_4', 'geo_5', 'geo_6']
+    data_list = []
+    for date, loc in itertools.product(dates, locations):
+      data_list.append({
+          api.DATE: date,
+          api.LOCATION: loc,
+          api.CONVERSIONS: 100.0,
+      })
+    data = pd.DataFrame(data_list)
+
+    design_config = api.DesignConfig(
+        experiment_duration=2,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        n_candidates=5,
+    )
+    constraints = api.Constraints(
+        excluded_geos={'geo_6'},
+        max_conversions_percent=0.45,
+        budget_constraint=api.Budget(budget=1000.0),
+    )
+    with self.assertRaisesRegex(ValueError, 'Short-circuit'):
+      design.run_design(data, design_config, constraints)
+
+  @mock.patch(
+      'meridian_geox.data_quality.data_quality.check_design_data_quality'
+  )
+  def test_excluded_dates_removed_before_data_quality(
+      self, mock_check_design_data_quality
+  ):
+    exclude_date = pd.Timestamp('2023-01-01')
+
+    def side_effect(passed_data, design_config, quality_check_config):
+      del design_config, quality_check_config
+      self.assertNotIn(exclude_date, passed_data[api.DATE].unique())
+      raise ValueError('Short-circuit')
+
+    mock_check_design_data_quality.side_effect = side_effect
+
+    dates = pd.date_range(start='2023-01-01', periods=15)
+    locations = ['geo_1', 'geo_2', 'geo_3', 'geo_4', 'geo_5']
+    data_list = []
+    for date, loc in itertools.product(dates, locations):
+      data_list.append({
+          api.DATE: date,
+          api.LOCATION: loc,
+          api.CONVERSIONS: 10.0,
+      })
+    data = pd.DataFrame(data_list)
+
+    design_config = api.DesignConfig(
+        experiment_duration=2,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        n_candidates=5,
+    )
+    constraints = api.Constraints(
+        excluded_dates={exclude_date},
+        max_conversions_percent=0.45,
+        budget_constraint=api.Budget(budget=1000.0),
+    )
+    with self.assertRaisesRegex(ValueError, 'Short-circuit'):
+      design.run_design(data, design_config, constraints)
 
   @parameterized.named_parameters(
       dict(
@@ -566,6 +649,51 @@ class DesignTest(parameterized.TestCase):
     self.assertEqual(
         result.design_metrics.iloc[0]['design_methodology'], 'RANDOM-TBR'
     )
+
+  def test_concat_design_reports_carries_quality_check_result(self):
+    design_config = api.DesignConfig(
+        experiment_duration=5, experiment_types=api.ExperimentType.HOLDBACK
+    )
+    constraints = api.Constraints()
+    d1 = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'geo_1'},
+                minimum_detectable_effect=0.8,
+                design_implied_cpic=1.25,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={'geo_2'},
+        excluded_geos=set(),
+        design_config=design_config,
+        constraints=constraints,
+    )
+    ds1_metrics = pd.DataFrame([{
+        'design_id': 'd1',
+        'cell': 'cell_1',
+        'mde': 0.8,
+        'design_methodology': 'RANDOM-TBR',
+    }])
+    q_result = api.QualityCheckResult(
+        quality_metrics=pd.DataFrame(),
+        outlier_geos={'geo_out'},
+    )
+    ds1 = api.DesignSet(
+        designs={'d1': d1},
+        design_metrics=ds1_metrics,
+        design_data=pd.DataFrame(),
+        quality_check_result=q_result,
+    )
+    ds2 = api.DesignSet(
+        designs={'d2': d1},
+        design_metrics=ds1_metrics,
+        design_data=pd.DataFrame(),
+        quality_check_result=None,
+    )
+    result = design.concat_design_reports([ds2, ds1])
+    self.assertEqual(result.quality_check_result, q_result)
 
   def test_compare_designs(self):
     data = pd.DataFrame()

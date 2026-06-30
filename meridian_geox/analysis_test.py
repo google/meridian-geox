@@ -132,7 +132,7 @@ class AnalysisTest(parameterized.TestCase):
         analysis_end_date=pd.Timestamp('2024-01-05'),
     )
 
-    prepared_config = analysis._prepare_design_config(pd.DataFrame(), config)
+    prepared_config = analysis._prepare_design_config(config)
 
     self.assertEqual(prepared_config.n_candidates, 100)
     self.assertEqual(config.alpha, 0.05)
@@ -439,7 +439,7 @@ class AnalysisTest(parameterized.TestCase):
                 budget=1000.0,
             )
         },
-        control_geos={'G2'},
+        control_geos={'G2', 'G3', 'G4'},
         excluded_geos=set(),
         design_config=design_config,
         constraints=api.Constraints(),
@@ -452,7 +452,7 @@ class AnalysisTest(parameterized.TestCase):
         test_type=api.TestType.TWO_SIDED,
     )
 
-    data = self._create_sample_data(n_days=10, n_geos=2)
+    data = self._create_sample_data(n_days=10, n_geos=4)
     with self.assertRaisesRegex(ValueError, 'Unsupported methodology'):
       analysis.analyze(data, config)
 
@@ -730,7 +730,6 @@ class AnalysisTest(parameterized.TestCase):
       self.assertLen(metrics.pointwise_difference, 15)
       self.assertLen(metrics.cumulative_lift, 5)
       self.assertIsNotNone(metrics.icpd)
-
 
 if __name__ == '__main__':
   absltest.main()

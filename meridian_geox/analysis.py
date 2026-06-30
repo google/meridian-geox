@@ -16,6 +16,7 @@
 
 import dataclasses
 import re
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -26,6 +27,7 @@ from meridian_geox import api
 from meridian_geox import design
 from meridian_geox import generate_candidates
 from meridian_geox import util
+from meridian_geox import validation
 from meridian_geox.data_quality import data_quality
 from meridian_geox.methodology import tbr
 import numpy as np
@@ -168,7 +170,6 @@ def _get_placebo_masks(
 
 
 def _prepare_design_config(
-    data: pd.DataFrame,
     analysis_config: api.AnalysisConfig,
 ) -> api.DesignConfig:
   """Prepares the design config for analysis."""
@@ -190,14 +191,6 @@ def _prepare_design_config(
     raise ValueError(
         f'Unsupported methodology: {design_config.methodology}. Only TBR is'
         ' supported.'
-    )
-
-  if analysis_config.design.data is not None and set(data[api.LOCATION]) != set(
-      analysis_config.design.data[api.LOCATION]
-  ):
-    raise ValueError(
-        'The locations in the analysis data do not match the locations in the'
-        ' design.'
     )
 
   return design_config
@@ -240,6 +233,7 @@ def _get_analysis_summary(
     pretest_dates: pd.Index,
     test_dates: pd.Index,
     analysis_config: api.AnalysisConfig,
+    quality_check_result: Optional[api.QualityCheckResult] = None,
 ) -> api.AnalysisResult:
   """Converts raw analysis results into an AnalysisResult object."""
   results = {}
@@ -285,6 +279,7 @@ def _get_analysis_summary(
   return api.AnalysisResult(
       results=results,
       analysis_config=analysis_config,
+      quality_check_result=quality_check_result,
   )
 
 
@@ -292,25 +287,30 @@ def analyze(
     data: pd.DataFrame,
     analysis_config: api.AnalysisConfig,
     # An option to enable and configure automatic data quality checks.
-    data_quality_check_config: data_quality.QualityCheckConfig = data_quality.QualityCheckConfig(),
+    data_quality_check_config: api.QualityCheckConfig = api.QualityCheckConfig(),
 ) -> api.AnalysisResult:
   """Analyzes a GeoX experiment."""
-  # TODO: Add data quality checks and move some of the below
-  # checks to the data quality check function.
-  del data_quality_check_config
 
-  error_messages: list[str] = util.validate_schema(data)
+  error_messages: list[str] = validation.validate_analysis_input(
+      data, analysis_config
+  )
   if error_messages:
     raise ValueError(f'Data validation failed: {error_messages}')
 
   # 1. Prepare configuration.
-  design_config = _prepare_design_config(data, analysis_config)
-
+  design_config = _prepare_design_config(analysis_config)
   experiment_types = _get_experiment_types(design_config)
 
   # 2. Prepare data and masks.
   data = _prepare_data(data, analysis_config)
   treatment = _get_treatment_mask(data, analysis_config.design)
+
+  # Run data quality checks.
+  quality_result = data_quality.check_analysis_data_quality(
+      data,
+      analysis_config,
+      data_quality_check_config,
+  )
 
   # 3. Extract time series arrays.
   conversions = _get_time_series(data, api.CONVERSIONS, analysis_config)
@@ -361,6 +361,7 @@ def analyze(
       pretest_dates=conversions.pretest_dates,
       test_dates=conversions.test_dates,
       analysis_config=analysis_config,
+      quality_check_result=quality_result,
   )
 
 

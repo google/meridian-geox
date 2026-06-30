@@ -28,6 +28,7 @@ import matplotlib.pyplot as plt
 from meridian_geox import api
 from meridian_geox import generate_candidates
 from meridian_geox import util
+from meridian_geox import validation
 from meridian_geox.data_quality import data_quality
 from meridian_geox.methodology import tbr
 import numpy as np
@@ -85,19 +86,32 @@ class ScoredCandidates:
   counterfactual_conversions: jnp.ndarray
 
 
+def _filter_by_constraints(
+    data: pd.DataFrame,
+    constraints: Optional[api.Constraints],
+) -> pd.DataFrame:
+  """Filters data by excluding geos and dates specified in constraints."""
+  if constraints is None:
+    return data
+  filtered_data = data.copy()
+  if constraints.excluded_geos:
+    filtered_data = filtered_data[
+        ~filtered_data[api.LOCATION].isin(list(constraints.excluded_geos))
+    ]
+  if constraints.excluded_dates:
+    filtered_data = filtered_data[
+        ~filtered_data[api.DATE].isin(list(constraints.excluded_dates))
+    ]
+  return filtered_data
+
+
 def prepare_data(
     data: pd.DataFrame,
     experiment_duration: int,
     constraints: api.Constraints,
 ) -> ProcessedData:
   """Processes data for experiment design."""
-  # Filter excluded geos.
-  if constraints.excluded_geos:
-    data = data[~data[api.LOCATION].isin(list(constraints.excluded_geos))]
-
-  # Filter excluded dates.
-  if constraints.excluded_dates:
-    data = data[~data[api.DATE].isin(list(constraints.excluded_dates))]
+  data = _filter_by_constraints(data, constraints)
 
   # T0: Training period (for selecting designs).
   # T1: Validation period (for selecting designs).
@@ -272,6 +286,7 @@ def _get_design_summary(
     geo_stratum_labels: jnp.ndarray,
     processed_data: ProcessedData,
     data: pd.DataFrame,
+    quality_check_result: Optional[api.QualityCheckResult] = None,
 ) -> api.DesignSet:
   """Converts the results to a DesignSet."""
   designs = {}
@@ -434,6 +449,7 @@ def _get_design_summary(
       designs=designs,
       design_metrics=design_metrics,
       design_data=design_data,
+      quality_check_result=quality_check_result,
   )
 
 
@@ -442,15 +458,15 @@ def run_design(
     design_config: api.DesignConfig,
     constraints: api.Constraints,
     # An option to enable and configure automatic data quality checks.
-    data_quality_check_config: data_quality.QualityCheckConfig = (
-        data_quality.QualityCheckConfig()
+    data_quality_check_config: api.QualityCheckConfig = (
+        api.QualityCheckConfig()
     ),
     # A custom design scorer that allows power users to rank designs based on
     # their own criteria. API will be specified later.
     design_scorer: Optional[Callable[..., Any]] = None,
 ) -> api.DesignSet:
   """Designs GeoX experiments."""
-  del data_quality_check_config, design_scorer  # Unused in skeleton.
+  del design_scorer  # Unused in skeleton.
 
   # TODO: Complete the design method following the steps below.
   # 1. Preprocess data.
@@ -461,13 +477,21 @@ def run_design(
   )
   constraints.normalize(experiment_types)
 
-  error_messages: list[str] = util.validate_design_input(
+  error_messages: list[str] = validation.validate_design_input(
       data, design_config, constraints
   )
   if error_messages:
     raise ValueError(f'Data validation failed: {error_messages}')
 
-  # TODO: Run data quality checks.
+  # Exclude geos and dates before data quality checks.
+  filtered_data = _filter_by_constraints(data, constraints)
+
+  # Run data quality checks.
+  quality_result = data_quality.check_design_data_quality(
+      filtered_data,
+      design_config,
+      data_quality_check_config,
+  )
 
   processed_data: ProcessedData = prepare_data(
       data, design_config.experiment_duration, constraints
@@ -568,6 +592,7 @@ def run_design(
       geo_stratum_labels,
       processed_data,
       data,
+      quality_check_result=quality_result,
   )
 
 
@@ -616,10 +641,20 @@ def concat_design_reports(
       design_id: all_designs[design_id] for design_id in top_design_ids
   }
 
+  quality_check_result = next(
+      (
+          ds.quality_check_result
+          for ds in design_sets
+          if ds.quality_check_result is not None
+      ),
+      None,
+  )
+
   return api.DesignSet(
       designs=top_designs,
       design_metrics=top_metrics,
       design_data=design_data,
+      quality_check_result=quality_check_result,
   )
 
 
