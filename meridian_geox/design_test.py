@@ -267,6 +267,47 @@ class DesignTest(parameterized.TestCase):
     with self.assertRaisesRegex(ValueError, 'Short-circuit'):
       design.run_design(data, design_config, constraints)
 
+  @mock.patch(
+      'meridian_geox.data_quality.data_quality.check_design_data_quality'
+  )
+  def test_outlier_geos_removed_after_data_quality(
+      self, mock_check_design_data_quality
+  ):
+    mock_check_design_data_quality.return_value = api.QualityCheckResult(
+        quality_metrics=pd.DataFrame(),
+        outlier_geos={'geo_5'},
+    )
+
+    dates = pd.date_range(start='2023-01-01', periods=15)
+    locations = ['geo_1', 'geo_2', 'geo_3', 'geo_4', 'geo_5', 'geo_6']
+    data_list = []
+    for date, loc in itertools.product(dates, locations):
+      data_list.append({
+          api.DATE: date,
+          api.LOCATION: loc,
+          api.CONVERSIONS: 10.0,
+      })
+    data = pd.DataFrame(data_list)
+
+    design_config = api.DesignConfig(
+        experiment_duration=2,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        n_candidates=5,
+    )
+    constraints = api.Constraints(
+        max_conversions_percent=0.45,
+        budget_constraint=api.Budget(budget=1000.0),
+    )
+    result = design.run_design(data, design_config, constraints)
+
+    self.assertIn('geo_5', constraints.excluded_geos)
+    for _, design_obj in result.designs.items():
+      self.assertIn('geo_5', design_obj.excluded_geos)
+      self.assertNotIn('geo_5', design_obj.control_geos)
+      for cell_design in design_obj.designs.values():
+        self.assertNotIn('geo_5', cell_design.treatment_geos)
+
   @parameterized.named_parameters(
       dict(
           testcase_name='random',
@@ -1125,7 +1166,7 @@ class DesignTest(parameterized.TestCase):
         estimation_eval_spend={api.CELL_1: jnp.zeros((1, 4))},
     )
 
-    constraints.normalize(design_config.experiment_types)
+    constraints.normalize(design_config.experiment_types)  # pyrefly: ignore[bad-argument-type]
 
     with absltest.mock.patch.object(logging, 'warning') as mock_warning:
       design._get_design_summary(

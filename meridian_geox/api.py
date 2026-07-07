@@ -426,9 +426,11 @@ class DescriptiveMetrics:
   """Descriptive metrics for a single cell analysis."""
 
   __pydantic_config__ = pydantic.ConfigDict(arbitrary_types_allowed=True)
-
-  # TODO: Compute total spend for each cell.
-  total_spend: Optional[float] = None
+  # Represents the estimated BAU spend for the geos included in this cell's
+  # analysis (the specific cell's treatment geos plus control geos). It does
+  # not include spend from other treatment cells or non-experimental geos,
+  # and therefore does not represent the advertiser's total national spend.
+  estimated_bau_spend: Optional[float] = None
 
 
 @dataclasses.dataclass

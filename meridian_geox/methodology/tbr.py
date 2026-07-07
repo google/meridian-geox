@@ -71,12 +71,14 @@ class IcpdResults:
     lower_bound: (T,) Lower bound of the cumulative ICPD.
     upper_bound: (T,) Upper bound of the cumulative ICPD.
     cumulative_incremental_spend: (T,) Cumulative incremental spend.
+    counterfactual_spend: (T,) Predicted counterfactual spend.
   """
 
   cumulative_icpd: jnp.ndarray
   lower_bound: jnp.ndarray
   upper_bound: jnp.ndarray
   cumulative_incremental_spend: jnp.ndarray
+  counterfactual_spend: jnp.ndarray
 
 
 jax.tree_util.register_pytree_node(
@@ -87,6 +89,7 @@ jax.tree_util.register_pytree_node(
             node.lower_bound,
             node.upper_bound,
             node.cumulative_incremental_spend,
+            node.counterfactual_spend,
         ),
         None,
     ),
@@ -107,6 +110,7 @@ class TbrAnalysisResult:
     counterfactual_conversions_with_cis: (T, 4) Observed, counterfactual, and
       CIs.
     pointwise_difference_with_cis: (T, 3) Pointwise difference and CIs.
+    counterfactual_spend: (T,) Predicted counterfactual spend.
   """
 
   lift: api.Estimate
@@ -120,6 +124,7 @@ class TbrAnalysisResult:
   pointwise_difference_with_cis: np.ndarray = dataclasses.field(
       default_factory=lambda: np.array([])
   )
+  counterfactual_spend: Optional[np.ndarray] = None
 
 
 @jax.jit
@@ -697,6 +702,7 @@ def _compute_icpd(
       lower_bound=icpd_lower,
       upper_bound=icpd_upper,
       cumulative_incremental_spend=cumulative_incremental_spend,
+      counterfactual_spend=y_spend_pred * n_treatment_geos,
   )
 
 
@@ -878,6 +884,7 @@ def analyze(
 
   icpd = None
   cumulative_icpd_with_cis = None
+  counterfactual_spend = None
   if pretest_spend is not None and test_spend is not None:
     icpd_results = _compute_icpd(
         pretest_spend,
@@ -906,6 +913,7 @@ def analyze(
             icpd_results.upper_bound,
         ]).T
     )
+    counterfactual_spend = np.array(icpd_results.counterfactual_spend)
 
   return TbrAnalysisResult(
       lift=lift,
@@ -915,4 +923,5 @@ def analyze(
       cumulative_icpd_with_cis=cumulative_icpd_with_cis,
       counterfactual_conversions_with_cis=counterfactual_conversions_with_cis,
       pointwise_difference_with_cis=pointwise_difference_with_cis,
+      counterfactual_spend=counterfactual_spend,
   )

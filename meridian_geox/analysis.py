@@ -16,7 +16,7 @@
 
 import dataclasses
 import re
-from typing import Optional
+from typing import Optional, cast
 
 import jax
 import jax.numpy as jnp
@@ -124,7 +124,7 @@ def _get_placebo_masks(
   processed_placebo_data = design.prepare_data(
       data=placebo_data,
       experiment_duration=design_config.experiment_duration,
-      constraints=design_obj.constraints,
+      constraints=design_obj.constraints,  # pyrefly: ignore[bad-argument-type]
   )
 
   if design_config.geo_assignment_rule == api.GeoAssignmentRule.RANDOM:
@@ -132,7 +132,7 @@ def _get_placebo_masks(
         generate_candidates.get_random_candidates(
             filtered_data=processed_placebo_data.filtered_data,
             design_config=design_config,
-            constraints=design_obj.constraints,
+            constraints=design_obj.constraints,  # pyrefly: ignore[bad-argument-type]
             key=key,
             selection_train=processed_placebo_data.selection_train,
             selection_train_spend=processed_placebo_data.selection_train_spend,
@@ -151,7 +151,7 @@ def _get_placebo_masks(
             selection_train=processed_placebo_data.selection_train,
             filtered_data=processed_placebo_data.filtered_data,
             design_config=design_config,
-            constraints=design_obj.constraints,
+            constraints=design_obj.constraints,  # pyrefly: ignore[bad-argument-type]
             geo_stratum_labels=design_obj.geo_stratum_labels[
                 treatment.mask == 0
             ],
@@ -228,11 +228,117 @@ def _get_treatment_mask(
   return TreatmentMask(mask=jnp.array(treatment_mask), geos=treatment_geos)
 
 
+def _get_estimated_bau_spend_holdback(
+    treatment_mask: np.ndarray,
+    control_mask: np.ndarray,
+    pretest_conversions: jnp.ndarray,
+    test_spend: jnp.ndarray,
+) -> Optional[float]:
+  """Computes estimated BAU spend for a HOLDBACK experiment."""
+  treatment_pretest_conversions = jnp.sum(
+      pretest_conversions[:, treatment_mask]
+  )
+  control_pretest_conversions = jnp.sum(pretest_conversions[:, control_mask])
+
+  if treatment_pretest_conversions <= 0:
+    return None
+
+  treatment_test_spend = jnp.sum(test_spend[:, treatment_mask])
+  control_predicted_spend = (
+      control_pretest_conversions / treatment_pretest_conversions
+  ) * treatment_test_spend
+
+  estimated_bau_spend = treatment_test_spend + control_predicted_spend
+  return float(estimated_bau_spend)
+
+
+def _get_estimated_bau_spend_go_dark_or_heavy_up(
+    treatment_mask: np.ndarray,
+    control_mask: np.ndarray,
+    test_spend: jnp.ndarray,
+    result: Optional[tbr.TbrAnalysisResult] = None,
+) -> Optional[float]:
+  """Computes estimated BAU spend for a GO_DARK or HEAVY_UP experiment."""
+  num_treatment_geos = jnp.sum(treatment_mask.astype(jnp.float32))
+  num_control_geos = jnp.sum(control_mask.astype(jnp.float32))
+
+  if num_treatment_geos == 0 or num_control_geos == 0:
+    return None
+
+  if result is None or result.counterfactual_spend is None:
+    return None
+
+  counterfactual_spend = cast(jnp.ndarray, result.counterfactual_spend)
+  if jnp.sum(counterfactual_spend) <= 0:
+    return None
+
+  control_test_spend = jnp.sum(test_spend[:, control_mask])
+  treatment_predicted_spend = jnp.sum(counterfactual_spend)
+  return float(control_test_spend + treatment_predicted_spend)
+
+
+def _get_estimated_bau_spend(
+    analysis_config: api.AnalysisConfig,
+    cell: str,
+    geos: list[str],
+    spend: dict[str, TimeSeries],
+    conversions: TimeSeries,
+    experiment_type: api.ExperimentType,
+    result: Optional[tbr.TbrAnalysisResult] = None,
+) -> Optional[float]:
+  """Computes estimated BAU spend for a cell during the test period."""
+  if cell not in spend:
+    return None
+
+  cell_spend = spend[cell]
+  pretest_dates = cell_spend.pretest_dates
+  test_dates = cell_spend.test_dates
+
+  num_pretest_days = len(pretest_dates)
+  num_test_days = len(test_dates)
+
+  if num_pretest_days == 0 or num_test_days == 0:
+    return None
+
+  cell_design = analysis_config.design.designs.get(cell)
+  if not cell_design or not cell_design.treatment_geos:
+    return None
+  treatment_mask = np.array([geo in cell_design.treatment_geos for geo in geos])
+  control_mask = np.array(
+      [geo in analysis_config.design.control_geos for geo in geos]
+  )
+
+  if experiment_type == api.ExperimentType.HOLDBACK:
+    return _get_estimated_bau_spend_holdback(
+        treatment_mask=treatment_mask,
+        control_mask=control_mask,
+        pretest_conversions=conversions.pretest,
+        test_spend=cell_spend.test,
+    )
+
+  if experiment_type in (
+      api.ExperimentType.GO_DARK,
+      api.ExperimentType.HEAVY_UP,
+  ):
+    return _get_estimated_bau_spend_go_dark_or_heavy_up(
+        treatment_mask=treatment_mask,
+        control_mask=control_mask,
+        test_spend=cell_spend.test,
+        result=result,
+    )
+
+  return None
+
+
 def _get_analysis_summary(
     tbr_results: dict[str, tbr.TbrAnalysisResult],
     pretest_dates: pd.Index,
     test_dates: pd.Index,
     analysis_config: api.AnalysisConfig,
+    geos: list[str],
+    spend: dict[str, TimeSeries],
+    conversions: TimeSeries,
+    experiment_types: dict[str, api.ExperimentType],
     quality_check_result: Optional[api.QualityCheckResult] = None,
 ) -> api.AnalysisResult:
   """Converts raw analysis results into an AnalysisResult object."""
@@ -266,6 +372,18 @@ def _get_analysis_summary(
         columns=['difference', 'lower_bound', 'upper_bound'],
     )
 
+    descriptive_metrics = api.DescriptiveMetrics(
+        estimated_bau_spend=_get_estimated_bau_spend(
+            analysis_config=analysis_config,
+            cell=cell,
+            geos=geos,
+            spend=spend,
+            conversions=conversions,
+            experiment_type=experiment_types[cell],
+            result=tbr_result,
+        )
+    )
+
     results[cell] = api.AnalysisMetrics(
         lift=tbr_result.lift,
         percent_lift=tbr_result.percent_lift,
@@ -274,6 +392,7 @@ def _get_analysis_summary(
         pointwise_difference=pointwise_difference,
         icpd=tbr_result.icpd,
         cumulative_icpd=cumulative_icpd,
+        descriptive_metrics=descriptive_metrics,
     )
 
   return api.AnalysisResult(
@@ -347,13 +466,15 @@ def analyze(
         test_conversions=conversions.test,
         treatment_mask=treatment.mask,
         placebo_masks=placebo_masks,
-        alpha=analysis_config.alpha,
+        alpha=analysis_config.alpha,  # pyrefly: ignore[bad-argument-type]
         experiment_type=experiment_type,
-        test_type=analysis_config.test_type,
+        test_type=analysis_config.test_type,  # pyrefly: ignore[bad-argument-type]
         treatment_cell_id=util.cell_id_from_cell_name(cell),
         pretest_spend=spend[cell].pretest if cell in spend else None,
         test_spend=spend[cell].test if cell in spend else None,
     )
+
+  geos = sorted(data[api.LOCATION].unique())
 
   # 6. Package and return results.
   return _get_analysis_summary(
@@ -361,6 +482,10 @@ def analyze(
       pretest_dates=conversions.pretest_dates,
       test_dates=conversions.test_dates,
       analysis_config=analysis_config,
+      geos=geos,
+      spend=spend,
+      conversions=conversions,
+      experiment_types=experiment_types,
       quality_check_result=quality_result,
   )
 
@@ -635,8 +760,8 @@ def plot_analysis(analysis_result: api.AnalysisResult):
       high_i = df_i_test['upper_bound']
 
       if test_type == api.TestType.ONE_SIDED:
-        cap_lower_i = y_min_i_final - buffer_i
-        cap_upper_i = y_max_i_final + buffer_i
+        cap_lower_i = y_min_i_final - buffer_i  # pyrefly: ignore[unsupported-operation]
+        cap_upper_i = y_max_i_final + buffer_i  # pyrefly: ignore[unsupported-operation]
         temp_low_i = np.where(low_i == -np.inf, cap_lower_i, low_i)
         temp_high_i = np.where(high_i == np.inf, cap_upper_i, high_i)
         ax_i.fill_between(

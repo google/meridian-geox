@@ -752,6 +752,9 @@ class TbrTest(parameterized.TestCase):
 
     self.assertIsInstance(metrics, api.AnalysisMetrics)
     self.assertLen(metrics.counterfactual_conversions, 15)
+    self.assertIsNotNone(tbr_result.counterfactual_spend)
+    assert tbr_result.counterfactual_spend is not None
+    self.assertEqual(tbr_result.counterfactual_spend.shape, (5,))
     self.assertIn('observed', metrics.counterfactual_conversions.columns)
     self.assertLen(metrics.pointwise_difference, 15)
     self.assertIn('difference', metrics.pointwise_difference.columns)

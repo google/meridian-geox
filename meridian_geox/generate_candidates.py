@@ -77,11 +77,11 @@ def cluster_geos(
   mean = jnp.nanmean(conversions, axis=1)
   coeff_of_variation = jnp.nanstd(conversions, axis=1) / mean
 
-  trend_slope = np.apply_along_axis(linear_fit, axis=1, arr=conversions)
-  autocorr = np.apply_along_axis(autocorrelation, axis=1, arr=conversions)
+  trend_slope = np.apply_along_axis(linear_fit, axis=1, arr=conversions)  # pyrefly: ignore[no-matching-overload]
+  autocorr = np.apply_along_axis(autocorrelation, axis=1, arr=conversions)  # pyrefly: ignore[no-matching-overload]
 
   reference_ts = jnp.nanmean(conversions, axis=0)
-  dtw_distance = np.apply_along_axis(
+  dtw_distance = np.apply_along_axis(  # pyrefly: ignore[no-matching-overload]
       metrics.dtw, axis=1, arr=np.array(conversions), s2=np.array(reference_ts)
   )
 
@@ -493,7 +493,7 @@ def get_stratified_sampling_candidates(
     filtered_treatment_geo_candidates = (
         get_unconstrained_stratified_sampling_candidates(
             design_config,
-            filtered_stratum_counts,
+            filtered_stratum_counts,  # pyrefly: ignore[bad-argument-type]
             geo_stratum_labels[filtered_geo_indices],
             geo_conversions[filtered_geo_indices],
             float(constraints.max_conversions_percent * total_conversions),
@@ -502,7 +502,7 @@ def get_stratified_sampling_candidates(
         )
     )
 
-    candidates_batch = np.apply_along_axis(
+    candidates_batch = np.apply_along_axis(  # pyrefly: ignore[no-matching-overload]
         _get_expanded_mask,
         axis=1,
         arr=filtered_treatment_geo_candidates,
@@ -647,7 +647,7 @@ def get_random_candidates(
 
   # Use the max_conversions_percent as a proxy to determine the number of
   # treated units.
-  n_treated = int(n_geos * max_conversions_percent)
+  n_treated = int(n_geos * max_conversions_percent)  # pyrefly: ignore[unsupported-operation]
 
   # Check availability after forcing controls.
   n_available = n_geos - np.sum(forced_control_mask)

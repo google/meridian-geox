@@ -255,9 +255,9 @@ class MulticellE2ETest(absltest.TestCase):
       self, selected_design: api.Design, cell: str
   ) -> float:
     treatment_geos = selected_design.designs[cell].treatment_geos
-    total_conversions = selected_design.data['conversions'].sum()
-    treatment_conversions = selected_design.data[
-        selected_design.data['location'].isin(treatment_geos)
+    total_conversions = selected_design.data['conversions'].sum()  # pyrefly: ignore[unsupported-operation]
+    treatment_conversions = selected_design.data[  # pyrefly: ignore[unsupported-operation]
+        selected_design.data['location'].isin(treatment_geos)  # pyrefly: ignore[unsupported-operation]
     ]['conversions'].sum()
     return treatment_conversions / total_conversions
 

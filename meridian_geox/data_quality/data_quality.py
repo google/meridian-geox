@@ -234,7 +234,7 @@ def check_design_data_quality(
       data=data,
       quality_check_config=quality_check_config,
       is_design=True,
-      experiment_types=design_config.experiment_types,
+      experiment_types=design_config.experiment_types,  # pyrefly: ignore[bad-argument-type]
   )
 
 
@@ -257,6 +257,6 @@ def check_analysis_data_quality(
       data=data,
       quality_check_config=quality_check_config,
       is_design=False,
-      experiment_types=analysis_config.design.design_config.experiment_types,
+      experiment_types=analysis_config.design.design_config.experiment_types,  # pyrefly: ignore[bad-argument-type]
       pretest_end_date=pretest_end_date,
   )

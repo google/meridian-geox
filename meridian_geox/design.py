@@ -493,6 +493,10 @@ def run_design(
       data_quality_check_config,
   )
 
+  # Filter out outlier geos identified in quality check.
+  if quality_result.outlier_geos:
+    constraints.excluded_geos.update(quality_result.outlier_geos)
+
   processed_data: ProcessedData = prepare_data(
       data, design_config.experiment_duration, constraints
   )
@@ -589,7 +593,7 @@ def run_design(
       design_config,
       constraints,
       geos,
-      geo_stratum_labels,
+      geo_stratum_labels,  # pyrefly: ignore[bad-argument-type]
       processed_data,
       data,
       quality_check_result=quality_result,
@@ -635,7 +639,7 @@ def concat_design_reports(
     raise ValueError('No design metrics to concatenate.')
 
   top_metrics, top_design_ids = _rank_and_filter_metrics(
-      combined_metrics, design_output_count
+      combined_metrics, design_output_count  # pyrefly: ignore[bad-argument-type]
   )
   top_designs = {
       design_id: all_designs[design_id] for design_id in top_design_ids

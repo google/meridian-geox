@@ -14,6 +14,7 @@
 
 """Tests for GeoX analysis library."""
 
+import typing
 from absl.testing import absltest
 from absl.testing import parameterized
 import jax.numpy as jnp
@@ -602,7 +603,7 @@ class AnalysisTest(parameterized.TestCase):
     with self.assertRaisesRegex(
         ValueError, 'locations in the analysis data do not match'
     ):
-      analysis.analyze(analysis_data, config)
+      analysis.analyze(analysis_data, config)  # pyrefly: ignore[bad-argument-type]
 
   def test_plot_analysis_with_gap(self):
     data = self._create_sample_data(n_days=15, n_geos=10)
@@ -730,6 +731,569 @@ class AnalysisTest(parameterized.TestCase):
       self.assertLen(metrics.pointwise_difference, 15)
       self.assertLen(metrics.cumulative_lift, 5)
       self.assertIsNotNone(metrics.icpd)
+
+  def test_analyze_estimated_bau_spend_holdback(self):
+    data = self._create_sample_data(n_days=15, n_geos=10, include_spend=True)
+
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        seed=42,
+        n_candidates=3,
+        n_aa_test_iterations=5,
+    )
+
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1', 'G2'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={f'G{i}' for i in range(3, 11)},
+        excluded_geos=set(),
+        design_config=design_config,
+        constraints=api.Constraints(),
+        data=data,
+    )
+
+    config = api.AnalysisConfig(
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-11'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+        alpha=0.1,
+        test_type=api.TestType.TWO_SIDED,
+    )
+
+    result = analysis.analyze(data, config)
+    metrics = result.results['cell_1']
+    self.assertIsNotNone(metrics.descriptive_metrics)
+    assert metrics.descriptive_metrics is not None
+
+    pretest_data = data[data[api.DATE] < pd.Timestamp('2024-01-11')]
+    test_data = data[
+        (data[api.DATE] >= pd.Timestamp('2024-01-11'))
+        & (data[api.DATE] <= pd.Timestamp('2024-01-15'))
+    ]
+
+    treatment_geos = {'G1', 'G2'}
+    treatment_pretest_conv = pretest_data[
+        pretest_data[api.LOCATION].isin(treatment_geos)
+    ][api.CONVERSIONS].sum()
+
+    control_pretest_conv = pretest_data[
+        ~pretest_data[api.LOCATION].isin(treatment_geos)
+    ][api.CONVERSIONS].sum()
+
+    treatment_test_spend = test_data[
+        test_data[api.LOCATION].isin(treatment_geos)
+    ][api.SPEND].sum()
+
+    control_predicted_spend = (
+        control_pretest_conv / treatment_pretest_conv
+    ) * treatment_test_spend
+
+    expected_bau_spend = treatment_test_spend + control_predicted_spend
+    self.assertAlmostEqual(
+        metrics.descriptive_metrics.estimated_bau_spend,
+        expected_bau_spend,
+        places=2,
+    )
+
+  @parameterized.named_parameters(
+      ('go_dark', api.ExperimentType.GO_DARK),
+      ('heavy_up', api.ExperimentType.HEAVY_UP),
+  )
+  def test_analyze_estimated_bau_spend_go_dark_or_heavy_up(
+      self, experiment_type
+  ):
+    data = self._create_sample_data(n_days=15, n_geos=10, include_spend=True)
+
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types=experiment_type,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        seed=42,
+        n_candidates=3,
+        n_aa_test_iterations=5,
+    )
+
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1', 'G2'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={f'G{i}' for i in range(3, 11)},
+        excluded_geos=set(),
+        design_config=design_config,
+        constraints=api.Constraints(),
+        data=data,
+    )
+
+    config = api.AnalysisConfig(
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-11'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+        alpha=0.1,
+        test_type=api.TestType.TWO_SIDED,
+    )
+
+    result = analysis.analyze(data, config)
+    metrics = result.results['cell_1']
+    self.assertIsNotNone(metrics.descriptive_metrics)
+    assert metrics.descriptive_metrics is not None
+
+    pretest_data = data[data[api.DATE] < pd.Timestamp('2024-01-11')]
+    test_data = data[
+        (data[api.DATE] >= pd.Timestamp('2024-01-11'))
+        & (data[api.DATE] <= pd.Timestamp('2024-01-15'))
+    ]
+
+    treatment_geos = {'G1', 'G2'}
+    pretest_by_geo = pretest_data.pivot_table(
+        index=api.DATE, columns=api.LOCATION, values=api.SPEND, aggfunc='sum'
+    )
+    test_by_geo = test_data.pivot_table(
+        index=api.DATE, columns=api.LOCATION, values=api.SPEND, aggfunc='sum'
+    )
+
+    y_spend_pre = pretest_by_geo[list(treatment_geos)].mean(axis=1)
+    x_spend_pre = pretest_by_geo[
+        [c for c in pretest_by_geo.columns if c not in treatment_geos]
+    ].mean(axis=1)
+
+    x_mean = x_spend_pre.mean()
+    y_mean = y_spend_pre.mean()
+    ss_xx = ((x_spend_pre - x_mean) ** 2).sum()
+    ss_xy = ((x_spend_pre - x_mean) * (y_spend_pre - y_mean)).sum()
+    slope = ss_xy / ss_xx if ss_xx > 1e-10 else 0.0
+    intercept = y_mean - slope * x_mean
+
+    x_spend_test = test_by_geo[
+        [c for c in test_by_geo.columns if c not in treatment_geos]
+    ].mean(axis=1)
+    y_spend_pred = intercept + slope * x_spend_test
+    treatment_predicted_spend = y_spend_pred.sum() * len(treatment_geos)
+
+    control_test_spend = test_by_geo[
+        [c for c in test_by_geo.columns if c not in treatment_geos]
+    ].values.sum()
+
+    expected_bau_spend = control_test_spend + treatment_predicted_spend
+
+    self.assertAlmostEqual(
+        metrics.descriptive_metrics.estimated_bau_spend,
+        expected_bau_spend,
+        places=2,
+    )
+
+  def test_analyze_estimated_bau_spend_multicell(self):
+    data = self._create_sample_data(n_days=15, n_geos=50, include_spend=True)
+
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        seed=42,
+        n_candidates=3,
+        n_aa_test_iterations=5,
+    )
+
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1', 'G2'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            ),
+            'cell_2': api.PerCellDesign(
+                treatment_geos={'G3', 'G4'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            ),
+        },
+        control_geos={f'G{i}' for i in range(5, 51)},
+        excluded_geos=set(),
+        design_config=design_config,
+        constraints=api.Constraints(),
+        data=data,
+    )
+
+    config = api.AnalysisConfig(
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-11'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+        alpha=0.1,
+        test_type=api.TestType.TWO_SIDED,
+    )
+
+    result = analysis.analyze(data, config)
+    metrics_cell1 = result.results['cell_1']
+    assert metrics_cell1.descriptive_metrics is not None
+
+    pretest_data = data[data[api.DATE] < pd.Timestamp('2024-01-11')]
+    test_data = data[
+        (data[api.DATE] >= pd.Timestamp('2024-01-11'))
+        & (data[api.DATE] <= pd.Timestamp('2024-01-15'))
+    ]
+
+    treatment_geos = {'G1', 'G2'}
+    control_geos = {f'G{i}' for i in range(5, 51)}
+
+    treatment_pretest_conv = pretest_data[
+        pretest_data[api.LOCATION].isin(treatment_geos)
+    ][api.CONVERSIONS].sum()
+
+    control_pretest_conv = pretest_data[
+        pretest_data[api.LOCATION].isin(control_geos)
+    ][api.CONVERSIONS].sum()
+
+    treatment_test_spend = test_data[
+        test_data[api.LOCATION].isin(treatment_geos)
+    ][api.SPEND].sum()
+
+    control_predicted_spend = (
+        control_pretest_conv / treatment_pretest_conv
+    ) * treatment_test_spend
+
+    expected_bau_spend_cell1 = treatment_test_spend + control_predicted_spend
+    self.assertAlmostEqual(
+        metrics_cell1.descriptive_metrics.estimated_bau_spend,
+        expected_bau_spend_cell1,
+        places=2,
+    )
+
+  def test_analyze_estimated_bau_spend_unsupported_type(self):
+    data = self._create_sample_data(n_days=15, n_geos=10, include_spend=True)
+
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        seed=42,
+        n_candidates=3,
+        n_aa_test_iterations=5,
+    )
+
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1', 'G2'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={f'G{i}' for i in range(3, 11)},
+        excluded_geos=set(),
+        design_config=design_config,
+        constraints=api.Constraints(),
+        data=data,
+    )
+
+    config = api.AnalysisConfig(
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-11'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+        alpha=0.1,
+        test_type=api.TestType.TWO_SIDED,
+    )
+
+    with absltest.mock.patch.object(
+        analysis,
+        '_get_experiment_types',
+        return_value={'cell_1': typing.cast(api.ExperimentType, None)},
+    ):
+      result = analysis.analyze(data, config)
+
+    metrics = result.results['cell_1']
+    self.assertIsNotNone(metrics.descriptive_metrics)
+    assert metrics.descriptive_metrics is not None
+    self.assertIsNone(metrics.descriptive_metrics.estimated_bau_spend)
+
+  @parameterized.named_parameters(
+      (
+          'zero_conversions',
+          [[0.0, 0.0], [0.0, 0.0]],
+      ),
+      (
+          'zero_treatment_conversions',
+          [[0.0, 10.0]],
+      ),
+  )
+  def test_get_estimated_bau_spend_holdback_nil_returns(
+      self, pretest_conversions
+  ):
+    treatment_mask = np.array([True, False])
+    test_spend = jnp.array([[10.0, 20.0]])
+
+    result = analysis._get_estimated_bau_spend_holdback(
+        treatment_mask=treatment_mask,
+        control_mask=~treatment_mask,
+        pretest_conversions=jnp.array(pretest_conversions),
+        test_spend=test_spend,
+    )
+    self.assertIsNone(result)
+
+  def test_get_estimated_bau_spend_parent_missing_cell(self):
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types=api.ExperimentType.HOLDBACK,
+    )
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={'G2'},
+        excluded_geos=set(),
+        design_config=design_config,
+    )
+    config = api.AnalysisConfig(
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-11'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+    )
+    result = analysis._get_estimated_bau_spend(
+        analysis_config=config,
+        cell='cell_1',
+        geos=['G1', 'G2'],
+        spend={},
+        conversions=analysis.TimeSeries(
+            pretest=jnp.array([[10.0, 10.0]]),
+            test=jnp.array([[10.0, 10.0]]),
+            pretest_dates=pd.date_range('2024-01-01', periods=1),
+            test_dates=pd.date_range('2024-01-11', periods=1),
+        ),
+        experiment_type=api.ExperimentType.HOLDBACK,
+    )
+    self.assertIsNone(result)
+
+  def test_get_estimated_bau_spend_parent_missing_design(self):
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types=api.ExperimentType.HOLDBACK,
+    )
+    study_design = api.Design(
+        designs={},
+        control_geos=set(),
+        excluded_geos=set(),
+        design_config=design_config,
+    )
+    config = api.AnalysisConfig(
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-11'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+    )
+
+    cell_spend = analysis.TimeSeries(
+        pretest=jnp.array([[10.0, 10.0]]),
+        test=jnp.array([[10.0, 10.0]]),
+        pretest_dates=pd.date_range('2024-01-01', periods=1),
+        test_dates=pd.date_range('2024-01-11', periods=1),
+    )
+
+    result = analysis._get_estimated_bau_spend(
+        analysis_config=config,
+        cell='cell_1',
+        geos=['G1', 'G2'],
+        spend={'cell_1': cell_spend},
+        conversions=cell_spend,
+        experiment_type=api.ExperimentType.HOLDBACK,
+    )
+    self.assertIsNone(result)
+
+  def test_get_estimated_bau_spend_parent_empty_treatment_geos(self):
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types=api.ExperimentType.HOLDBACK,
+    )
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos=set(),
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={'G2'},
+        excluded_geos=set(),
+        design_config=design_config,
+    )
+    config = api.AnalysisConfig(
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-11'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+    )
+
+    cell_spend = analysis.TimeSeries(
+        pretest=jnp.array([[10.0, 10.0]]),
+        test=jnp.array([[10.0, 10.0]]),
+        pretest_dates=pd.date_range('2024-01-01', periods=1),
+        test_dates=pd.date_range('2024-01-11', periods=1),
+    )
+
+    with absltest.mock.patch.object(
+        analysis, '_get_estimated_bau_spend_holdback'
+    ) as mock_holdback:
+      result = analysis._get_estimated_bau_spend(
+          analysis_config=config,
+          cell='cell_1',
+          geos=['G1', 'G2'],
+          spend={'cell_1': cell_spend},
+          conversions=cell_spend,
+          experiment_type=api.ExperimentType.HOLDBACK,
+      )
+      self.assertIsNone(result)
+      mock_holdback.assert_not_called()
+
+  def test_get_estimated_bau_spend_parent_zero_pretest_days(self):
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types=api.ExperimentType.HOLDBACK,
+    )
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={'G2'},
+        excluded_geos=set(),
+        design_config=design_config,
+    )
+    config = api.AnalysisConfig(
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-11'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+    )
+
+    cell_spend = analysis.TimeSeries(
+        pretest=jnp.ones((0, 2)),
+        test=jnp.ones((1, 2)),
+        pretest_dates=pd.date_range('2024-01-01', periods=0),
+        test_dates=pd.date_range('2024-01-11', periods=1),
+    )
+
+    result = analysis._get_estimated_bau_spend(
+        analysis_config=config,
+        cell='cell_1',
+        geos=['G1', 'G2'],
+        spend={'cell_1': cell_spend},
+        conversions=cell_spend,
+        experiment_type=api.ExperimentType.HOLDBACK,
+    )
+    self.assertIsNone(result)
+
+  def test_get_estimated_bau_spend_parent_zero_test_days(self):
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types=api.ExperimentType.HOLDBACK,
+    )
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={'G2'},
+        excluded_geos=set(),
+        design_config=design_config,
+    )
+    config = api.AnalysisConfig(
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-11'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+    )
+
+    cell_spend = analysis.TimeSeries(
+        pretest=jnp.ones((1, 2)),
+        test=jnp.ones((0, 2)),
+        pretest_dates=pd.date_range('2024-01-01', periods=1),
+        test_dates=pd.date_range('2024-01-11', periods=0),
+    )
+
+    result = analysis._get_estimated_bau_spend(
+        analysis_config=config,
+        cell='cell_1',
+        geos=['G1', 'G2'],
+        spend={'cell_1': cell_spend},
+        conversions=cell_spend,
+        experiment_type=api.ExperimentType.HOLDBACK,
+    )
+    self.assertIsNone(result)
+
+  def test_get_estimated_bau_spend_parent_unsupported_experiment_type(self):
+    design_config = api.DesignConfig(
+        experiment_duration=5,
+        experiment_types=api.ExperimentType.HOLDBACK,
+    )
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={'G2'},
+        excluded_geos=set(),
+        design_config=design_config,
+    )
+    config = api.AnalysisConfig(
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-11'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+    )
+
+    cell_spend = analysis.TimeSeries(
+        pretest=jnp.ones((1, 2)),
+        test=jnp.ones((1, 2)),
+        pretest_dates=pd.date_range('2024-01-01', periods=1),
+        test_dates=pd.date_range('2024-01-11', periods=1),
+    )
+
+    result = analysis._get_estimated_bau_spend(
+        analysis_config=config,
+        cell='cell_1',
+        geos=['G1', 'G2'],
+        spend={'cell_1': cell_spend},
+        conversions=cell_spend,
+        experiment_type=typing.cast(api.ExperimentType, None),
+    )
+    self.assertIsNone(result)
+
 
 if __name__ == '__main__':
   absltest.main()
