@@ -14,6 +14,7 @@
 
 """Tests for GeoX validation functions."""
 
+import datetime
 import logging
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -40,7 +41,7 @@ class ValidationTest(parameterized.TestCase):
     self.data = pd.DataFrame(data_rows)
 
     self.design_config = api.DesignConfig(
-        experiment_duration=10,
+        experiment_duration=datetime.timedelta(days=10),
         experiment_types=api.ExperimentType.HOLDBACK,
         alpha=0.1,
         power=0.8,
@@ -175,7 +176,8 @@ class ValidationTest(parameterized.TestCase):
 
   def test_validate_design_input_not_enough_dates(self):
     design_config = api.DesignConfig(
-        experiment_duration=11, experiment_types=api.ExperimentType.HOLDBACK
+        experiment_duration=datetime.timedelta(days=11),
+        experiment_types=api.ExperimentType.HOLDBACK,
     )
     errors = validation.validate_design_input(
         self.data, design_config, self.constraints
@@ -223,7 +225,7 @@ class ValidationTest(parameterized.TestCase):
       self, alpha, power, expected_error
   ):
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.HOLDBACK,
         alpha=alpha,
         power=power,
@@ -234,9 +236,27 @@ class ValidationTest(parameterized.TestCase):
     self.assertLen(errors, 1)
     self.assertIn(expected_error, errors[0])
 
+  @parameterized.named_parameters(
+      ('min_r2_zero', 0.0, 'min_r2 must be between 0 and 1'),
+      ('min_r2_one', 1.0, 'min_r2 must be between 0 and 1'),
+      ('min_r2_negative', -0.1, 'min_r2 must be between 0 and 1'),
+      ('min_r2_above_one', 1.5, 'min_r2 must be between 0 and 1'),
+  )
+  def test_validate_design_input_invalid_min_r2(self, min_r2, expected_error):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=5),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        min_r2=min_r2,
+    )
+    errors = validation.validate_design_input(
+        self.data, design_config, self.constraints
+    )
+    self.assertLen(errors, 1)
+    self.assertIn(expected_error, errors[0])
+
   def test_validate_design_input_holdback_missing_cpic(self):
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.HOLDBACK,
         cost_per_incremental_conversion=0.0,
     )
@@ -251,7 +271,7 @@ class ValidationTest(parameterized.TestCase):
 
   def test_validate_design_input_go_dark_missing_cpic_no_error(self):
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.GO_DARK,
         cost_per_incremental_conversion=0.0,
     )
@@ -265,7 +285,7 @@ class ValidationTest(parameterized.TestCase):
 
   def test_validate_design_input_holdback_no_budget_warning(self):
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types={'cell_1': api.ExperimentType.HOLDBACK},
         cost_per_incremental_conversion={'cell_1': 1.0},
     )
@@ -278,7 +298,7 @@ class ValidationTest(parameterized.TestCase):
 
   def test_validate_design_input_holdback_budget_pct_warning(self):
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types={'cell_1': api.ExperimentType.HOLDBACK},
         cost_per_incremental_conversion={'cell_1': 1.0},
     )
@@ -293,7 +313,7 @@ class ValidationTest(parameterized.TestCase):
 
   def test_validate_design_input_go_dark_no_budget_pct_warning(self):
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types={'cell_1': api.ExperimentType.GO_DARK},
     )
     with absltest.mock.patch.object(logging, 'warning') as mock_warning:
@@ -308,7 +328,7 @@ class ValidationTest(parameterized.TestCase):
 
   def test_validate_design_input_go_dark_absolute_budget_warning(self):
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types={'cell_1': api.ExperimentType.GO_DARK},
     )
     constraints = api.Constraints(
@@ -324,7 +344,7 @@ class ValidationTest(parameterized.TestCase):
 
   def test_validate_design_input_cell_count_mismatch(self):
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types={
             'cell_1': api.ExperimentType.HOLDBACK,
             'cell_2': api.ExperimentType.GO_DARK,
@@ -339,7 +359,7 @@ class ValidationTest(parameterized.TestCase):
 
   def test_validate_design_input_single_cell_godark_missing_spend_error(self):
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.GO_DARK,
     )
     constraints = api.Constraints(
@@ -358,7 +378,7 @@ class ValidationTest(parameterized.TestCase):
       self,
   ):
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         cell_count=2,
         experiment_types={
             'cell_1': api.ExperimentType.GO_DARK,
@@ -383,7 +403,7 @@ class ValidationTest(parameterized.TestCase):
 
   def test_validate_design_input_max_conversions_percent_error(self):
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types={'cell_1': api.ExperimentType.HOLDBACK},
         cost_per_incremental_conversion={'cell_1': 1.0},
     )
@@ -399,7 +419,7 @@ class ValidationTest(parameterized.TestCase):
 
   def test_validate_design_input_max_conversions_percent_warning(self):
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types={'cell_1': api.ExperimentType.HOLDBACK},
         cost_per_incremental_conversion={'cell_1': 1.0},
     )
@@ -432,7 +452,7 @@ class ValidationTest(parameterized.TestCase):
 
   def test_validate_analysis_input_pretest_duration_insufficient(self):
     design_config = api.DesignConfig(
-        experiment_duration=16,
+        experiment_duration=datetime.timedelta(days=16),
         experiment_types=api.ExperimentType.HOLDBACK,
     )
     design = api.Design(

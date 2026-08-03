@@ -82,6 +82,32 @@ class TbrTest(parameterized.TestCase):
     # Verify that R2 is close to 1.0 due to perfect linear relationship.
     np.testing.assert_allclose(r2, 1.0, rtol=5e-5, atol=5e-5)
 
+  def test_get_r2_negative_correlation_clamped_to_zero(self):
+    # Create data where treated is negatively correlated with control
+    # (-2 * control + 1).
+    t = 10
+    n_geos = 4
+    control_data = jax.random.normal(jax.random.PRNGKey(0), (t, n_geos // 2))
+    treated_data = -2.0 * control_data + 1.0
+
+    data_pre = jnp.concatenate([treated_data, control_data], axis=1)
+    data_val = data_pre
+
+    mask = jnp.concatenate([jnp.ones(n_geos // 2), jnp.zeros(n_geos // 2)])
+    treatment_masks = mask[None, :]
+
+    r2 = tbr.get_r2(data_pre, data_val, treatment_masks, jnp.array([1.0]))
+
+    # Because negative slope is clamped to 0, R2 is <= 0.0.
+    self.assertLessEqual(float(r2[0, 0]), 0.0)
+
+  def test_fit_linear_regression_negative_slope_clamped(self):
+    x = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    y = jnp.array([5.0, 4.0, 3.0, 2.0, 1.0])  # negative slope -1.0
+    intercept, slope = tbr._fit_linear_regression(x, y)
+    self.assertAlmostEqual(float(slope), 0.0)
+    self.assertAlmostEqual(float(intercept), 3.0)
+
   def test_get_r2_multicell(self):
     t = 10
     # Control data.
@@ -707,8 +733,12 @@ class TbrTest(parameterized.TestCase):
         ].values
     )
 
+    pretest_train_conversions = pretest_conversions[:-5]
+    pretest_val_conversions = pretest_conversions[-5:]
+
     tbr_result = tbr.analyze(
-        pretest_conversions=pretest_conversions,
+        pretest_train_conversions=pretest_train_conversions,
+        pretest_val_conversions=pretest_val_conversions,
         test_conversions=test_conversions,
         treatment_mask=treatment_mask,
         placebo_masks=placebo_masks,
@@ -866,8 +896,12 @@ class TbrTest(parameterized.TestCase):
         ].values
     )
 
+    pretest_train_conversions = pretest_conversions[:-5]
+    pretest_val_conversions = pretest_conversions[-5:]
+
     tbr_result = tbr.analyze(
-        pretest_conversions=pretest_conversions,
+        pretest_train_conversions=pretest_train_conversions,
+        pretest_val_conversions=pretest_val_conversions,
         test_conversions=test_conversions,
         treatment_mask=treatment_mask,
         placebo_masks=placebo_masks,
@@ -1013,8 +1047,12 @@ class TbrTest(parameterized.TestCase):
         ].values
     )
 
+    pretest_train_conversions = pretest_conversions[:-5]
+    pretest_val_conversions = pretest_conversions[-5:]
+
     tbr_result = tbr.analyze(
-        pretest_conversions=pretest_conversions,
+        pretest_train_conversions=pretest_train_conversions,
+        pretest_val_conversions=pretest_val_conversions,
         test_conversions=test_conversions,
         treatment_mask=treatment_mask,
         placebo_masks=placebo_masks,
@@ -1041,9 +1079,11 @@ class TbrTest(parameterized.TestCase):
         t_placebo=jnp.array([0.0, 5.0, 10.0, 15.0]),
         test_type=api.TestType.TWO_SIDED,
     )
-    # n_extreme = count(|t_placebo| >= |10/1|) = count([0, 5, 10, 15] >= 10) = 2
-    # p_val = (1 + 2) / (1 + 4) = 0.6
-    self.assertAlmostEqual(p_val, 0.6)
+    # n_extreme_left = sum([0, 5, 10, 15] <= 10.0) = 3
+    # n_extreme_right = sum([0, 5, 10, 15] >= 10.0) = 2
+    # n_extreme = 2 * min(3, 2) = 4
+    # p_val = (1 + 4) / (1 + 4) = 1.0
+    self.assertAlmostEqual(p_val, 1.0)
 
   def test_compute_se(self):
     rmse = 2.0
@@ -1150,14 +1190,18 @@ class TbrTest(parameterized.TestCase):
     # Setup simple data where linear fit is perfect
     # Geos: 0 treated (original), 1 placebo treated, 2 control
     data_pretest = jnp.array([
-        [10.0, 10.0, 10.0],  # G0 (mask=1), G1 (p_mask=1), G2 (valid control)
+        [10.0, 10.0, 10.0],
         [20.0, 20.0, 20.0],
+        [30.0, 30.0, 30.0],
     ])
     data_test = jnp.array([
-        [30.0, 30.0, 30.0],
+        [40.0, 40.0, 40.0],
     ])
     mask = jnp.array([1, 0, 0])
     p_mask = jnp.array([0, 1, 0])
+
+    data_pretest_train = data_pretest[:-1]
+    data_pretest_val = data_pretest[-1:]
 
     (
         y_test,
@@ -1165,15 +1209,21 @@ class TbrTest(parameterized.TestCase):
         rmse,
         log_rmse,
     ) = tbr._compute_placebo_effect_from_mask(
-        data_pretest, data_test, mask, p_mask, 1.0
+        data_pretest,
+        data_pretest_train,
+        data_pretest_val,
+        data_test,
+        mask,
+        p_mask,
+        1.0,
     )
     effect = y_test - y_pred
     # p_mask=1 selects G1. valid_control_mask selects G2.
-    # pre: py = [10, 20], px = [10, 20]. alpha=0, beta=1.
-    # rmse = 0.
-    # test: py_test = [30], px_test = [30].
-    # py_pred = 0 + 1 * 30 = 30.
-    # effect = 30 - 30 = 0.
+    # pre T0+T1: py = [10, 20], px = [10, 20]. alpha=0, beta=1.
+    # pre T2: py_val = [30], px_val = [30]. py_pred_val = 30. rmse = 0.
+    # test: py_test = [40], px_test = [40].
+    # py_pred = 0 + 1 * 40 = 40.
+    # effect = 40 - 40 = 0.
     self.assertAlmostEqual(float(rmse), 0.0, delta=1e-4)
     self.assertAlmostEqual(float(effect[0]), 0.0, delta=1e-4)
     self.assertAlmostEqual(float(log_rmse), 0.0, delta=1e-4)
@@ -1183,9 +1233,10 @@ class TbrTest(parameterized.TestCase):
     data_pretest = jnp.array([
         [10.0, 10.0, 10.0, 10.0, 10.0],
         [20.0, 20.0, 20.0, 20.0, 20.0],
+        [30.0, 30.0, 30.0, 30.0, 30.0],
     ])
     data_test = jnp.array([
-        [30.0, 30.0, 30.0, 30.0, 30.0],
+        [30.0, 30.0, 50.0, 40.0, 30.0],
     ])
     # G0 is cell 1, G1 is cell 2, G2-G4 are control
     mask = jnp.array([1, 2, 0, 0, 0])
@@ -1194,17 +1245,28 @@ class TbrTest(parameterized.TestCase):
     # indices originally assigned to control (where mask == 0).
     p_mask = jnp.array([0, 0, 2, 1, 0])
 
+    data_pretest_train = data_pretest[:-1]
+    data_pretest_val = data_pretest[-1:]
+
     (
         y_test,
         y_pred,
         rmse,
         log_rmse,
     ) = tbr._compute_placebo_effect_from_mask(
-        data_pretest, data_test, mask, p_mask, 2.0
+        data_pretest,
+        data_pretest_train,
+        data_pretest_val,
+        data_test,
+        mask,
+        p_mask,
+        2.0,
     )
     effect = y_test - y_pred
     self.assertAlmostEqual(float(rmse), 0.0, delta=1e-4)
-    self.assertAlmostEqual(float(effect[0]), 0.0, delta=1e-4)
+    self.assertAlmostEqual(float(y_test[0]), 50.0, delta=1e-4)
+    self.assertAlmostEqual(float(y_pred[0]), 30.0, delta=1e-4)
+    self.assertAlmostEqual(float(effect[0]), 20.0, delta=1e-4)
     self.assertAlmostEqual(float(log_rmse), 0.0, delta=1e-4)
 
 

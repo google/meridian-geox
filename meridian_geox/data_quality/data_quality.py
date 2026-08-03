@@ -19,6 +19,7 @@ import re
 from typing import Optional
 
 from meridian_geox import api
+import numpy as np
 import pandas as pd
 
 
@@ -27,6 +28,53 @@ _MAX_GEOS = 500
 _MAX_ZERO_RESPONSE_PCT = 0.5
 _MAX_MISSING_DAYS_PCT = 0.3
 _MAX_DUPLICATE_ENTRIES = 0
+
+
+def _detect_pretest_date_outliers(
+    y: np.ndarray,
+    t: np.ndarray,
+    multiplier: float = 3.0,
+) -> tuple[np.ndarray, float]:
+  """Detects outlier pre-test dates using Leave-One-Out (LOO) cross-validation.
+
+  Applies standard ordinary least squares (OLS) linear regression (y ~ alpha +
+  beta * t) sequentially across the timeline, holding one date index out at a
+  time. It then calculates the absolute prediction error (gap) for the omitted
+  date. Outliers are identified as dates where the gap exceeds the empirical
+  IQR threshold: Q3 + multiplier * IQR.
+
+  Args:
+    y: A 1D array of daily aggregate conversions.
+    t: A 1D array of elapsed calendar day indices.
+    multiplier: A multiplier for IQR thresholding.
+
+  Returns:
+    A tuple containing the array of prediction gaps and the cutoff threshold.
+  """
+  num_dates = len(y)
+  gaps = []
+
+  # Step 1: LOO Cross-Validation and Gap Calculation
+  for k in range(num_dates):
+    # Omit evaluation index k from the training dataset
+    train_x = np.delete(t, k)
+    train_y = np.delete(y, k)
+
+    # Fit OLS line: y_t ~ alpha + beta * t
+    slope, intercept = np.polyfit(train_x, train_y, 1)
+
+    # Predict the omitted index k
+    y_pred = intercept + slope * t[k]
+    gaps.append(abs(y[k] - y_pred))
+
+  gaps = np.array(gaps)
+
+  # Step 2: Calculate the empirical IQR threshold
+  q75, q25 = np.percentile(gaps, [75, 25])
+  iqr = q75 - q25
+  cutoff = q75 + (multiplier * iqr)
+
+  return gaps, cutoff
 
 
 def _check_data_quality(
@@ -171,11 +219,11 @@ def _check_data_quality(
           (total_spend_per_location > 0) & (geo_data[api.CONVERSIONS] <= 0)
       ].index.tolist()
       if zero_conversion_geos:
+        outlier_geos.update(zero_conversion_geos)
         if quality_check_config.exclude_geos_no_response:
-          outlier_geos.update(zero_conversion_geos)
           message = (
-              'Found geos with spend > 0 and no response. Moved to outlier'
-              ' geos.'
+              'Found geos with spend > 0 and no response. Those outlier geos'
+              ' will be removed from design and analysis.'
           )
         else:
           message = 'Found geos with spend > 0 and no response.'
@@ -183,6 +231,50 @@ def _check_data_quality(
         metrics.append({
             'metric': 'Spend > 0 and no conversions',
             'value': len(zero_conversion_geos),
+            'message': message,
+            'threshold': None,
+        })
+
+  # Outlier pretest dates detection.
+  if not pretest_data.empty:
+    df_by_date = (
+        pretest_data.groupby(api.DATE)[api.CONVERSIONS]
+        .sum()
+        .to_frame(name='y')
+        .sort_index()
+    )
+    y_raw = df_by_date['y'].values
+    dates_list = df_by_date.index.tolist()
+    num_dates = len(y_raw)
+
+    if num_dates > 3:
+      t_raw = (df_by_date.index - df_by_date.index[0]).days.values
+      gaps, cutoff = _detect_pretest_date_outliers(
+          y=y_raw,
+          t=t_raw,
+          multiplier=3.0,
+      )
+
+      detected_dates = {
+          pd.Timestamp(dates_list[k])
+          for k in range(num_dates)
+          if gaps[k] > cutoff and gaps[k] > 1e-5
+      }
+
+      if detected_dates:
+        outlier_dates.update(detected_dates)
+        if quality_check_config.exclude_outlier_dates:
+          message = (
+              'Found outlier pretest dates. Those outlier dates will be'
+              ' removed from design or analysis.'
+          )
+        else:
+          message = 'Found outlier pretest dates.'
+
+        logging.warning(message)
+        metrics.append({
+            'metric': 'Outlier pretest dates',
+            'value': len(detected_dates),
             'message': message,
             'threshold': None,
         })
@@ -218,6 +310,7 @@ def _check_data_quality(
     )
 
   return api.QualityCheckResult(
+      quality_check_config=quality_check_config,
       quality_metrics=quality_metrics,
       outlier_geos=outlier_geos,
       outlier_dates=outlier_dates,

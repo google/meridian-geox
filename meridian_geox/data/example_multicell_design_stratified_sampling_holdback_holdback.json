@@ -134,7 +134,7 @@
   ],
   "excluded_geos": ["105"],
   "design_config": {
-    "experiment_duration": 30,
+    "experiment_duration": "P30D",
     "experiment_types": { "cell_1": 1, "cell_2": 1 },
     "methodology": 1,
     "geo_assignment_rule": 2,

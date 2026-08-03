@@ -14,6 +14,7 @@
 
 """End-to-end tests for GeoX design and analysis."""
 
+import datetime
 import os
 from absl.testing import absltest
 from meridian_geox import analysis
@@ -50,11 +51,14 @@ class SingleCellE2ETest(absltest.TestCase):
 
     # 2. Run single cell experiment design.
     design_config = api.DesignConfig(
-        experiment_duration=30,
+        n_candidates=500,
+        pad_length=10000,
+        experiment_duration=datetime.timedelta(days=30),
         experiment_types=api.ExperimentType.HOLDBACK,
         methodology=api.Methodology.TBR,
         geo_assignment_rule=api.GeoAssignmentRule.STRATIFIED_SAMPLING,
         cell_count=1,
+        min_r2=0.01,
     )
 
     constraints = api.Constraints(
@@ -67,18 +71,18 @@ class SingleCellE2ETest(absltest.TestCase):
     selected_design = design_set.designs[design_id]
 
     # Verify design results.
-    self.assertLen(selected_design.control_geos, 85)
-    self.assertLen(selected_design.designs['cell_1'].treatment_geos, 28)
+    self.assertLen(selected_design.control_geos, 84)
+    self.assertLen(selected_design.designs['cell_1'].treatment_geos, 29)
     np.testing.assert_allclose(
         selected_design.designs['cell_1'].minimum_detectable_effect,
-        0.0140,
+        0.015947,
         rtol=0.01,
     )
     np.testing.assert_allclose(
-        selected_design.designs['cell_1'].p_value, 0.1915, rtol=0.01
+        selected_design.designs['cell_1'].p_value, 0.173143, rtol=0.01
     )
     np.testing.assert_allclose(
-        selected_design.designs['cell_1'].budget, 7569.0, rtol=0.01
+        selected_design.designs['cell_1'].budget, 8580.374904, rtol=0.01
     )
     treatment_conversion_pct = self._compute_treatment_conversion_pct(
         selected_design
@@ -102,6 +106,8 @@ class SingleCellE2ETest(absltest.TestCase):
 
     # 3. Run single cell experiment analysis.
     analysis_config = api.AnalysisConfig(
+        n_placebo_candidates=500,
+        min_placebo_r2=-100.0,
         design=selected_design,
         analysis_start_date=pd.Timestamp('2020-04-01'),
         analysis_end_date=pd.Timestamp('2020-04-30'),
@@ -129,11 +135,14 @@ class SingleCellE2ETest(absltest.TestCase):
 
     # 2. Run single cell experiment design.
     design_config = api.DesignConfig(
-        experiment_duration=30,
+        n_candidates=500,
+        pad_length=10000,
+        experiment_duration=datetime.timedelta(days=30),
         experiment_types=api.ExperimentType.GO_DARK,
         methodology=api.Methodology.TBR,
         geo_assignment_rule=api.GeoAssignmentRule.STRATIFIED_SAMPLING,
         cell_count=1,
+        min_r2=0.01,
     )
 
     constraints = api.Constraints(
@@ -146,15 +155,15 @@ class SingleCellE2ETest(absltest.TestCase):
     selected_design = design_set.designs[design_id]
 
     # Verify design results.
-    self.assertLen(selected_design.control_geos, 85)
-    self.assertLen(selected_design.designs['cell_1'].treatment_geos, 28)
+    self.assertLen(selected_design.control_geos, 83)
+    self.assertLen(selected_design.designs['cell_1'].treatment_geos, 30)
     np.testing.assert_allclose(
         selected_design.designs['cell_1'].minimum_detectable_effect,
-        0.0134,
+        0.016184,
         rtol=0.01,
     )
     np.testing.assert_allclose(
-        selected_design.designs['cell_1'].p_value, 0.6508, rtol=0.01
+        selected_design.designs['cell_1'].p_value, 0.197341, rtol=0.01
     )
     np.testing.assert_allclose(
         selected_design.designs['cell_1'].budget, 6236.45, rtol=0.01
@@ -162,7 +171,7 @@ class SingleCellE2ETest(absltest.TestCase):
     treatment_conversion_pct = self._compute_treatment_conversion_pct(
         selected_design
     )
-    np.testing.assert_allclose(treatment_conversion_pct, 0.295, rtol=0.01)
+    np.testing.assert_allclose(treatment_conversion_pct, 0.294, rtol=0.01)
 
   def test_single_cell_stratified_sampling_godark_analysis(self):
     # 1. Load analysis data.
@@ -181,6 +190,8 @@ class SingleCellE2ETest(absltest.TestCase):
 
     # 3. Run single cell experiment analysis.
     analysis_config = api.AnalysisConfig(
+        n_placebo_candidates=500,
+        min_placebo_r2=-100.0,
         design=selected_design,
         analysis_start_date=pd.Timestamp('2020-04-01'),
         analysis_end_date=pd.Timestamp('2020-04-30'),
@@ -208,11 +219,14 @@ class SingleCellE2ETest(absltest.TestCase):
 
     # 2. Run single cell experiment design.
     design_config = api.DesignConfig(
-        experiment_duration=30,
+        n_candidates=500,
+        pad_length=10000,
+        experiment_duration=datetime.timedelta(days=30),
         experiment_types=api.ExperimentType.HOLDBACK,
         methodology=api.Methodology.TBR,
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         cell_count=1,
+        min_r2=0.01,
     )
 
     constraints = api.Constraints(budget_constraint=api.Budget(budget=50000))
@@ -227,14 +241,14 @@ class SingleCellE2ETest(absltest.TestCase):
     self.assertLen(selected_design.designs['cell_1'].treatment_geos, 34)
     np.testing.assert_allclose(
         selected_design.designs['cell_1'].minimum_detectable_effect,
-        0.0173,
+        0.016641,
         rtol=0.01,
     )
     np.testing.assert_allclose(
-        selected_design.designs['cell_1'].p_value, 0.1252, rtol=0.01
+        selected_design.designs['cell_1'].p_value, 0.861994, rtol=0.01
     )
     np.testing.assert_allclose(
-        selected_design.designs['cell_1'].budget, 9471.79, rtol=0.01
+        selected_design.designs['cell_1'].budget, 9110.644255, rtol=0.01
     )
     treatment_conversion_pct = self._compute_treatment_conversion_pct(
         selected_design
@@ -258,7 +272,9 @@ class MulticellE2ETest(absltest.TestCase):
     total_conversions = selected_design.data['conversions'].sum()  # pyrefly: ignore[unsupported-operation]
     treatment_conversions = selected_design.data[  # pyrefly: ignore[unsupported-operation]
         selected_design.data['location'].isin(treatment_geos)  # pyrefly: ignore[unsupported-operation]
-    ]['conversions'].sum()
+    ][
+        'conversions'
+    ].sum()
     return treatment_conversions / total_conversions
 
   def test_multicell_stratified_sampling_design_go_dark_heavy_up(self):
@@ -273,7 +289,9 @@ class MulticellE2ETest(absltest.TestCase):
 
     # 2. Run multicell experiment design.
     design_config = api.DesignConfig(
-        experiment_duration=30,
+        n_candidates=500,
+        pad_length=10000,
+        experiment_duration=datetime.timedelta(days=30),
         experiment_types={
             'cell_1': api.ExperimentType.GO_DARK,
             'cell_2': api.ExperimentType.HEAVY_UP,
@@ -281,6 +299,7 @@ class MulticellE2ETest(absltest.TestCase):
         methodology=api.Methodology.TBR,
         geo_assignment_rule=api.GeoAssignmentRule.STRATIFIED_SAMPLING,
         cell_count=2,
+        min_r2=0.01,
     )
 
     constraints = api.Constraints(
@@ -303,11 +322,11 @@ class MulticellE2ETest(absltest.TestCase):
     self.assertLen(selected_design.designs['cell_1'].treatment_geos, 16)
     np.testing.assert_allclose(
         selected_design.designs['cell_1'].minimum_detectable_effect,
-        0.0357,
+        0.044102,
         rtol=0.01,
     )
     np.testing.assert_allclose(
-        selected_design.designs['cell_1'].p_value, 0.1909, rtol=0.01
+        selected_design.designs['cell_1'].p_value, 0.289849, rtol=0.01
     )
     np.testing.assert_allclose(
         selected_design.designs['cell_1'].budget, 78400.2, rtol=0.01
@@ -321,7 +340,7 @@ class MulticellE2ETest(absltest.TestCase):
     self.assertLen(selected_design.designs['cell_2'].treatment_geos, 16)
     np.testing.assert_allclose(
         selected_design.designs['cell_2'].minimum_detectable_effect,
-        0.0342,
+        0.043837,
         rtol=0.01,
     )
     np.testing.assert_allclose(
@@ -354,6 +373,8 @@ class MulticellE2ETest(absltest.TestCase):
 
     # 3. Run multicell experiment analysis.
     analysis_config = api.AnalysisConfig(
+        n_placebo_candidates=500,
+        min_placebo_r2=-100.0,
         design=selected_design,
         analysis_start_date=pd.Timestamp('2020-04-01'),
         analysis_end_date=pd.Timestamp('2020-04-30'),
@@ -396,7 +417,9 @@ class MulticellE2ETest(absltest.TestCase):
 
     # 2. Run multicell experiment design.
     design_config = api.DesignConfig(
-        experiment_duration=30,
+        n_candidates=500,
+        pad_length=10000,
+        experiment_duration=datetime.timedelta(days=30),
         experiment_types={
             'cell_1': api.ExperimentType.HOLDBACK,
             'cell_2': api.ExperimentType.HOLDBACK,
@@ -404,6 +427,7 @@ class MulticellE2ETest(absltest.TestCase):
         methodology=api.Methodology.TBR,
         geo_assignment_rule=api.GeoAssignmentRule.STRATIFIED_SAMPLING,
         cell_count=2,
+        min_r2=0.01,
     )
 
     constraints = api.Constraints(
@@ -426,14 +450,14 @@ class MulticellE2ETest(absltest.TestCase):
     self.assertLen(selected_design.designs['cell_1'].treatment_geos, 16)
     np.testing.assert_allclose(
         selected_design.designs['cell_1'].minimum_detectable_effect,
-        0.0357,
+        0.044102,
         rtol=0.01,
     )
     np.testing.assert_allclose(
-        selected_design.designs['cell_1'].p_value, 0.1909, rtol=0.01
+        selected_design.designs['cell_1'].p_value, 0.289849, rtol=0.01
     )
     np.testing.assert_allclose(
-        selected_design.designs['cell_1'].budget, 9310.8, rtol=0.01
+        selected_design.designs['cell_1'].budget, 11505.451933, rtol=0.01
     )
     treatment_conversion_pct_1 = self._compute_treatment_conversion_pct(
         selected_design, 'cell_1'
@@ -444,14 +468,14 @@ class MulticellE2ETest(absltest.TestCase):
     self.assertLen(selected_design.designs['cell_2'].treatment_geos, 16)
     np.testing.assert_allclose(
         selected_design.designs['cell_2'].minimum_detectable_effect,
-        0.0342,
+        0.043837,
         rtol=0.01,
     )
     np.testing.assert_allclose(
         selected_design.designs['cell_2'].p_value, 0.9764, rtol=0.01
     )
     np.testing.assert_allclose(
-        selected_design.designs['cell_2'].budget, 9077.2, rtol=0.01
+        selected_design.designs['cell_2'].budget, 11648.170784, rtol=0.01
     )
     treatment_conversion_pct_2 = self._compute_treatment_conversion_pct(
         selected_design, 'cell_2'
@@ -477,6 +501,8 @@ class MulticellE2ETest(absltest.TestCase):
 
     # 3. Run multicell experiment analysis.
     analysis_config = api.AnalysisConfig(
+        n_placebo_candidates=500,
+        min_placebo_r2=-100.0,
         design=selected_design,
         analysis_start_date=pd.Timestamp('2020-04-01'),
         analysis_end_date=pd.Timestamp('2020-04-30'),

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime
 from absl.testing import absltest
 from absl.testing import parameterized
 import jax
@@ -125,7 +126,7 @@ class GenerateCandidatesTest(parameterized.TestCase):
 
   def test_get_unconstrained_stratified_sampling_candidates(self):
     design_config = api.DesignConfig(
-        experiment_duration=1,
+        experiment_duration=datetime.timedelta(days=1),
         experiment_types=api.ExperimentType.HOLDBACK,
         n_candidates=10,
         seed=42,
@@ -158,7 +159,7 @@ class GenerateCandidatesTest(parameterized.TestCase):
 
   def test_get_stratified_sampling_candidates(self):
     design_config = api.DesignConfig(
-        experiment_duration=1,
+        experiment_duration=datetime.timedelta(days=1),
         experiment_types=api.ExperimentType.HOLDBACK,
         n_candidates=10,
         seed=42,
@@ -221,7 +222,7 @@ class GenerateCandidatesTest(parameterized.TestCase):
 
   def test_get_stratified_sampling_candidates_min_geos_filter(self):
     design_config = api.DesignConfig(
-        experiment_duration=1,
+        experiment_duration=datetime.timedelta(days=1),
         experiment_types=api.ExperimentType.HOLDBACK,
         n_candidates=10,
         seed=42,
@@ -285,7 +286,7 @@ class GenerateCandidatesTest(parameterized.TestCase):
 
   def test_get_random_candidates_multicell(self):
     design_config = api.DesignConfig(
-        experiment_duration=1,
+        experiment_duration=datetime.timedelta(days=1),
         cell_count=2,
         experiment_types={
             'cell_1': api.ExperimentType.HOLDBACK,

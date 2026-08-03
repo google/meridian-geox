@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime
 import itertools
 import logging
 from unittest import mock
@@ -57,7 +58,7 @@ class DesignTest(parameterized.TestCase):
     data = pd.DataFrame(data_list)
 
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.HOLDBACK,
         methodology=api.Methodology.TBR,
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
@@ -101,6 +102,12 @@ class DesignTest(parameterized.TestCase):
     self.assertIn('p_value', result.design_metrics.columns)
     self.assertIn('cell', result.design_metrics.columns)
     self.assertIn('design_methodology', result.design_metrics.columns)
+    self.assertIn('treatment_conversions_pct', result.design_metrics.columns)
+    self.assertTrue(
+        (result.design_metrics['treatment_conversions_pct'] >= 0.0).all()
+        and (result.design_metrics['treatment_conversions_pct'] <= 100.0).all()
+    )
+    self.assertIn('rank', result.design_metrics.columns)
     self.assertTrue((result.design_metrics['cell'] == 'cell_1').all())
     self.assertTrue(
         (result.design_metrics['design_methodology'] == 'RANDOM-TBR').all()
@@ -109,7 +116,7 @@ class DesignTest(parameterized.TestCase):
   def test_random_design_min_geos_requirement(self):
     dates = pd.date_range(start='2023-01-01', periods=6)
     design_config = api.DesignConfig(
-        experiment_duration=2,
+        experiment_duration=datetime.timedelta(days=2),
         experiment_types=api.ExperimentType.HOLDBACK,
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
     )
@@ -134,10 +141,14 @@ class DesignTest(parameterized.TestCase):
     locations = [f'geo_{i}' for i in range(6)]
     data_list = []
     for d, l in itertools.product(dates, locations):
-      data_list.append({api.DATE: d, api.LOCATION: l, api.CONVERSIONS: 10.0})
+      data_list.append({
+          api.DATE: d,
+          api.LOCATION: l,
+          api.CONVERSIONS: float((d - dates[0]).days + 1) * 10.0,
+      })
     data = pd.DataFrame(data_list)
     design_config = api.DesignConfig(
-        experiment_duration=2,
+        experiment_duration=datetime.timedelta(days=2),
         experiment_types=api.ExperimentType.HOLDBACK,
         n_candidates=5,
     )
@@ -165,12 +176,12 @@ class DesignTest(parameterized.TestCase):
       data_list.append({
           api.DATE: date,
           api.LOCATION: loc,
-          api.CONVERSIONS: 100.0,
+          api.CONVERSIONS: float((date - dates[0]).days + 1) * 100.0,
       })
     data = pd.DataFrame(data_list)
 
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.HOLDBACK,
         n_candidates=10,
     )
@@ -214,7 +225,7 @@ class DesignTest(parameterized.TestCase):
     data = pd.DataFrame(data_list)
 
     design_config = api.DesignConfig(
-        experiment_duration=2,
+        experiment_duration=datetime.timedelta(days=2),
         experiment_types=api.ExperimentType.HOLDBACK,
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         n_candidates=5,
@@ -254,7 +265,7 @@ class DesignTest(parameterized.TestCase):
     data = pd.DataFrame(data_list)
 
     design_config = api.DesignConfig(
-        experiment_duration=2,
+        experiment_duration=datetime.timedelta(days=2),
         experiment_types=api.ExperimentType.HOLDBACK,
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         n_candidates=5,
@@ -274,6 +285,7 @@ class DesignTest(parameterized.TestCase):
       self, mock_check_design_data_quality
   ):
     mock_check_design_data_quality.return_value = api.QualityCheckResult(
+        quality_check_config=api.QualityCheckConfig(),
         quality_metrics=pd.DataFrame(),
         outlier_geos={'geo_5'},
     )
@@ -285,12 +297,12 @@ class DesignTest(parameterized.TestCase):
       data_list.append({
           api.DATE: date,
           api.LOCATION: loc,
-          api.CONVERSIONS: 10.0,
+          api.CONVERSIONS: float((date - dates[0]).days + 1) * 10.0,
       })
     data = pd.DataFrame(data_list)
 
     design_config = api.DesignConfig(
-        experiment_duration=2,
+        experiment_duration=datetime.timedelta(days=2),
         experiment_types=api.ExperimentType.HOLDBACK,
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         n_candidates=5,
@@ -301,12 +313,59 @@ class DesignTest(parameterized.TestCase):
     )
     result = design.run_design(data, design_config, constraints)
 
-    self.assertIn('geo_5', constraints.excluded_geos)
+    self.assertNotIn('geo_5', constraints.excluded_geos)
     for _, design_obj in result.designs.items():
+      self.assertIsNotNone(design_obj.constraints)
+      assert design_obj.constraints is not None
+      self.assertNotIn('geo_5', design_obj.constraints.excluded_geos)
       self.assertIn('geo_5', design_obj.excluded_geos)
       self.assertNotIn('geo_5', design_obj.control_geos)
       for cell_design in design_obj.designs.values():
         self.assertNotIn('geo_5', cell_design.treatment_geos)
+
+  @mock.patch(
+      'meridian_geox.data_quality.data_quality.check_design_data_quality'
+  )
+  def test_outlier_dates_removed_after_data_quality(
+      self, mock_check_design_data_quality
+  ):
+    mock_check_design_data_quality.return_value = api.QualityCheckResult(
+        quality_check_config=api.QualityCheckConfig(),
+        quality_metrics=pd.DataFrame(),
+        outlier_dates={pd.Timestamp('2023-01-05')},
+    )
+
+    dates = pd.date_range(start='2023-01-01', periods=15)
+    locations = ['geo_1', 'geo_2', 'geo_3', 'geo_4', 'geo_5', 'geo_6']
+    data_list = []
+    for date, loc in itertools.product(dates, locations):
+      data_list.append({
+          api.DATE: date,
+          api.LOCATION: loc,
+          api.CONVERSIONS: float((date - dates[0]).days + 1) * 10.0,
+      })
+    data = pd.DataFrame(data_list)
+
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=2),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        n_candidates=5,
+    )
+    constraints = api.Constraints(
+        max_conversions_percent=0.45,
+        budget_constraint=api.Budget(budget=1000.0),
+    )
+    result = design.run_design(data, design_config, constraints)
+
+    self.assertNotIn(pd.Timestamp('2023-01-05'), constraints.excluded_dates)
+    for _, design_obj in result.designs.items():
+      self.assertIsNotNone(design_obj.constraints)
+      assert design_obj.constraints is not None
+      self.assertNotIn(
+          pd.Timestamp('2023-01-05'), design_obj.constraints.excluded_dates
+      )
+      self.assertIn(pd.Timestamp('2023-01-05'), design_obj.excluded_dates)
 
   @parameterized.named_parameters(
       dict(
@@ -329,7 +388,7 @@ class DesignTest(parameterized.TestCase):
     data = pd.DataFrame(data_list)
 
     config1 = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.HOLDBACK,
         seed=42,
         n_candidates=20,
@@ -337,7 +396,7 @@ class DesignTest(parameterized.TestCase):
         geo_assignment_rule=rule,
     )
     config2 = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.HOLDBACK,
         seed=42,
         n_candidates=20,
@@ -362,6 +421,58 @@ class DesignTest(parameterized.TestCase):
         result2.design_metrics.drop(columns=['design_id']),
     )
 
+  def test_design_metrics_multicell_rank_and_conversion(self):
+    dates = pd.date_range(start='2023-01-01', periods=10)
+    locations = [f'geo_{i}' for i in range(20)]
+    data_list = []
+    for date, loc in itertools.product(dates, locations):
+      i = int(loc.split('_')[1])
+      val = 100.0 + i * 10.0 + (date.day % 7) * 5.0
+      data_list.append({
+          api.DATE: date,
+          api.LOCATION: loc,
+          api.CONVERSIONS: val,
+      })
+    data = pd.DataFrame(data_list)
+
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=2),
+        cell_count=2,
+        experiment_types={
+            'cell_1': api.ExperimentType.HOLDBACK,
+            'cell_2': api.ExperimentType.HOLDBACK,
+        },
+        methodology=api.Methodology.TBR,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        design_output_count=2,
+        n_candidates=10,
+        n_ranked_candidates=10,
+        seed=42,
+    )
+
+    constraints = api.Constraints(
+        max_conversions_percent=0.49,
+        budget_constraint=api.Budget(budget=1000.0),
+    )
+
+    result = design.run_design(data, design_config, constraints)
+
+    self.assertIn('treatment_conversions_pct', result.design_metrics.columns)
+    self.assertIn('rank', result.design_metrics.columns)
+
+    grouped_ranks = result.design_metrics.groupby('design_id')['rank'].nunique()
+    self.assertTrue((grouped_ranks == 1).all())
+
+    ranks = sorted(result.design_metrics['rank'].unique())
+    self.assertEqual(ranks, list(range(1, len(ranks) + 1)))
+
+    self.assertTrue(
+        (result.design_metrics['treatment_conversions_pct'] >= 0.0).all()
+    )
+    self.assertTrue(
+        (result.design_metrics['treatment_conversions_pct'] <= 100.0).all()
+    )
+
   def test_cluster_geos(self):
     training_period = [
         pd.Timestamp('2024-01-01'),
@@ -380,7 +491,7 @@ class DesignTest(parameterized.TestCase):
         )
     conversions_data = pd.DataFrame(data_list)
     design_config = api.DesignConfig(
-        experiment_duration=1,
+        experiment_duration=datetime.timedelta(days=1),
         experiment_types=api.ExperimentType.HOLDBACK,
         num_strata=2,
         k_means_iterations=10,
@@ -419,12 +530,12 @@ class DesignTest(parameterized.TestCase):
       data_list.append({
           api.DATE: d,
           api.LOCATION: l,
-          api.CONVERSIONS: 100.0,
+          api.CONVERSIONS: float((d - dates[0]).days + 1) * 100.0,
       })
     data = pd.DataFrame(data_list)
 
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.HOLDBACK,
         n_candidates=10,
         seed=42,
@@ -452,19 +563,22 @@ class DesignTest(parameterized.TestCase):
     # geo_1..9 share 40% of volume.
     data_list = []
     for d in dates:
+      t = float((d - dates[0]).days + 1)
       data_list.append(
-          {api.DATE: d, api.LOCATION: 'geo_0', api.CONVERSIONS: 60.0}
+          {api.DATE: d, api.LOCATION: 'geo_0', api.CONVERSIONS: t * 60.0}
       )
       for i in range(1, 10):
-        data_list.append(
-            {api.DATE: d, api.LOCATION: f'geo_{i}', api.CONVERSIONS: 40.0 / 9}
-        )
+        data_list.append({
+            api.DATE: d,
+            api.LOCATION: f'geo_{i}',
+            api.CONVERSIONS: t * 40.0 / 9,
+        })
     data = pd.DataFrame(data_list)
 
     # Max conversions percent = 0.4.
     # geo_0 (60%) must be excluded from treatment.
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.HOLDBACK,
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         n_candidates=10,
@@ -484,7 +598,7 @@ class DesignTest(parameterized.TestCase):
 
   def test_filter_results_by_aa_test(self):
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.HOLDBACK,
         alpha=0.1,
         design_output_count=2,
@@ -522,7 +636,7 @@ class DesignTest(parameterized.TestCase):
 
   def test_filter_results_by_aa_test_all_fail(self):
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.HOLDBACK,
         alpha=0.1,
     )
@@ -541,6 +655,125 @@ class DesignTest(parameterized.TestCase):
     with self.assertRaisesRegex(ValueError, 'No designs passed the A/A test'):
       design._filter_results_by_aa_test(scored_candidates, design_config)
 
+  def test_filter_results_by_min_r2(self):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=5),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        min_r2=0.8,
+    )
+    scored_candidates = design.ScoredCandidates(
+        candidates=jnp.array([[0, 0, 1, 1], [1, 1, 0, 0], [1, 0, 1, 0]]),
+        mde_abs=jnp.array([1.0, 2.0, 3.0])[:, None],
+        mde_pct=jnp.array([0.1, 0.2, 0.3])[:, None],
+        p_values=jnp.array([0.5, 0.5, 0.5])[:, None],
+        r2_scores=jnp.array([0.9, 0.8, 0.7])[
+            :, None
+        ],  # Candidate 2 fails (r2 < min_r2)
+        observed_conversions=jnp.zeros((3, 5))[:, None, :],
+        counterfactual_conversions=jnp.zeros((3, 5))[:, None, :],
+    )
+
+    filtered_results = design._filter_results_by_min_r2(
+        scored_candidates, design_config
+    )
+
+    self.assertLen(filtered_results.candidates, 2)
+    np.testing.assert_array_equal(
+        filtered_results.candidates, scored_candidates.candidates[:2]
+    )
+    np.testing.assert_array_equal(
+        filtered_results.r2_scores, scored_candidates.r2_scores[:2]
+    )
+
+  def test_filter_results_by_min_r2_multicell(self):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=5),
+        experiment_types={
+            'cell_1': api.ExperimentType.HOLDBACK,
+            'cell_2': api.ExperimentType.HOLDBACK,
+        },
+        cell_count=2,
+        min_r2=0.8,
+    )
+    # Candidate 0: both cells pass (0.9, 0.85 >= 0.8).
+    # Candidate 1: cell 1 passes (0.95), cell 2 fails (0.75 < 0.8)
+    # -> candidate fails.
+    # Candidate 2: both cells fail (0.7, 0.6 < 0.8) -> candidate fails.
+    scored_candidates = design.ScoredCandidates(
+        candidates=jnp.array([[0, 0, 1, 2], [0, 1, 2, 0], [1, 2, 0, 0]]),
+        mde_abs=jnp.array([[1.0, 2.0], [2.0, 3.0], [3.0, 4.0]]),
+        mde_pct=jnp.array([[0.1, 0.2], [0.2, 0.3], [0.3, 0.4]]),
+        p_values=jnp.array([[0.5, 0.5], [0.5, 0.5], [0.5, 0.5]]),
+        r2_scores=jnp.array([[0.9, 0.85], [0.95, 0.75], [0.7, 0.6]]),
+        observed_conversions=jnp.zeros((3, 2, 5)),
+        counterfactual_conversions=jnp.zeros((3, 2, 5)),
+    )
+
+    filtered_results = design._filter_results_by_min_r2(
+        scored_candidates, design_config
+    )
+
+    self.assertLen(filtered_results.candidates, 1)
+    np.testing.assert_array_equal(
+        filtered_results.candidates, scored_candidates.candidates[:1]
+    )
+    np.testing.assert_array_equal(
+        filtered_results.r2_scores, scored_candidates.r2_scores[:1]
+    )
+
+  def test_filter_results_by_min_r2_all_fail(self):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=5),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        min_r2=0.8,
+    )
+    scored_candidates = design.ScoredCandidates(
+        candidates=jnp.array([[0, 0, 1, 1]]),
+        mde_abs=jnp.array([1.0])[:, None],
+        mde_pct=jnp.array([0.1])[:, None],
+        p_values=jnp.array([0.5])[:, None],
+        r2_scores=jnp.array([0.7])[:, None],  # Fails (r2 < min_r2)
+        observed_conversions=jnp.zeros((1, 5))[:, None, :],
+        counterfactual_conversions=jnp.zeros((1, 5))[:, None, :],
+    )
+
+    with self.assertRaisesRegex(
+        ValueError,
+        r'No designs passed the min R2 check \(r2 >= 0.8\) \(cell_1: 0'
+        r' passed\)\.',
+    ):
+      design._filter_results_by_min_r2(scored_candidates, design_config)
+
+  def test_filter_results_by_min_r2_multicell_fail(self):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=5),
+        experiment_types={
+            'cell_1': api.ExperimentType.HOLDBACK,
+            'cell_2': api.ExperimentType.HOLDBACK,
+        },
+        cell_count=2,
+        min_r2=0.8,
+    )
+    scored_candidates = design.ScoredCandidates(
+        candidates=jnp.array([[0, 0, 1, 1], [0, 1, 0, 1]]),
+        mde_abs=jnp.array([[1.0, 1.0], [1.0, 1.0]]),
+        mde_pct=jnp.array([[0.1, 0.1], [0.1, 0.1]]),
+        p_values=jnp.array([[0.5, 0.5], [0.5, 0.5]]),
+        r2_scores=jnp.array([
+            [0.9, 0.7],
+            [0.9, 0.6],
+        ]),
+        observed_conversions=jnp.zeros((2, 2, 5)),
+        counterfactual_conversions=jnp.zeros((2, 2, 5)),
+    )
+
+    with self.assertRaisesRegex(
+        ValueError,
+        r'No designs passed the min R2 check \(r2 >= 0.8\) \(cell_1: 2 passed,'
+        r' cell_2: 0 passed\)\.',
+    ):
+      design._filter_results_by_min_r2(scored_candidates, design_config)
+
   def test_design_json_serialization(self):
     constraints = api.Constraints(
         budget_constraint=api.Budget(budget=1000.0),
@@ -551,7 +784,7 @@ class DesignTest(parameterized.TestCase):
         max_conversions_percent=0.5,
     )
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types={
             'cell_1': api.ExperimentType.HOLDBACK,
             'cell_2': api.ExperimentType.GO_DARK,
@@ -620,7 +853,8 @@ class DesignTest(parameterized.TestCase):
 
   def test_concat_design_reports(self):
     design_config = api.DesignConfig(
-        experiment_duration=5, experiment_types=api.ExperimentType.HOLDBACK
+        experiment_duration=datetime.timedelta(days=5),
+        experiment_types=api.ExperimentType.HOLDBACK,
     )
     constraints = api.Constraints()
 
@@ -690,12 +924,26 @@ class DesignTest(parameterized.TestCase):
     self.assertEqual(
         result.design_metrics.iloc[0]['design_methodology'], 'RANDOM-TBR'
     )
+    self.assertIn('rank', result.design_metrics.columns)
+    self.assertEqual(result.design_metrics.iloc[0]['rank'], 1)
 
   def test_concat_design_reports_carries_quality_check_result(self):
     design_config = api.DesignConfig(
-        experiment_duration=5, experiment_types=api.ExperimentType.HOLDBACK
+        experiment_duration=datetime.timedelta(days=5),
+        experiment_types=api.ExperimentType.HOLDBACK,
     )
     constraints = api.Constraints()
+    ds1_metrics = pd.DataFrame([{
+        'design_id': 'd1',
+        'cell': 'cell_1',
+        'mde': 0.8,
+        'design_methodology': 'RANDOM-TBR',
+    }])
+    q_result = api.QualityCheckResult(
+        quality_check_config=api.QualityCheckConfig(),
+        quality_metrics=pd.DataFrame(),
+        outlier_geos={'geo_out'},
+    )
     d1 = api.Design(
         designs={
             'cell_1': api.PerCellDesign(
@@ -710,41 +958,53 @@ class DesignTest(parameterized.TestCase):
         excluded_geos=set(),
         design_config=design_config,
         constraints=constraints,
+        quality_check_result=q_result,
     )
-    ds1_metrics = pd.DataFrame([{
-        'design_id': 'd1',
-        'cell': 'cell_1',
-        'mde': 0.8,
-        'design_methodology': 'RANDOM-TBR',
-    }])
-    q_result = api.QualityCheckResult(
-        quality_metrics=pd.DataFrame(),
-        outlier_geos={'geo_out'},
+    d2 = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'geo_1'},
+                minimum_detectable_effect=0.8,
+                design_implied_cpic=1.25,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={'geo_2'},
+        excluded_geos=set(),
+        design_config=design_config,
+        constraints=constraints,
+        quality_check_result=None,
     )
     ds1 = api.DesignSet(
         designs={'d1': d1},
         design_metrics=ds1_metrics,
         design_data=pd.DataFrame(),
-        quality_check_result=q_result,
     )
+    ds2_metrics = pd.DataFrame([{
+        'design_id': 'd2',
+        'cell': 'cell_1',
+        'mde': 0.8,
+        'design_methodology': 'RANDOM-TBR',
+    }])
     ds2 = api.DesignSet(
-        designs={'d2': d1},
-        design_metrics=ds1_metrics,
+        designs={'d2': d2},
+        design_metrics=ds2_metrics,
         design_data=pd.DataFrame(),
-        quality_check_result=None,
     )
     result = design.concat_design_reports([ds2, ds1])
-    self.assertEqual(result.quality_check_result, q_result)
+    self.assertEqual(result.designs['d1'].quality_check_result, q_result)
+    self.assertIsNone(result.designs['d2'].quality_check_result)
 
   def test_compare_designs(self):
     data = pd.DataFrame()
     config1 = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.HOLDBACK,
         seed=42,
     )
     config2 = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.HOLDBACK,
         seed=43,
     )
@@ -879,7 +1139,7 @@ class DesignTest(parameterized.TestCase):
         counterfactual_conversions=jnp.zeros((1, 1))[:, None, :],
     )
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=experiment_types,
         cost_per_incremental_conversion=1.0,
         design_output_count=1,
@@ -902,7 +1162,7 @@ class DesignTest(parameterized.TestCase):
         estimation_train=jnp.array([]),
         estimation_eval=estimation_eval,
         training_period=[],
-        filtered_data=pd.DataFrame(),
+        filtered_data=data,
         estimation_eval_spend=estimation_eval_spend,
     )
 
@@ -915,6 +1175,8 @@ class DesignTest(parameterized.TestCase):
         scored_candidates,
         design_config,
         constraints,
+        set(constraints.excluded_geos),
+        set(constraints.excluded_dates),
         geos,
         geo_stratum_labels,
         processed_data,
@@ -952,7 +1214,7 @@ class DesignTest(parameterized.TestCase):
         counterfactual_conversions=jnp.zeros((1, 2, 1)),
     )
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types={
             'cell_1': api.ExperimentType.HOLDBACK,
             'cell_2': api.ExperimentType.GO_DARK,
@@ -984,7 +1246,7 @@ class DesignTest(parameterized.TestCase):
         estimation_train=jnp.array([]),
         estimation_eval=estimation_eval,
         training_period=[],
-        filtered_data=pd.DataFrame(),
+        filtered_data=data,
         estimation_eval_spend=estimation_eval_spend,
     )
 
@@ -992,6 +1254,8 @@ class DesignTest(parameterized.TestCase):
         scored_candidates,
         design_config,
         constraints,
+        set(constraints.excluded_geos),
+        set(constraints.excluded_dates),
         geos,
         geo_stratum_labels,
         processed_data,
@@ -1059,10 +1323,14 @@ class DesignTest(parameterized.TestCase):
     locations = [f'geo_{i}' for i in range(6)]
     data_list = []
     for d, l in itertools.product(dates, locations):
-      data_list.append({api.DATE: d, api.LOCATION: l, api.CONVERSIONS: 10.0})
+      data_list.append({
+          api.DATE: d,
+          api.LOCATION: l,
+          api.CONVERSIONS: float((d - dates[0]).days + 1) * 10.0,
+      })
     data = pd.DataFrame(data_list)
     design_config = api.DesignConfig(
-        experiment_duration=2,
+        experiment_duration=datetime.timedelta(days=2),
         experiment_types=api.ExperimentType.HOLDBACK,
         n_candidates=5,
     )
@@ -1089,7 +1357,7 @@ class DesignTest(parameterized.TestCase):
         counterfactual_conversions=jnp.zeros((1, 1))[:, None, :],
     )
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.HOLDBACK,
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         design_output_count=1,
@@ -1109,7 +1377,7 @@ class DesignTest(parameterized.TestCase):
         estimation_train=jnp.array([]),
         estimation_eval=jnp.array([[0, 0, 50, 50]]),
         training_period=[],
-        filtered_data=pd.DataFrame(),
+        filtered_data=data,
         estimation_eval_spend={api.CELL_1: jnp.zeros((1, 4))},
     )
 
@@ -1117,6 +1385,8 @@ class DesignTest(parameterized.TestCase):
         scored_candidates,
         design_config,
         constraints,
+        set(constraints.excluded_geos),
+        set(constraints.excluded_dates),
         geos,
         geo_stratum_labels,
         processed_data,
@@ -1138,7 +1408,7 @@ class DesignTest(parameterized.TestCase):
         counterfactual_conversions=jnp.zeros((1, 1))[:, None, :],
     )
     design_config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.HOLDBACK,
         cost_per_incremental_conversion=10.0,
         design_output_count=1,
@@ -1162,7 +1432,7 @@ class DesignTest(parameterized.TestCase):
         estimation_train=jnp.array([]),
         estimation_eval=jnp.array([[0, 0, 50, 50]]),
         training_period=[],
-        filtered_data=pd.DataFrame(),
+        filtered_data=data,
         estimation_eval_spend={api.CELL_1: jnp.zeros((1, 4))},
     )
 
@@ -1173,6 +1443,8 @@ class DesignTest(parameterized.TestCase):
           scored_candidates,
           design_config,
           constraints,
+          set(constraints.excluded_geos),
+          set(constraints.excluded_dates),
           geos,
           geo_stratum_labels,
           processed_data,
@@ -1218,7 +1490,7 @@ class DesignTest(parameterized.TestCase):
 
     processed_data = design.prepare_data(
         data=data,
-        experiment_duration=2,
+        experiment_duration=datetime.timedelta(days=2),
         constraints=constraints,
     )
 
@@ -1256,7 +1528,7 @@ class DesignTest(parameterized.TestCase):
 
     processed_data = design.prepare_data(
         data=data,
-        experiment_duration=2,
+        experiment_duration=datetime.timedelta(days=2),
         constraints=constraints,
     )
 
@@ -1309,6 +1581,56 @@ class DesignTest(parameterized.TestCase):
     self.assertEqual(top_metrics.iloc[3]['design_id'], 'd2')
     self.assertEqual(top_metrics.iloc[3]['cell'], 'cell_2')
     self.assertEqual(top_metrics.iloc[3]['mde'], 0.05)
+
+  def test_run_design_does_not_mutate_input_constraints(self):
+    dates = pd.date_range(start='2023-01-01', periods=10)
+    locations = [f'geo_{i}' for i in range(1, 11)]
+    data_list = []
+    # Make geo_1 have 0 conversions to trigger data quality outlier geos
+    for d, l in itertools.product(dates, locations):
+      conversions = (
+          0.0 if l == 'geo_1' else float((d - dates[0]).days + 1) * 10.0
+      )
+      data_list.append({
+          api.DATE: d,
+          api.LOCATION: l,
+          api.CONVERSIONS: conversions,
+          api.SPEND: 1.0,
+      })
+    data = pd.DataFrame(data_list)
+
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=3),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        n_candidates=10,
+        n_ranked_candidates=5,
+        n_aa_test_iterations=10,
+        design_output_count=1,
+        seed=42,
+    )
+    constraints = api.Constraints(
+        excluded_geos={'geo_2'},
+        excluded_dates={pd.Timestamp('2023-01-02')},
+    )
+
+    result = design.run_design(data, design_config, constraints)
+
+    # Assert that the caller's constraints object is unmodified
+    self.assertEqual(constraints.excluded_geos, {'geo_2'})
+    self.assertEqual(constraints.excluded_dates, {pd.Timestamp('2023-01-02')})
+
+    # Assert that Design.constraints exists and is unmodified
+    design_obj = next(iter(result.designs.values()))
+    self.assertIsNotNone(design_obj.constraints)
+    assert design_obj.constraints is not None
+    self.assertEqual(design_obj.constraints.excluded_geos, {'geo_2'})
+    self.assertEqual(
+        design_obj.constraints.excluded_dates, {pd.Timestamp('2023-01-02')}
+    )
+
+    # Assert that Design.excluded_geos contains both manual and outlier geos
+    self.assertEqual(design_obj.excluded_geos, {'geo_1', 'geo_2'})
 
 
 if __name__ == '__main__':

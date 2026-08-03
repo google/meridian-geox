@@ -112,6 +112,7 @@ def _get_placebo_masks(
     design_obj: api.Design,
     treatment: TreatmentMask,
     design_config: api.DesignConfig,
+    analysis_config: api.AnalysisConfig,
     key: jax.Array,
 ) -> jnp.ndarray:
   """Generates placebo masks for a GeoX experiment."""
@@ -164,8 +165,61 @@ def _get_placebo_masks(
         f'Unsupported geo assignment rule: {design_config.geo_assignment_rule}'
     )
 
+  experiment_types = _get_experiment_types(design_config)
+  cell_ids = jnp.array(
+      [util.cell_id_from_cell_name(cell) for cell in experiment_types.keys()]
+  )
+
+  # Compute R2 for all placebo candidates on T1
+  r2_scores = tbr.get_r2(
+      data_pre=processed_placebo_data.selection_train,
+      data_val=processed_placebo_data.selection_eval,
+      treatment_masks=placebo_masks_without_treatment_geos,
+      cell_ids=cell_ids,
+  )
+  r2_scores_agg = jnp.min(r2_scores, axis=1)
+
+  # Filter by R2 threshold
+  error_message = (
+      'Insufficient valid placebo candidates (found {count}, required at least '
+      '{min_count_error}). Only placebo designs with '
+      'an out-of-sample R-squared score >= {min_r2} are '
+      'kept for analysis. This is usually caused by heterogeneity and '
+      'volatility among geos, such that the exchangeability assumption '
+      'among geos is violated. Consider providing more stationary pre-test '
+      "data or lowering the 'min_placebo_r2' threshold in your AnalysisConfig."
+  )
+
+  warning_message = (
+      'Low number of valid placebo candidates (found {count}, recommended at '
+      'least {min_count_warning}). Only placebo designs with an out-of-sample '
+      'R-squared score >= {min_r2} were kept. This is usually caused by '
+      'heterogeneity and volatility among geos. Confidence intervals and '
+      'p-values may be less reliable as a result. Consider providing more '
+      "stationary pre-test data or lowering the 'min_placebo_r2' threshold in "
+      'your AnalysisConfig.'
+  )
+
+  valid_mask = util.filter_by_r2(
+      r2_scores=r2_scores_agg,
+      min_r2=analysis_config.min_placebo_r2,
+      min_count_error=analysis_config.min_placebo_count_error,
+      min_count_warning=analysis_config.min_placebo_count_warning,
+      error_message=error_message,
+      warning_message=warning_message,
+  )
+
+  valid_placebos = placebo_masks_without_treatment_geos[valid_mask]
+  valid_r2 = r2_scores_agg[valid_mask]
+
+  # Sort by R2 descending
+  indices = jnp.argsort(valid_r2)[::-1]
+  selected_subset = valid_placebos[
+      indices[: design_config.n_aa_test_iterations]
+  ]
+
   return jax.vmap(_get_full_mask, in_axes=(None, 0))(
-      treatment.mask, placebo_masks_without_treatment_geos
+      treatment.mask, selected_subset
   )
 
 
@@ -178,7 +232,7 @@ def _prepare_design_config(
 
   design_config = dataclasses.replace(
       analysis_config.design.design_config,
-      n_candidates=analysis_config.design.design_config.n_aa_test_iterations,
+      n_candidates=analysis_config.n_placebo_candidates,
   )
 
   if not analysis_config.alpha:
@@ -395,9 +449,29 @@ def _get_analysis_summary(
         descriptive_metrics=descriptive_metrics,
     )
 
+  excluded_geos = (
+      set(analysis_config.design.excluded_geos)
+      if analysis_config.design.excluded_geos
+      else set()
+  )
+
+  excluded_dates = (
+      set(analysis_config.excluded_dates)
+      if analysis_config.excluded_dates
+      else set()
+  )
+  if (
+      quality_check_result is not None
+      and quality_check_result.quality_check_config.exclude_outlier_dates
+      and quality_check_result.outlier_dates
+  ):
+    excluded_dates.update(quality_check_result.outlier_dates)
+
   return api.AnalysisResult(
       results=results,
       analysis_config=analysis_config,
+      excluded_geos=excluded_geos,
+      excluded_dates=excluded_dates,
       quality_check_result=quality_check_result,
   )
 
@@ -431,6 +505,13 @@ def analyze(
       data_quality_check_config,
   )
 
+  # Filter out outlier dates identified in the quality check, if configured.
+  if (
+      quality_result.outlier_dates
+      and data_quality_check_config.exclude_outlier_dates
+  ):
+    data = data[~data[api.DATE].isin(list(quality_result.outlier_dates))]
+
   # 3. Extract time series arrays.
   conversions = _get_time_series(data, api.CONVERSIONS, analysis_config)
 
@@ -455,14 +536,20 @@ def analyze(
       design_obj=analysis_config.design,
       treatment=treatment,
       design_config=design_config,
+      analysis_config=analysis_config,
       key=analysis_key,
   )
 
   # 5. Run methodology analysis.
   tbr_results = {}
+  experiment_duration_days = design_config.experiment_duration.days
+  pretest_train = conversions.pretest[:-experiment_duration_days]
+  pretest_val = conversions.pretest[-experiment_duration_days:]
+
   for cell, experiment_type in experiment_types.items():
     tbr_results[cell] = tbr.analyze(
-        pretest_conversions=conversions.pretest,
+        pretest_train_conversions=pretest_train,
+        pretest_val_conversions=pretest_val,
         test_conversions=conversions.test,
         treatment_mask=treatment.mask,
         placebo_masks=placebo_masks,

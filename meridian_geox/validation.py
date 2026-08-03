@@ -63,10 +63,10 @@ def validate_design_input(
 
   # Check data length.
   if api.DATE in data.columns:
-    if data[api.DATE].nunique() < 3 * design_config.experiment_duration:
+    if data[api.DATE].nunique() < 3 * design_config.experiment_duration.days:
       errors.append(
           f'Data has {data[api.DATE].nunique()} dates, but experiment duration'
-          f' is {design_config.experiment_duration}. Need at least 3 *'
+          f' is {design_config.experiment_duration.days}. Need at least 3 *'
           ' experiment duration dates during design phase.'
       )
 
@@ -87,11 +87,13 @@ def validate_design_input(
   if constraints.excluded_geos & constraints.included_control_geos:
     errors.append('Excluded geos must not overlap with included control geos.')
 
-  # Check that alpha and power are between 0 and 1.
+  # Check that alpha, power, and min_r2 are between 0 and 1.
   if design_config.alpha <= 0 or design_config.alpha >= 1:
     errors.append('Alpha must be between 0 and 1.')
   if design_config.power <= 0 or design_config.power >= 1:
     errors.append('Power must be between 0 and 1.')
+  if design_config.min_r2 <= 0 or design_config.min_r2 >= 1:
+    errors.append('min_r2 must be between 0 and 1.')
 
   # Normalization in DesignConfig ensures experiment_types and
   # cost_per_incremental_conversion are dictionaries.
@@ -240,13 +242,13 @@ def validate_analysis_input(
       ]
 
     pretest_duration = len(pretest_dates)
-    experiment_duration = (
-        analysis_config.design.design_config.experiment_duration
+    experiment_duration_days = (
+        analysis_config.design.design_config.experiment_duration.days
     )
-    if pretest_duration < 2 * experiment_duration:
+    if pretest_duration < 2 * experiment_duration_days:
       errors.append(
           f'Pretest data has {pretest_duration} dates, but experiment duration'
-          f' is {experiment_duration}. Need at least 2 * experiment'
+          f' is {experiment_duration_days}. Need at least 2 * experiment'
           ' duration pretest dates during analysis phase.'
       )
 

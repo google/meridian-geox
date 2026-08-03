@@ -16,6 +16,7 @@
 
 from absl.testing import absltest
 from absl.testing import parameterized
+import jax.numpy as jnp
 from meridian_geox import util
 
 
@@ -35,6 +36,46 @@ class UtilTest(parameterized.TestCase):
   def test_cell_id_from_cell_name_value_error(self, cell_name):
     with self.assertRaises(ValueError):
       util.cell_id_from_cell_name(cell_name)
+
+  def test_filter_by_r2_1d_pass(self):
+    r2_scores = jnp.array([0.9, 0.8, 0.7])
+    mask = util.filter_by_r2(
+        r2_scores=r2_scores,
+        min_r2=0.8,
+        min_count_error=1,
+        min_count_warning=2,
+        error_message='error',
+        warning_message='warning',
+    )
+    self.assertEqual(mask.tolist(), [True, True, False])
+
+  def test_filter_by_r2_2d_pass(self):
+    # 2 candidates, 2 cells
+    r2_scores = jnp.array([[0.9, 0.8], [0.7, 0.9]])
+    # Candidate 1 passes (both >= 0.8)
+    # Candidate 2 fails (0.7 < 0.8)
+    mask = util.filter_by_r2(
+        r2_scores=r2_scores,
+        min_r2=0.8,
+        min_count_error=1,
+        min_count_warning=1,
+        error_message='error',
+        warning_message='warning',
+        cell_names=['cell_1', 'cell_2'],
+    )
+    self.assertEqual(mask.tolist(), [True, False])
+
+  def test_filter_by_r2_too_many_dimensions_raises_value_error(self):
+    r2_scores = jnp.zeros((1, 2, 3))
+    with self.assertRaisesRegex(ValueError, 'r2_scores must be 1D or 2D'):
+      util.filter_by_r2(
+          r2_scores=r2_scores,
+          min_r2=0.8,
+          min_count_error=1,
+          min_count_warning=1,
+          error_message='error',
+          warning_message='warning',
+      )
 
 
 if __name__ == '__main__':

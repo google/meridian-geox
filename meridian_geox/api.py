@@ -15,6 +15,7 @@
 """API types and enums for the GeoX library."""
 
 import dataclasses
+import datetime
 import enum
 from typing import Annotated, Any, Optional, TypeVar, Union
 
@@ -23,7 +24,6 @@ import numpy as np
 import pandas as pd
 import pandera.pandas as pa
 import pydantic
-
 
 # pytype: disable=invalid-annotation
 
@@ -89,6 +89,23 @@ JnpArray = Annotated[
 ]
 
 
+def _validate_duration(v: Any) -> datetime.timedelta:
+  """Validates that duration is specified in full days or weeks."""
+  if isinstance(v, datetime.timedelta):
+    td = v
+  elif isinstance(v, str):
+    td = pd.to_timedelta(v).to_pytimedelta()
+  else:
+    raise TypeError("experiment_duration must be a datetime.timedelta object.")
+
+  if td.seconds > 0 or td.microseconds > 0:
+    raise ValueError(
+        "experiment_duration must be in full days or weeks (no hours, minutes,"
+        " seconds, or microseconds allowed)."
+    )
+  return td
+
+
 def _validate_dataframe(v: Any) -> pd.DataFrame:
   if isinstance(v, pd.DataFrame):
     return v
@@ -117,12 +134,14 @@ class QualityCheckConfig:
 
   # This specific field is for design phase only.
   exclude_geos_no_response: bool = True
+  exclude_outlier_dates: bool = True
 
 
 @dataclasses.dataclass
 class QualityCheckResult:
   """Result of the quality check."""
 
+  quality_check_config: QualityCheckConfig
   quality_metrics: DataFrame = dataclasses.field(repr=False)
   outlier_geos: set[str] = dataclasses.field(default_factory=set)
   outlier_dates: set[Timestamp] = dataclasses.field(default_factory=set)
@@ -193,7 +212,11 @@ class DesignConfig:
   __pydantic_config__ = pydantic.ConfigDict(arbitrary_types_allowed=True)
 
   # TODO: Figure out if need to support weekly granularity.
-  experiment_duration: Annotated[int, pydantic.Field(gt=0)]
+  experiment_duration: Annotated[
+      datetime.timedelta,
+      pydantic.BeforeValidator(_validate_duration),
+      pydantic.Field(gt=datetime.timedelta(0)),
+  ]
   # For multi-cell experiments, different types can be assigned per cell using
   # a dictionary; otherwise, a single provided type is applied to all cells.
   experiment_types: Union[
@@ -202,9 +225,7 @@ class DesignConfig:
   ] = ExperimentType.HOLDBACK
   # The methodologies to be considered for the experiment design.
   methodology: Methodology = Methodology.TBR
-  geo_assignment_rule: GeoAssignmentRule = (
-      GeoAssignmentRule.STRATIFIED_SAMPLING
-  )
+  geo_assignment_rule: GeoAssignmentRule = GeoAssignmentRule.STRATIFIED_SAMPLING
   # TODO: If needed, add per-methodology configs.
   cell_count: Annotated[int, pydantic.Field(gt=0)] = 1
   alpha: float = 0.1
@@ -240,7 +261,7 @@ class DesignConfig:
 
   # Advanced design search parameters.
   # Number of candidates for the fast scoring step.
-  n_candidates: Annotated[int, pydantic.Field(gt=0)] = 10000
+  n_candidates: Annotated[int, pydantic.Field(gt=0)] = 100_000
   # Number of fully scored candidates.
   n_ranked_candidates: Annotated[int, pydantic.Field(gt=0)] = 100
   # Number of iterations for confidence interval estimation.
@@ -250,13 +271,15 @@ class DesignConfig:
   seed: int = 42
   # Maximum allowed symmetric difference for slope check.
   slope_tolerance: float = 0.2
+  # Minimum allowed R2 for design candidates.
+  min_r2: float = 0.8
   # Number of strata for stratified sampling.
   num_strata: Annotated[int, pydantic.Field(gt=0)] = 4
   # Number of iterations for k-means clustering.
   k_means_iterations: Annotated[int, pydantic.Field(gt=0)] = 10
   # An integer that configures the generation of stratum label sequences.
   # This should be larger than n_candidates for best results.
-  pad_length: Annotated[int, pydantic.Field(gt=0)] = 10000
+  pad_length: Annotated[int, pydantic.Field(gt=0)] = 100_000
 
 
 @pydantic.dataclasses.dataclass
@@ -331,9 +354,17 @@ class Design:
   # Results for each cell.
   designs: dict[str, PerCellDesign]
   control_geos: SortedSet[str]
+  # Geos excluded from the design. Includes user manually excluded geos, outlier
+  # geos detected by data quality checks (if configured to be removed
+  # automatically).
   excluded_geos: SortedSet[str]
+  # Dates excluded from the design. Includes user manually excluded dates,
+  # and outlier dates detected by data quality checks (if configured to be
+  # removed automatically).
+  excluded_dates: SortedSet[Timestamp] = dataclasses.field(default_factory=set)
   design_config: Optional[DesignConfig] = None
   constraints: Optional[Constraints] = None
+  quality_check_result: Optional[QualityCheckResult] = None
   # The stratum label of each geo, ordered by geo name.
   geo_stratum_labels: Optional[JnpArray] = dataclasses.field(
       default=None, repr=False
@@ -366,7 +397,6 @@ class DesignSet:
   # TODO: Consider including provenance information such as input
   # data and configs to make comparison/visualization easier.
   design_data: DataFrame = dataclasses.field(repr=False)
-  quality_check_result: Optional[QualityCheckResult] = None
 
 
 @pydantic.dataclasses.dataclass
@@ -406,6 +436,17 @@ class AnalysisConfig:
           "pretest_end_date must be strictly before analysis_start_date."
       )
     return self
+
+  # Advanced analysis parameters
+  # Number of initial placebo candidates generated before selection.
+  n_placebo_candidates: int = 100_000
+  # Minimum out-of-sample R-squared score required for a placebo design to be
+  # kept for analysis.
+  min_placebo_r2: float = 0.6
+  # Number of valid placebo candidates below which a warning will be logged.
+  min_placebo_count_warning: Annotated[int, pydantic.Field(ge=0)] = 100
+  # Number of valid placebo candidates below which an error will be raised.
+  min_placebo_count_error: Annotated[int, pydantic.Field(ge=0)] = 10
 
 
 @dataclasses.dataclass
@@ -476,4 +517,11 @@ class AnalysisResult:
   results: dict[str, AnalysisMetrics]
   # The configuration used for the analysis.
   analysis_config: AnalysisConfig
+  # Geos excluded from the analysis. Includes all geos excluded during the
+  # design phase.
+  excluded_geos: SortedSet[str] = dataclasses.field(default_factory=set)
+  # Dates excluded from the analysis. Includes user manually excluded dates from
+  # analysis config, and analysis-stage outlier dates (if configured to be
+  # removed automatically).
+  excluded_dates: SortedSet[Timestamp] = dataclasses.field(default_factory=set)
   quality_check_result: Optional[QualityCheckResult] = None

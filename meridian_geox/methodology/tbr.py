@@ -150,6 +150,8 @@ def _fit_linear_regression(
   ss_xy = jnp.sum((x - x_mean) * (y - y_mean))
   # TODO: Raise an error if x is constant (ss_xx == 0).
   slope = jnp.where(ss_xx > 1e-10, ss_xy / ss_xx, 0.0)
+  # Ensure slope is non-negative.
+  slope = jnp.maximum(0.0, slope)
   intercept = y_mean - slope * x_mean
 
   return intercept, slope
@@ -183,15 +185,19 @@ def _compute_group_mean(
 # integrated.
 def _compute_placebo_effect_from_mask(
     data_pretest: jnp.ndarray,
+    data_pretest_train: jnp.ndarray,
+    data_pretest_val: jnp.ndarray,
     data_test: jnp.ndarray,
     mask: jnp.ndarray,
     p_mask: jnp.ndarray,
     treatment_cell_id: float,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-  """Computes the effect for a single placebo simulation.
+  """Computes the effect on test data and out-of-sample RMSE for a single placebo simulation.
 
   Args:
     data_pretest: (T_pre, Geos) Pre-period data.
+    data_pretest_train: (T_pre_train, Geos) Training pre-period data.
+    data_pretest_val: (T_pre_val, Geos) Validation pre-period data.
     data_test: (T_val, Geos) Test-period data.
     mask: (Geos,) Treatment mask (1.0 for treated, 0.0 for control).
     p_mask: (Geos,) Placebo treatment mask (1.0 for placebo treated, 0.0 for
@@ -199,8 +205,8 @@ def _compute_placebo_effect_from_mask(
     treatment_cell_id: The Cell ID to use for the treated group.
 
   Returns:
-    Placebo treatment response, Placebo predicted response, Placebo RMSE,
-    Placebo log RMSE.
+    Placebo treatment response, Placebo predicted response, Placebo RMSE
+    (out-of-sample), Placebo log RMSE (out-of-sample).
   """
   # Create a mask for valid control units (excluding original treated units).
   # p_mask is positive for placebo treated, 0.0 otherwise.
@@ -216,23 +222,36 @@ def _compute_placebo_effect_from_mask(
     x_m = jnp.dot(data, c_mask) / jnp.maximum(n_c, 1.0)
     return y_m, x_m
 
-  # Fit on pre.
+  # Part 1. Fit on the training split to calculate the out-of-sample validation
+  # RMSE.
+
+  py_train, px_train = _compute_placebo_means(
+      data_pretest_train, p_treatment_mask, valid_control_mask
+  )
+  p_alpha_train, p_beta_train = _fit_linear_regression(px_train, py_train)
+
+  py_val, px_val = _compute_placebo_means(
+      data_pretest_val, p_treatment_mask, valid_control_mask
+  )
+  py_pred_val = p_alpha_train + p_beta_train * px_val
+  p_rmse = jnp.sqrt(jnp.mean((py_val - py_pred_val) ** 2))
+
+  scale_val = jnp.mean(jnp.abs(py_val))
+  p_log_errors = methodology_util.compute_regularized_log_ratio(
+      py_val, py_pred_val, scale=scale_val
+  )
+  p_log_rmse = jnp.sqrt(jnp.mean(p_log_errors**2))
+
+  # Part 2. Fit on combined pretest for the actual test prediction
+
   py_pretest, px_pretest = _compute_placebo_means(
       data_pretest, p_treatment_mask, valid_control_mask
   )
   p_alpha, p_beta = _fit_linear_regression(px_pretest, py_pretest)
 
-  # RMSE on pre.
-  py_pred_pre = p_alpha + p_beta * px_pretest
-  p_rmse = jnp.sqrt(jnp.mean((py_pretest - py_pred_pre) ** 2))
-
-  # Log RMSE on pre for computing relative lift.
-  p_log_errors = jnp.log(py_pretest) - jnp.log(py_pred_pre)
-  p_log_rmse = jnp.sqrt(jnp.mean(p_log_errors**2))
-
   # Predict on val.
   py_test, px_test = _compute_placebo_means(
-      data_test, p_mask, valid_control_mask
+      data_test, p_treatment_mask, valid_control_mask
   )
   # We want pointwise results so that we can obtain a pointwise analysis times
   # series with CIs.
@@ -371,13 +390,12 @@ def _compute_placebo_effect_with_random_design(
   py_pre, px_pre = _compute_placebo_means(data_pre, p_mask, valid_control_mask)
   p_alpha, p_beta = _fit_linear_regression(px_pre, py_pre)
 
-  # RMSE on pre.
-  py_pred_pre = p_alpha + p_beta * px_pre
-  p_rmse = jnp.sqrt(jnp.mean((py_pre - py_pred_pre) ** 2))
-
   # Predict on val.
   py_val, px_val = _compute_placebo_means(data_val, p_mask, valid_control_mask)
   py_pred = p_alpha + p_beta * px_val
+
+  # RMSE on val.
+  p_rmse = jnp.sqrt(jnp.mean((py_val - py_pred) ** 2))
 
   return jnp.mean(py_val - py_pred), p_rmse
 
@@ -496,13 +514,12 @@ def _get_mde_placebo(
     x_pre = _compute_group_mean(data_pre, mask, 0.0)
     alpha, beta = _fit_linear_regression(x_pre, y_pre)
 
-    # RMSE on pre.
-    y_pred_pre = alpha + beta * x_pre
-    real_rmse = jnp.sqrt(jnp.mean((y_pre - y_pred_pre) ** 2))
-
     y_val = _compute_group_mean(data_val, mask, 1.0)
     x_val = _compute_group_mean(data_val, mask, 0.0)
     y_pred = alpha + beta * x_val
+
+    # RMSE on val.
+    real_rmse = jnp.sqrt(jnp.mean((y_val - y_pred) ** 2))
 
     # Effect is the mean difference in the validation period.
     real_effect = jnp.mean(y_val - y_pred)
@@ -707,7 +724,8 @@ def _compute_icpd(
 
 
 def analyze(
-    pretest_conversions: jnp.ndarray,
+    pretest_train_conversions: jnp.ndarray,
+    pretest_val_conversions: jnp.ndarray,
     test_conversions: jnp.ndarray,
     treatment_mask: jnp.ndarray,
     placebo_masks: jnp.ndarray,
@@ -719,6 +737,31 @@ def analyze(
     test_spend: Optional[jnp.ndarray] = None,
 ) -> TbrAnalysisResult:
   """Generates analysis metrics for a GeoX experiment using JAX inputs."""
+
+  # Fit model on the training split
+  py_train = _compute_group_mean(
+      pretest_train_conversions, treatment_mask, treatment_cell_id
+  )
+  px_train = _compute_group_mean(pretest_train_conversions, treatment_mask, 0.0)
+  pred_alpha, pred_beta = _fit_linear_regression(px_train, py_train)
+
+  # Compute out-of-sample RMSE on the validation split
+  py_val = _compute_group_mean(
+      pretest_val_conversions, treatment_mask, treatment_cell_id
+  )
+  px_val = _compute_group_mean(pretest_val_conversions, treatment_mask, 0.0)
+  py_pred_val = pred_alpha + pred_beta * px_val
+  rmse = jnp.sqrt(jnp.mean((py_val - py_pred_val) ** 2))
+  scale_val = jnp.mean(jnp.abs(py_val))
+  log_errors = methodology_util.compute_regularized_log_ratio(
+      py_val, py_pred_val, scale=scale_val
+  )
+  log_rmse = jnp.sqrt(jnp.mean(log_errors**2))
+
+  # Fit model on the full pretest period for predicting on post-experiment data
+  pretest_conversions = jnp.concatenate(
+      [pretest_train_conversions, pretest_val_conversions], axis=0
+  )
   y_pretest = _compute_group_mean(
       pretest_conversions, treatment_mask, treatment_cell_id
   )
@@ -726,8 +769,6 @@ def analyze(
   pred_alpha, pred_beta = _fit_linear_regression(x_pretest, y_pretest)
 
   y_pred_pre = pred_alpha + pred_beta * x_pretest
-  rmse = jnp.sqrt(jnp.mean((y_pretest - y_pred_pre) ** 2))
-  log_rmse = jnp.sqrt(jnp.mean((jnp.log(y_pretest) - jnp.log(y_pred_pre)) ** 2))
 
   y_test = _compute_group_mean(
       test_conversions, treatment_mask, treatment_cell_id
@@ -751,9 +792,12 @@ def analyze(
       placebo_rmses,
       placebo_log_rmses,
   ) = jax.vmap(
-      _compute_placebo_effect_from_mask, in_axes=(None, None, None, 0, None)
+      _compute_placebo_effect_from_mask,
+      in_axes=(None, None, None, None, None, 0, None),
   )(
       pretest_conversions,
+      pretest_train_conversions,
+      pretest_val_conversions,
       test_conversions,
       treatment_mask,
       placebo_masks,

@@ -42,7 +42,10 @@ def compute_studentized_p_value(
   t_obs = estimate / jnp.maximum(rmse, 1e-9)
   n_placebo = len(t_placebo)
   if test_type == api.TestType.TWO_SIDED:
-    n_extreme = jnp.sum(jnp.abs(t_placebo) >= jnp.abs(t_obs))
+    n_extreme_left = jnp.sum(t_placebo <= t_obs)
+    n_extreme_right = jnp.sum(t_placebo >= t_obs)
+    n_extreme = 2 * jnp.minimum(n_extreme_left, n_extreme_right)
+    n_extreme = jnp.minimum(n_extreme, n_placebo)
   else:
     n_extreme = jnp.sum(t_placebo >= t_obs)
 
@@ -114,14 +117,20 @@ def get_percent_lift(
     An Estimate object containing the point estimate and confidence interval
     for the percent lift.
   """
-  log_estimate = jnp.log(y_test / y_pred)
+  log_estimate = compute_regularized_log_ratio(y_test, y_pred)
   t_obs = log_estimate / jnp.maximum(log_rmse, 1e-9)
-  log_placebo_estimates = jnp.log(y_test_placebos / y_pred_placebos)
+
+  log_placebo_estimates = compute_regularized_log_ratio(
+      y_test_placebos, y_pred_placebos
+  )
   t_placebo = log_placebo_estimates / jnp.maximum(placebo_log_rmses, 1e-9)
   n_placebo = len(t_placebo)
 
   if test_type == api.TestType.TWO_SIDED:
-    n_extreme = jnp.sum(jnp.abs(t_placebo) >= jnp.abs(t_obs))
+    n_extreme_left = jnp.sum(t_placebo <= t_obs)
+    n_extreme_right = jnp.sum(t_placebo >= t_obs)
+    n_extreme = 2 * jnp.minimum(n_extreme_left, n_extreme_right)
+    n_extreme = jnp.minimum(n_extreme, n_placebo)
     lower_ci = (
         jnp.exp(
             log_estimate - jnp.quantile(t_placebo, 1.0 - alpha / 2.0) * log_rmse
@@ -166,4 +175,30 @@ def get_percent_lift(
       upper_bound=float(upper_ci),
       standard_deviation=float(standard_deviation),
       p_value=float(p_value),
+  )
+
+
+def compute_regularized_log_ratio(
+    y_num: jnp.ndarray | float,
+    y_den: jnp.ndarray | float,
+    scale: jnp.ndarray | float | None = None,
+) -> jnp.ndarray:
+  """Computes log(y_num / y_den) with dynamic clipping to avoid instability.
+
+  If `scale` is provided, it is used to determine the clipping threshold.
+  Otherwise, a pointwise scale is computed from the inputs.
+
+  Args:
+    y_num: Numerator.
+    y_den: Denominator.
+    scale: Optional scale for determining the clipping threshold.
+
+  Returns:
+    The regularized log ratio.
+  """
+  if scale is None:
+    scale = jnp.maximum(jnp.abs(y_num), jnp.abs(y_den))
+  threshold = jnp.maximum(1e-3 * scale, 1e-9)
+  return jnp.log(
+      jnp.maximum(y_num, threshold) / jnp.maximum(y_den, threshold)
   )

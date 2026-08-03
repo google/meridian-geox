@@ -153,7 +153,9 @@ def get_minimal_discrepancy_stratum_labels(
     seq_length: An integer representing the desired length of the sequence of
       stratum labels.
   """
-  quasi_random_seq = jnp.roll(sobol_seq, shift=-offset)[:seq_length]
+  quasi_random_seq = jax.lax.dynamic_slice(
+      sobol_seq, start_indices=(offset,), slice_sizes=(seq_length,)
+  )
   intervals = _get_intervals(stratum_counts)
   return jax.vmap(_float_to_label, in_axes=(0, None))(
       quasi_random_seq, intervals

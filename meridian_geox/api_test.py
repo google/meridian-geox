@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime
 from absl.testing import absltest
 from absl.testing import parameterized
 from meridian_geox import api
@@ -21,7 +22,7 @@ class ApiTest(parameterized.TestCase):
 
   def test_design_config_normalization_single_cell(self):
     config = api.DesignConfig(
-        experiment_duration=10,
+        experiment_duration=datetime.timedelta(days=10),
         experiment_types=api.ExperimentType.HOLDBACK,
         cell_count=1,
         cost_per_incremental_conversion=1.5,
@@ -34,7 +35,7 @@ class ApiTest(parameterized.TestCase):
 
   def test_design_config_normalization_multi_cell_scalar(self):
     config = api.DesignConfig(
-        experiment_duration=10,
+        experiment_duration=datetime.timedelta(days=10),
         experiment_types=api.ExperimentType.HOLDBACK,
         cell_count=3,
         cost_per_incremental_conversion=2.0,
@@ -57,7 +58,7 @@ class ApiTest(parameterized.TestCase):
     # cell_1 is HOLDBACK, cell_2 is GO_DARK.
     # CPIC should only be populated for cell_1.
     config = api.DesignConfig(
-        experiment_duration=10,
+        experiment_duration=datetime.timedelta(days=10),
         experiment_types={
             'cell_1': api.ExperimentType.HOLDBACK,
             'cell_2': api.ExperimentType.GO_DARK,
@@ -69,9 +70,7 @@ class ApiTest(parameterized.TestCase):
     self.assertEqual(config.cost_per_incremental_conversion, {'cell_1': 3.0})
 
   def test_constraints_normalize_budget_holdback(self):
-    constraints = api.Constraints(
-        budget_constraint=api.Budget(budget=1000.0)
-    )
+    constraints = api.Constraints(budget_constraint=api.Budget(budget=1000.0))
     experiment_types = {
         'cell_1': api.ExperimentType.HOLDBACK,
         'cell_2': api.ExperimentType.GO_DARK,
@@ -84,9 +83,7 @@ class ApiTest(parameterized.TestCase):
     self.assertEqual(constraints.budget_constraint['cell_2'].budget, 1000.0)
 
   def test_constraints_normalize_budget_percent_godark(self):
-    constraints = api.Constraints(
-        budget_constraint=api.Budget(budget_pct=0.5)
-    )
+    constraints = api.Constraints(budget_constraint=api.Budget(budget_pct=0.5))
     experiment_types = {
         'cell_1': api.ExperimentType.HOLDBACK,
         'cell_2': api.ExperimentType.GO_DARK,
@@ -113,11 +110,36 @@ class ApiTest(parameterized.TestCase):
 
   def test_design_config_default_cpic(self):
     config = api.DesignConfig(
-        experiment_duration=5,
+        experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.HOLDBACK,
     )
     # Default cpic is 1.0.
     self.assertEqual(config.cost_per_incremental_conversion, {'cell_1': 1.0})
+
+  def test_design_config_invalid_duration_type(self):
+    with self.assertRaises(Exception):
+      api.DesignConfig(
+          experiment_duration=10,  # pytype: disable=wrong-arg-types
+          experiment_types=api.ExperimentType.HOLDBACK,
+      )
+
+  def test_design_config_duration_sub_daily_rejected(self):
+    with self.assertRaisesRegex(
+        (ValueError, Exception),
+        'experiment_duration must be in full days or weeks',
+    ):
+      api.DesignConfig(
+          experiment_duration=datetime.timedelta(hours=6),
+          experiment_types=api.ExperimentType.HOLDBACK,
+      )
+    with self.assertRaisesRegex(
+        (ValueError, Exception),
+        'experiment_duration must be in full days or weeks',
+    ):
+      api.DesignConfig(
+          experiment_duration=datetime.timedelta(seconds=30),
+          experiment_types=api.ExperimentType.HOLDBACK,
+      )
 
   def test_analysis_config_date_order_validation(self):
     dummy_design = api.Design(

@@ -14,6 +14,7 @@
 
 """Tests for the data quality check functionality."""
 
+import datetime
 from absl.testing import absltest
 from meridian_geox import api
 from meridian_geox.data_quality import data_quality
@@ -24,7 +25,9 @@ class DataQualityTest(absltest.TestCase):
 
   def test_check_design_data_quality_too_many_geos(self):
     config = api.QualityCheckConfig()
-    design_config = api.DesignConfig(experiment_duration=1)
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1)
+    )
     locations = [f'G{i}' for i in range(501)]
     data = pd.DataFrame({
         'location': locations,
@@ -36,7 +39,9 @@ class DataQualityTest(absltest.TestCase):
 
   def test_check_design_data_quality_missing_conversion_days_exceeds(self):
     config = api.QualityCheckConfig()
-    design_config = api.DesignConfig(experiment_duration=1)
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1)
+    )
     # 10 expected days: 2023-01-01 to 2023-01-10.
     # Provide only 6 unique dates (Jan 1-5, and Jan 10).
     # missing pct: 1.0 - 6/10 = 0.40 (40%) > threshold (30%).
@@ -63,7 +68,9 @@ class DataQualityTest(absltest.TestCase):
       self,
   ):
     config = api.QualityCheckConfig()
-    design_config = api.DesignConfig(experiment_duration=1)
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1)
+    )
     # 10 expected days: 2023-01-01 to 2023-01-10.
     # Provide 9 unique dates.
     # missing pct: 1.0 - 9/10 = 0.10 (10%) <= threshold (30%).
@@ -102,7 +109,7 @@ class DataQualityTest(absltest.TestCase):
     })
 
     design_config = api.DesignConfig(
-        experiment_duration=3,
+        experiment_duration=datetime.timedelta(days=3),
         experiment_types={'cell_1': api.ExperimentType.GO_DARK},
     )
     design = api.Design(
@@ -160,7 +167,7 @@ class DataQualityTest(absltest.TestCase):
 
     # If GO_DARK: checks pretest period -> warning triggers.
     design_config_go_dark = api.DesignConfig(
-        experiment_duration=3,
+        experiment_duration=datetime.timedelta(days=3),
         experiment_types={'cell_1': api.ExperimentType.GO_DARK},
     )
     design_go_dark = api.Design(
@@ -195,7 +202,7 @@ class DataQualityTest(absltest.TestCase):
 
     # If HOLDBACK: skips the check -> no warning.
     design_config_holdback = api.DesignConfig(
-        experiment_duration=3,
+        experiment_duration=datetime.timedelta(days=3),
         experiment_types={'cell_1': api.ExperimentType.HOLDBACK},
     )
     design_holdback = api.Design(
@@ -233,7 +240,7 @@ class DataQualityTest(absltest.TestCase):
   ):
     config = api.QualityCheckConfig()
     design_config = api.DesignConfig(
-        experiment_duration=3,
+        experiment_duration=datetime.timedelta(days=3),
         experiment_types={'cell_1': api.ExperimentType.GO_DARK},
     )
     # In design phase, the entire data is pretest.
@@ -264,7 +271,9 @@ class DataQualityTest(absltest.TestCase):
 
   def test_check_design_data_quality_duplicate_entries(self):
     config = api.QualityCheckConfig()
-    design_config = api.DesignConfig(experiment_duration=1)
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1)
+    )
     data = pd.DataFrame({
         'location': ['G1', 'G1', 'G1', 'G2'],
         'date': ['2023-01-01', '2023-01-01', '2023-01-01', '2023-01-02'],
@@ -279,7 +288,9 @@ class DataQualityTest(absltest.TestCase):
 
   def test_check_design_data_quality_exclude_geos_no_response(self):
     config = api.QualityCheckConfig(exclude_geos_no_response=True)
-    design_config = api.DesignConfig(experiment_duration=1)
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1)
+    )
     data = pd.DataFrame({
         'location': ['G1', 'G2'],
         'date': ['2023-01-01', '2023-01-01'],
@@ -294,7 +305,9 @@ class DataQualityTest(absltest.TestCase):
 
   def test_check_design_data_quality_exclude_geos_no_response_false(self):
     config = api.QualityCheckConfig(exclude_geos_no_response=False)
-    design_config = api.DesignConfig(experiment_duration=1)
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1)
+    )
     data = pd.DataFrame({
         'location': ['G1', 'G2'],
         'date': ['2023-01-01', '2023-01-01'],
@@ -302,14 +315,16 @@ class DataQualityTest(absltest.TestCase):
         'spend': [10.0, 10.0],
     })
     result = data_quality.check_design_data_quality(data, design_config, config)
-    self.assertNotIn('G1', result.outlier_geos)
+    self.assertIn('G1', result.outlier_geos)
     self.assertIn(
         'Spend > 0 and no conversions', result.quality_metrics['metric'].values
     )
 
   def test_check_design_data_quality_high_zero_response(self):
     config = api.QualityCheckConfig()
-    design_config = api.DesignConfig(experiment_duration=1)
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1)
+    )
     data = pd.DataFrame({
         'location': ['G1', 'G1', 'G2', 'G2'],
         'date': ['2023-01-01', '2023-01-02', '2023-01-01', '2023-01-02'],
@@ -323,7 +338,7 @@ class DataQualityTest(absltest.TestCase):
   def test_check_design_data_quality_multicell_spend(self):
     config = api.QualityCheckConfig()
     design_config = api.DesignConfig(
-        experiment_duration=3,
+        experiment_duration=datetime.timedelta(days=3),
         cell_count=2,
         experiment_types={
             'cell_1': api.ExperimentType.GO_DARK,
@@ -350,6 +365,118 @@ class DataQualityTest(absltest.TestCase):
     self.assertIn(
         'Percentage of missing spend days (cell_2)',
         result.quality_metrics['metric'].values,
+    )
+
+  def test_check_design_data_quality_with_outlier_dates(self):
+    config = api.QualityCheckConfig()
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=3)
+    )
+    dates = (
+        pd.date_range('2023-01-01', periods=10).strftime('%Y-%m-%d').tolist()
+    )
+    conversions = [10.0] * 10
+    conversions[5] = 1000.0
+
+    data = pd.DataFrame({
+        'location': ['G1'] * 10,
+        'date': dates,
+        'conversions': conversions,
+    })
+    result = data_quality.check_design_data_quality(data, design_config, config)
+    self.assertIn(pd.Timestamp('2023-01-06'), result.outlier_dates)
+    self.assertIn(
+        'Outlier pretest dates', result.quality_metrics['metric'].values
+    )
+
+  def test_check_design_data_quality_no_outlier_dates(self):
+    config = api.QualityCheckConfig()
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=3)
+    )
+    dates = (
+        pd.date_range('2023-01-01', periods=10).strftime('%Y-%m-%d').tolist()
+    )
+    conversions = [10.0 + 2.0 * i for i in range(10)]
+
+    data = pd.DataFrame({
+        'location': ['G1'] * 10,
+        'date': dates,
+        'conversions': conversions,
+    })
+    result = data_quality.check_design_data_quality(data, design_config, config)
+    self.assertEmpty(result.outlier_dates)
+    self.assertNotIn(
+        'Outlier pretest dates', result.quality_metrics['metric'].values
+    )
+
+  def test_check_design_data_quality_exclude_outlier_dates_false(self):
+    config = api.QualityCheckConfig(exclude_outlier_dates=False)
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=3)
+    )
+    dates = (
+        pd.date_range('2023-01-01', periods=10).strftime('%Y-%m-%d').tolist()
+    )
+    conversions = [10.0] * 10
+    conversions[5] = 1000.0
+
+    data = pd.DataFrame({
+        'location': ['G1'] * 10,
+        'date': dates,
+        'conversions': conversions,
+    })
+    result = data_quality.check_design_data_quality(data, design_config, config)
+    self.assertIn(pd.Timestamp('2023-01-06'), result.outlier_dates)
+    self.assertIn(
+        'Outlier pretest dates', result.quality_metrics['metric'].values
+    )
+
+  def test_check_analysis_data_quality_ignores_outlier_dates(self):
+    config = api.QualityCheckConfig(exclude_outlier_dates=True)
+    dates = (
+        pd.date_range('2023-01-01', periods=10).strftime('%Y-%m-%d').tolist()
+    )
+    conversions = [10.0] * 10
+    conversions[5] = 1000.0
+
+    data = pd.DataFrame({
+        'location': ['G1'] * 10,
+        'date': dates,
+        'conversions': conversions,
+        'spend': [1.0] * 10,
+    })
+
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=3),
+        experiment_types={'cell_1': api.ExperimentType.GO_DARK},
+    )
+    design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1'},
+                minimum_detectable_effect=0.5,
+                design_implied_cpic=1.0,
+                p_value=0.05,
+                budget=100.0,
+            )
+        },
+        control_geos=set(),
+        excluded_geos=set(),
+        design_config=design_config,
+    )
+    analysis_config = api.AnalysisConfig(
+        design=design,
+        analysis_start_date=pd.Timestamp('2023-01-08'),
+        analysis_end_date=pd.Timestamp('2023-01-10'),
+    )
+
+    result = data_quality.check_analysis_data_quality(
+        data, analysis_config, config
+    )
+    self.assertEmpty(result.outlier_dates)
+    self.assertNotIn(
+        'Outlier pretest dates', result.quality_metrics['metric'].values
     )
 
 

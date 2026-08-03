@@ -14,7 +14,9 @@
 
 """GeoX design library API."""
 
+import copy
 import dataclasses
+import datetime
 import logging
 import re
 from typing import Any, Callable, Optional
@@ -105,9 +107,23 @@ def _filter_by_constraints(
   return filtered_data
 
 
+def _prepare_design_constraints(
+    constraints: api.Constraints,
+    quality_result: api.QualityCheckResult,
+    quality_config: api.QualityCheckConfig,
+) -> api.Constraints:
+  """Helper to get a copy of constraints updated with outlier exclusions."""
+  augmented_constraints = copy.deepcopy(constraints)
+  if quality_result.outlier_geos and quality_config.exclude_geos_no_response:
+    augmented_constraints.excluded_geos.update(quality_result.outlier_geos)
+  if quality_result.outlier_dates and quality_config.exclude_outlier_dates:
+    augmented_constraints.excluded_dates.update(quality_result.outlier_dates)
+  return augmented_constraints
+
+
 def prepare_data(
     data: pd.DataFrame,
-    experiment_duration: int,
+    experiment_duration: datetime.timedelta,
     constraints: api.Constraints,
 ) -> ProcessedData:
   """Processes data for experiment design."""
@@ -122,8 +138,9 @@ def prepare_data(
 
   n_dates = len(pivoted_data)
 
-  t2_start_idx = n_dates - experiment_duration
-  t1_start_idx = t2_start_idx - experiment_duration
+  experiment_duration_days = experiment_duration.days
+  t2_start_idx = n_dates - experiment_duration_days
+  t1_start_idx = t2_start_idx - experiment_duration_days
 
   t0_data = pivoted_data.iloc[:t1_start_idx]
   t1_data = pivoted_data.iloc[t1_start_idx:t2_start_idx]
@@ -241,6 +258,46 @@ def _filter_results_by_aa_test(
   )
 
 
+def _filter_results_by_min_r2(
+    scored_candidates: ScoredCandidates,
+    design_config: api.DesignConfig,
+) -> ScoredCandidates:
+  """Filters designs based on minimum R2 score."""
+  experiment_types = design_config.experiment_types
+  cell_names = (
+      list(experiment_types.keys())
+      if isinstance(experiment_types, dict)
+      else None
+  )
+
+  is_valid_r2 = util.filter_by_r2(
+      r2_scores=scored_candidates.r2_scores,
+      min_r2=design_config.min_r2,
+      min_count_error=1,
+      min_count_warning=design_config.design_output_count,
+      error_message=(
+          'No designs passed the min R2 check (r2 >= {min_r2}){cell_details}.'
+      ),
+      warning_message=(
+          'Only {count} designs passed the min R2 check{cell_details}.'
+          ' Returning all of them.'
+      ),
+      cell_names=cell_names,
+  )
+
+  return ScoredCandidates(
+      candidates=scored_candidates.candidates[is_valid_r2],
+      mde_abs=scored_candidates.mde_abs[is_valid_r2],
+      mde_pct=scored_candidates.mde_pct[is_valid_r2],
+      p_values=scored_candidates.p_values[is_valid_r2],
+      r2_scores=scored_candidates.r2_scores[is_valid_r2],
+      observed_conversions=scored_candidates.observed_conversions[is_valid_r2],
+      counterfactual_conversions=scored_candidates.counterfactual_conversions[
+          is_valid_r2
+      ],
+  )
+
+
 def _rank_and_filter_metrics(
     metrics: pd.DataFrame, limit: int
 ) -> tuple[pd.DataFrame, pd.Series]:
@@ -258,23 +315,20 @@ def _rank_and_filter_metrics(
   """
   # Rank by max_mde across cells.
   max_mde_df = (
-      metrics.groupby('design_id')['mde']
-      .max()
-      .reset_index(name='max_mde')
+      metrics.groupby('design_id')['mde'].max().reset_index(name='max_mde')
   )
-  top_design_ids = max_mde_df.sort_values(by='max_mde').head(
-      limit
-  )['design_id']
-  filtered_metrics = metrics[
-      metrics['design_id'].isin(top_design_ids)
-  ].copy()
+  top_design_ids = max_mde_df.sort_values(by='max_mde').head(limit)['design_id']
+  filtered_metrics = metrics[metrics['design_id'].isin(top_design_ids)].copy()
+
+  ranks = {design_id: rank for rank, design_id in enumerate(top_design_ids, 1)}
+  filtered_metrics['rank'] = filtered_metrics['design_id'].map(ranks)
+
   filtered_metrics['design_id'] = pd.Categorical(
       filtered_metrics['design_id'], categories=top_design_ids, ordered=True
   )
-  top_metrics = (
-      filtered_metrics.sort_values(by=['design_id', 'cell'])
-      .reset_index(drop=True)
-  )
+  top_metrics = filtered_metrics.sort_values(
+      by=['design_id', 'cell']
+  ).reset_index(drop=True)
   return top_metrics, top_design_ids
 
 
@@ -282,6 +336,8 @@ def _get_design_summary(
     scored_candidates: ScoredCandidates,
     design_config: api.DesignConfig,
     constraints: api.Constraints,
+    excluded_geos: set[str],
+    excluded_dates: set[pd.Timestamp],
     geos: list[str],
     geo_stratum_labels: jnp.ndarray,
     processed_data: ProcessedData,
@@ -306,9 +362,12 @@ def _get_design_summary(
       cell: np.array(spend)
       for cell, spend in processed_data.estimation_eval_spend.items()
   }
+  total_conversion_volume = float(np.sum(estimation_eval_np))
 
   # Get full dates for plotting.
-  pivoted_data = util.pivot_and_sort_data(data, api.CONVERSIONS)
+  pivoted_data = util.pivot_and_sort_data(
+      processed_data.filtered_data, api.CONVERSIONS
+  )
   full_dates = pivoted_data.index
 
   # Rely on centralized normalization performed at the start of run_design.
@@ -406,14 +465,21 @@ def _get_design_summary(
           'mde_abs': total_mde_abs,
           'p_value': p_values_np[i][metrics_cell_index],
           'budget': required_budget,
+          'treatment_conversions_pct': (
+              (treatment_conversion_volume / total_conversion_volume) * 100
+              if total_conversion_volume > 0
+              else 0.0
+          ),
       })
 
     design_obj = api.Design(
         designs=cell_designs,
         control_geos=control_geos,
-        excluded_geos=constraints.excluded_geos,
+        excluded_geos=excluded_geos,
+        excluded_dates=excluded_dates,
         design_config=design_config,
         constraints=constraints,
+        quality_check_result=quality_check_result,
         geo_stratum_labels=geo_stratum_labels,
         data=data,
     )
@@ -449,7 +515,6 @@ def _get_design_summary(
       designs=designs,
       design_metrics=design_metrics,
       design_data=design_data,
-      quality_check_result=quality_check_result,
   )
 
 
@@ -472,19 +537,22 @@ def run_design(
   # 1. Preprocess data.
   # Normalization handles scalar-to-dict conversion in DesignConfig and
   # Constraints.
+  # Make a deep copy to avoid mutating the user-supplied input constraints
+  # object.
+  normalized_constraints = copy.deepcopy(constraints)
   experiment_types: dict[str, api.ExperimentType] = (
       design_config.experiment_types  # type: ignore
   )
-  constraints.normalize(experiment_types)
+  normalized_constraints.normalize(experiment_types)
 
   error_messages: list[str] = validation.validate_design_input(
-      data, design_config, constraints
+      data, design_config, normalized_constraints
   )
   if error_messages:
     raise ValueError(f'Data validation failed: {error_messages}')
 
   # Exclude geos and dates before data quality checks.
-  filtered_data = _filter_by_constraints(data, constraints)
+  filtered_data = _filter_by_constraints(data, normalized_constraints)
 
   # Run data quality checks.
   quality_result = data_quality.check_design_data_quality(
@@ -493,12 +561,12 @@ def run_design(
       data_quality_check_config,
   )
 
-  # Filter out outlier geos identified in quality check.
-  if quality_result.outlier_geos:
-    constraints.excluded_geos.update(quality_result.outlier_geos)
+  augmented_constraints = _prepare_design_constraints(
+      normalized_constraints, quality_result, data_quality_check_config
+  )
 
   processed_data: ProcessedData = prepare_data(
-      data, design_config.experiment_duration, constraints
+      data, design_config.experiment_duration, augmented_constraints
   )
 
   key = jax.random.PRNGKey(design_config.seed)
@@ -510,7 +578,7 @@ def run_design(
     candidates: jnp.ndarray = generate_candidates.get_random_candidates(
         filtered_data=processed_data.filtered_data,
         design_config=design_config,
-        constraints=constraints,
+        constraints=augmented_constraints,
         key=candidates_key,
         selection_train=processed_data.selection_train,
         selection_train_spend=processed_data.selection_train_spend,
@@ -530,7 +598,7 @@ def run_design(
             selection_train=processed_data.selection_train,
             filtered_data=processed_data.filtered_data,
             design_config=design_config,
-            constraints=constraints,
+            constraints=augmented_constraints,
             geo_stratum_labels=geo_stratum_labels,
             key=sampling_key,
             selection_train_spend=processed_data.selection_train_spend,
@@ -573,7 +641,7 @@ def run_design(
   else:
     raise ValueError(f'Unsupported methodology: {design_config.methodology}')
 
-  # Filter by AA test.
+  # Filter by min R2 and AA test.
   scored_candidates = ScoredCandidates(
       candidates=mde_params.top_candidates,
       mde_abs=mde_results.mde_abs,
@@ -583,15 +651,20 @@ def run_design(
       observed_conversions=mde_results.observed_conversions,
       counterfactual_conversions=mde_results.counterfactual_conversions,
   )
-  filtered_scored_candidates = _filter_results_by_aa_test(
+  filtered_scored_candidates = _filter_results_by_min_r2(
       scored_candidates, design_config
+  )
+  filtered_scored_candidates = _filter_results_by_aa_test(
+      filtered_scored_candidates, design_config
   )
 
   # 5. Post process and return.
   return _get_design_summary(
       filtered_scored_candidates,
       design_config,
-      constraints,
+      normalized_constraints,
+      augmented_constraints.excluded_geos,
+      augmented_constraints.excluded_dates,
       geos,
       geo_stratum_labels,  # pyrefly: ignore[bad-argument-type]
       processed_data,
@@ -645,20 +718,10 @@ def concat_design_reports(
       design_id: all_designs[design_id] for design_id in top_design_ids
   }
 
-  quality_check_result = next(
-      (
-          ds.quality_check_result
-          for ds in design_sets
-          if ds.quality_check_result is not None
-      ),
-      None,
-  )
-
   return api.DesignSet(
       designs=top_designs,
       design_metrics=top_metrics,
       design_data=design_data,
-      quality_check_result=quality_check_result,
   )
 
 
