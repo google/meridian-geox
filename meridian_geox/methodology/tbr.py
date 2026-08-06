@@ -542,7 +542,7 @@ def _get_mde_placebo(
 
     # 3. MDE & P-value.
     t_placebo = placebo_effects / jnp.maximum(placebo_rmses, 1e-9)
-    se = methodology_util.compute_se(real_rmse, t_placebo)
+    se = methodology_util.compute_se(real_rmse, t_placebo)  # pyrefly: ignore[bad-argument-type]
     mde_abs = se * z_score_sum
 
     mde_pct = jnp.where(baseline > 1e-9, mde_abs / baseline, jnp.nan)
@@ -828,7 +828,7 @@ def analyze(
       test_type,
   )
   lift_standard_deviation = n_treatment_geos * methodology_util.compute_se(
-      rmse, signed_t_placebo[:, -1]
+      rmse, signed_t_placebo[:, -1]  # pyrefly: ignore[bad-argument-type]
   )
   lift = api.Estimate(
       point_estimate=float(signed_total_cumul_effect[-1]),

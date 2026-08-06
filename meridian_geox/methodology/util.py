@@ -162,7 +162,7 @@ def get_percent_lift(
   p_value = (1.0 + n_extreme) / (1.0 + n_placebo)
   estimate = jnp.exp(log_estimate) - 1.0
 
-  se_log = compute_se(log_rmse, t_placebo)
+  se_log = compute_se(log_rmse, t_placebo)  # pyrefly: ignore[bad-argument-type]
   standard_deviation = jnp.exp(log_estimate) * se_log
 
   if experiment_type == api.ExperimentType.GO_DARK:

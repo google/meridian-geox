@@ -405,10 +405,10 @@ class TbrTest(parameterized.TestCase):
       baselines = []
       for i in range(n_designs):
         mask = masks[i]
-        y_pre = tbr._compute_group_mean(data_pre, mask, cell_id)
+        y_pre = tbr._compute_group_mean(data_pre, mask, cell_id)  # pyrefly: ignore[bad-argument-type]
         x_pre = tbr._compute_group_mean(data_pre, mask, 0.0)
         alpha, beta = tbr._fit_linear_regression(x_pre, y_pre)
-        y_val = tbr._compute_group_mean(data_val, mask, cell_id)
+        y_val = tbr._compute_group_mean(data_val, mask, cell_id)  # pyrefly: ignore[bad-argument-type]
         x_val = tbr._compute_group_mean(data_val, mask, 0.0)
         y_pred = alpha + beta * x_val
         real_effect = jnp.mean(y_val - y_pred)
