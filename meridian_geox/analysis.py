@@ -14,6 +14,7 @@
 
 """GeoX analysis library API."""
 
+import copy
 import dataclasses
 import re
 from typing import Optional, cast
@@ -108,6 +109,19 @@ def _get_time_series(
   )
 
 
+def _get_effective_constraints(design_obj: api.Design) -> api.Constraints:
+  """Returns constraints combining original inputs and automated exclusions."""
+  if design_obj.constraints is None:
+    analysis_constraints = api.Constraints()
+  else:
+    analysis_constraints = copy.deepcopy(design_obj.constraints)
+  if design_obj.excluded_geos:
+    analysis_constraints.excluded_geos.update(design_obj.excluded_geos)
+  if design_obj.excluded_dates:
+    analysis_constraints.excluded_dates.update(design_obj.excluded_dates)
+  return analysis_constraints
+
+
 def _get_placebo_masks(
     design_obj: api.Design,
     treatment: TreatmentMask,
@@ -119,13 +133,15 @@ def _get_placebo_masks(
   if design_obj.data is None:
     raise ValueError('Design data is required for placebo mask generation.')
 
+  analysis_constraints = _get_effective_constraints(design_obj)
+
   placebo_data = design_obj.data[
       ~design_obj.data[api.LOCATION].isin(treatment.geos)
   ]
   processed_placebo_data = design.prepare_data(
       data=placebo_data,
       experiment_duration=design_config.experiment_duration,
-      constraints=design_obj.constraints,  # pyrefly: ignore[bad-argument-type]
+      constraints=analysis_constraints,  # pyrefly: ignore[bad-argument-type]
   )
 
   if design_config.geo_assignment_rule == api.GeoAssignmentRule.RANDOM:
@@ -133,7 +149,7 @@ def _get_placebo_masks(
         generate_candidates.get_random_candidates(
             filtered_data=processed_placebo_data.filtered_data,
             design_config=design_config,
-            constraints=design_obj.constraints,  # pyrefly: ignore[bad-argument-type]
+            constraints=analysis_constraints,  # pyrefly: ignore[bad-argument-type]
             key=key,
             selection_train=processed_placebo_data.selection_train,
             selection_train_spend=processed_placebo_data.selection_train_spend,
@@ -152,7 +168,7 @@ def _get_placebo_masks(
             selection_train=processed_placebo_data.selection_train,
             filtered_data=processed_placebo_data.filtered_data,
             design_config=design_config,
-            constraints=design_obj.constraints,  # pyrefly: ignore[bad-argument-type]
+            constraints=analysis_constraints,  # pyrefly: ignore[bad-argument-type]
             geo_stratum_labels=design_obj.geo_stratum_labels[
                 treatment.mask == 0
             ],

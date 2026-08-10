@@ -242,6 +242,50 @@ class AnalysisTest(parameterized.TestCase):
     # full_mask[1] = 1, full_mask[2] = 1, full_mask[4] = 0
     np.testing.assert_array_equal(full_mask, jnp.array([0, 1, 1, 0, 0]))
 
+  def test_get_effective_constraints(self):
+    constraints = api.Constraints(
+        excluded_geos={'G1'},
+        excluded_dates={pd.Timestamp('2024-01-01')},
+    )
+    design_obj = api.Design(
+        designs={},
+        control_geos={'G2'},
+        excluded_geos={'G1', 'G_OUTLIER'},
+        excluded_dates={pd.Timestamp('2024-01-01'), pd.Timestamp('2024-01-02')},
+        constraints=constraints,
+    )
+    effective_constraints = analysis._get_effective_constraints(design_obj)
+
+    # Validates that effective constraints are properly updated
+    self.assertIn('G_OUTLIER', effective_constraints.excluded_geos)
+    self.assertIn('G1', effective_constraints.excluded_geos)
+    self.assertIn(
+        pd.Timestamp('2024-01-02'), effective_constraints.excluded_dates
+    )
+    self.assertIn(
+        pd.Timestamp('2024-01-01'), effective_constraints.excluded_dates
+    )
+
+    # Validates that we didn't mutate the original constraints
+    self.assertNotIn('G_OUTLIER', constraints.excluded_geos)
+    self.assertNotIn(pd.Timestamp('2024-01-02'), constraints.excluded_dates)
+
+  def test_get_effective_constraints_none_constraints(self):
+    design_obj = api.Design(
+        designs={},
+        control_geos={'G2'},
+        excluded_geos={'G_OUTLIER'},
+        excluded_dates={pd.Timestamp('2024-01-02')},
+        constraints=None,
+    )
+    effective_constraints = analysis._get_effective_constraints(design_obj)
+
+    # Validates that it initializes a new Constraints object
+    self.assertIn('G_OUTLIER', effective_constraints.excluded_geos)
+    self.assertIn(
+        pd.Timestamp('2024-01-02'), effective_constraints.excluded_dates
+    )
+
   def test_analyze_random_assignment(self):
     data = self._create_sample_data(n_days=15, n_geos=6)
 
