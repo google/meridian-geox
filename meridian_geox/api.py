@@ -108,8 +108,10 @@ def _validate_duration(v: Any) -> datetime.timedelta:
 
 def _validate_dataframe(v: Any) -> pd.DataFrame:
   if isinstance(v, pd.DataFrame):
-    return v
-  df = pd.DataFrame(**v)
+    df = v.copy()
+  else:
+    df = pd.DataFrame(**v)
+  df.columns = df.columns.astype(str).str.lower()
   if DATE in df.columns:
     df[DATE] = pd.to_datetime(df[DATE])
   return df
@@ -200,11 +202,6 @@ class GeoGroup(enum.Enum):
   EXCLUDED = 3
 
 
-class SeMethod(enum.Enum):
-  PLACEBO = 1
-  SIMPLIFIED_DESIGN_AWARE_PLACEBO = 2
-
-
 @pydantic.dataclasses.dataclass
 class DesignConfig:
   """Parameters for designing a GeoX study."""
@@ -238,8 +235,6 @@ class DesignConfig:
   # using a dictionary. If a single float is provided for a multi-cell
   # design, it will be applied to all Holdback cells.
   cost_per_incremental_conversion: Union[float, dict[str, float]] = 1.0
-  # TODO: Consider moving this to a method specific config.
-  covariate_columns: list[str] = dataclasses.field(default_factory=list)
 
   @pydantic.model_validator(mode="after")
   def _normalize(self) -> "DesignConfig":
@@ -264,8 +259,6 @@ class DesignConfig:
   n_candidates: Annotated[int, pydantic.Field(gt=0)] = 100_000
   # Number of fully scored candidates.
   n_ranked_candidates: Annotated[int, pydantic.Field(gt=0)] = 100
-  # Number of iterations for confidence interval estimation.
-  n_aa_test_iterations: Annotated[int, pydantic.Field(gt=0)] = 500
   max_candidate_generation_retries: Annotated[int, pydantic.Field(gt=0)] = 10
   # Random number generator seed.
   seed: int = 42
@@ -277,9 +270,6 @@ class DesignConfig:
   num_strata: Annotated[int, pydantic.Field(gt=0)] = 4
   # Number of iterations for k-means clustering.
   k_means_iterations: Annotated[int, pydantic.Field(gt=0)] = 10
-  # An integer that configures the generation of stratum label sequences.
-  # This should be larger than n_candidates for best results.
-  pad_length: Annotated[int, pydantic.Field(gt=0)] = 100_000
 
 
 @pydantic.dataclasses.dataclass
@@ -394,9 +384,6 @@ class DesignSet:
   # such as cell ID, design rank score, budget, minimum detectable effect,
   # statistical power, and other robustness and representativeness metrics.
   design_metrics: DataFrame = dataclasses.field(repr=False)
-  # TODO: Consider including provenance information such as input
-  # data and configs to make comparison/visualization easier.
-  design_data: DataFrame = dataclasses.field(repr=False)
 
 
 @pydantic.dataclasses.dataclass
@@ -440,6 +427,8 @@ class AnalysisConfig:
   # Advanced analysis parameters
   # Number of initial placebo candidates generated before selection.
   n_placebo_candidates: int = 100_000
+  # Number of top valid placebo candidates used for analysis.
+  n_top_placebos: Annotated[int, pydantic.Field(gt=0)] = 500
   # Minimum out-of-sample R-squared score required for a placebo design to be
   # kept for analysis.
   min_placebo_r2: float = 0.6

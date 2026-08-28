@@ -52,7 +52,6 @@ class SingleCellE2ETest(absltest.TestCase):
         cell_count=1,
         design_output_count=5,
         n_candidates=1000,
-        pad_length=1000,
     )
 
     constraints = api.Constraints(
@@ -68,7 +67,6 @@ class SingleCellE2ETest(absltest.TestCase):
 
     self.assertNotEmpty(selected_design.control_geos)
     self.assertNotEmpty(selected_design.designs['cell_1'].treatment_geos)
-
     # Check union of treatment, control, and excluded equals input geos.
     input_geos = set(design_data['location'].unique())
     design_geos = set(selected_design.control_geos)
@@ -121,7 +119,6 @@ class SingleCellE2ETest(absltest.TestCase):
         cell_count=1,
         design_output_count=5,
         n_candidates=1000,
-        pad_length=1000,
     )
 
     constraints = api.Constraints(
@@ -190,7 +187,6 @@ class SingleCellE2ETest(absltest.TestCase):
         cell_count=1,
         design_output_count=5,
         n_candidates=1000,
-        pad_length=1000,
     )
 
     constraints = api.Constraints(
@@ -350,7 +346,6 @@ class SingleCellE2ETest(absltest.TestCase):
         cell_count=1,
         design_output_count=5,
         n_candidates=500,
-        pad_length=1000,
     )
 
     constraints = api.Constraints(
@@ -432,13 +427,12 @@ class MulticellE2ETest(absltest.TestCase):
         cell_count=2,
         design_output_count=5,
         n_candidates=1000,
-        pad_length=1000,
     )
 
     constraints = api.Constraints(
         excluded_geos={'105'},
         budget_constraint={
-            'cell_1': api.Budget(budget_pct=1.0),
+            'cell_1': api.Budget(budget_pct=-1.0),
             'cell_2': api.Budget(budget_pct=1.0),
         },
         max_conversions_percent=0.3,
@@ -450,7 +444,6 @@ class MulticellE2ETest(absltest.TestCase):
     selected_design = design_set.designs[design_id]
 
     self.assertNotEmpty(selected_design.control_geos)
-
     input_geos = set(design_data['location'].unique())
     design_geos = set(selected_design.control_geos)
     design_geos.update(selected_design.designs['cell_1'].treatment_geos)

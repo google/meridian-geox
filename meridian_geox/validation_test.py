@@ -27,7 +27,7 @@ class ValidationTest(parameterized.TestCase):
 
   def setUp(self):
     super().setUp()
-    self.dates = pd.date_range('2024-01-01', periods=30)
+    self.dates = pd.date_range('2024-01-01', periods=40)
     self.geos = [f'G{i}' for i in range(10)]
     data_rows = []
     for d in self.dates:
@@ -68,9 +68,9 @@ class ValidationTest(parameterized.TestCase):
 
     self.analysis_config = api.AnalysisConfig(
         design=self.design,
-        analysis_start_date=pd.Timestamp('2024-01-21'),
-        analysis_end_date=pd.Timestamp('2024-01-30'),
-        pretest_end_date=pd.Timestamp('2024-01-20'),
+        analysis_start_date=pd.Timestamp('2024-01-31'),
+        analysis_end_date=pd.Timestamp('2024-02-09'),
+        pretest_end_date=pd.Timestamp('2024-01-30'),
     )
 
   def test_validate_general_checks_success(self):
@@ -176,7 +176,7 @@ class ValidationTest(parameterized.TestCase):
 
   def test_validate_design_input_not_enough_dates(self):
     design_config = api.DesignConfig(
-        experiment_duration=datetime.timedelta(days=11),
+        experiment_duration=datetime.timedelta(days=14),
         experiment_types=api.ExperimentType.HOLDBACK,
     )
     errors = validation.validate_design_input(
@@ -276,7 +276,7 @@ class ValidationTest(parameterized.TestCase):
         cost_per_incremental_conversion=0.0,
     )
     constraints = api.Constraints(
-        budget_constraint={'cell_1': api.Budget(budget_pct=0.5)}
+        budget_constraint={'cell_1': api.Budget(budget_pct=-0.5)}
     )
     errors = validation.validate_design_input(
         self.data, design_config, constraints
@@ -321,9 +321,10 @@ class ValidationTest(parameterized.TestCase):
           self.data, design_config, self.constraints
       )
       mock_warning.assert_any_call(
-          '%s is %s but budget_pct is not provided. Using 100%% as default.',
+          '%s is %s but budget_pct is not provided. Using %d%% as default.',
           'cell_1',
           'GO_DARK',
+          -100,
       )
 
   def test_validate_design_input_go_dark_absolute_budget_warning(self):
@@ -357,13 +358,43 @@ class ValidationTest(parameterized.TestCase):
     self.assertLen(errors, 1)
     self.assertIn('Experiment types must be set for 3 cells', errors[0])
 
+  def test_validate_design_input_go_dark_positive_budget_pct_error(self):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=5),
+        experiment_types={'cell_1': api.ExperimentType.GO_DARK},
+    )
+    constraints = api.Constraints(
+        budget_constraint={'cell_1': api.Budget(budget_pct=0.5)}
+    )
+    with self.assertRaisesRegex(
+        ValueError,
+        'Cell cell_1 is GO_DARK but has positive budget_pct 0.5. Expected a'
+        ' negative value.',
+    ):
+      validation.validate_design_input(self.data, design_config, constraints)
+
+  def test_validate_design_input_heavy_up_negative_budget_pct_error(self):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=5),
+        experiment_types={'cell_1': api.ExperimentType.HEAVY_UP},
+    )
+    constraints = api.Constraints(
+        budget_constraint={'cell_1': api.Budget(budget_pct=-0.5)}
+    )
+    with self.assertRaisesRegex(
+        ValueError,
+        'Cell cell_1 is HEAVY_UP but has negative budget_pct -0.5. Expected a'
+        ' positive value.',
+    ):
+      validation.validate_design_input(self.data, design_config, constraints)
+
   def test_validate_design_input_single_cell_godark_missing_spend_error(self):
     design_config = api.DesignConfig(
         experiment_duration=datetime.timedelta(days=5),
         experiment_types=api.ExperimentType.GO_DARK,
     )
     constraints = api.Constraints(
-        budget_constraint={'cell_1': api.Budget(budget_pct=0.5)}
+        budget_constraint={'cell_1': api.Budget(budget_pct=-0.5)}
     )
     data = self.data.drop(columns=['spend'])
     errors = validation.validate_design_input(data, design_config, constraints)
@@ -387,8 +418,8 @@ class ValidationTest(parameterized.TestCase):
     )
     constraints = api.Constraints(
         budget_constraint={
-            'cell_1': api.Budget(budget_pct=0.5),
-            'cell_2': api.Budget(budget_pct=0.5),
+            'cell_1': api.Budget(budget_pct=-0.5),
+            'cell_2': api.Budget(budget_pct=-0.5),
         }
     )
     data = self.data.copy()
@@ -479,7 +510,7 @@ class ValidationTest(parameterized.TestCase):
     errors = validation.validate_analysis_input(self.data, config)
     self.assertNotEmpty(errors)
     self.assertIn(
-        'Need at least 2 * experiment duration pretest dates during analysis'
+        'Need at least 3 * experiment duration pretest dates during analysis'
         ' phase.',
         errors[0],
     )

@@ -230,9 +230,7 @@ def _get_placebo_masks(
 
   # Sort by R2 descending
   indices = jnp.argsort(valid_r2)[::-1]
-  selected_subset = valid_placebos[
-      indices[: design_config.n_aa_test_iterations]
-  ]
+  selected_subset = valid_placebos[indices[: analysis_config.n_top_placebos]]
 
   return jax.vmap(_get_full_mask, in_axes=(None, 0))(
       treatment.mask, selected_subset
@@ -499,6 +497,9 @@ def analyze(
     data_quality_check_config: api.QualityCheckConfig = api.QualityCheckConfig(),
 ) -> api.AnalysisResult:
   """Analyzes a GeoX experiment."""
+
+  data = data.copy()
+  data.columns = data.columns.astype(str).str.lower()
 
   error_messages: list[str] = validation.validate_analysis_input(
       data, analysis_config

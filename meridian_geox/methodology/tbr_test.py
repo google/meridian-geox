@@ -168,18 +168,11 @@ class TbrTest(parameterized.TestCase):
     masks = jnp.zeros((1, n_geos))
     masks = masks.at[0, :n_treated].set(1.0)
 
-    # Dummy keys for simplified design aware placebo test.
-    key = jax.random.PRNGKey(0)
-    random_keys = jax.random.split(key, 1)
-
     results = tbr.get_mde(
         data_pre=data_pre,
         data_val=data_val,
         treatment_masks=masks,
-        random_keys=random_keys,
-        n_permutations=100,
         z_score_sum=1.96,
-        se_method=api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO,
     )
 
     # MDE should be 0 because all effects are exactly 0 (SE=0).
@@ -218,18 +211,12 @@ class TbrTest(parameterized.TestCase):
 
     z_score_sum = 1.96
 
-    # Dummy keys for simplified design aware placebo test.
-    random_keys = jax.random.split(key, n_designs)
-
     results = tbr.get_mde(
         data_pre=data_pre,
         data_val=data_val,
         treatment_masks=masks,
-        random_keys=random_keys,
-        n_permutations=100,
         z_score_sum=z_score_sum,
         test_type=test_type,
-        se_method=api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO,
     )
 
     # Squeeze the results to remove the extra dimension since there is only 1
@@ -316,17 +303,11 @@ class TbrTest(parameterized.TestCase):
     masks = jnp.zeros((n_designs, n_geos))
     masks = masks.at[0, :n_treated].set(1.0)
 
-    # Dummy keys for simplified design aware placebo test.
-    random_keys = jax.random.split(key, n_designs)
-
     results = tbr.get_mde(
         data_pre=data_pre,
         data_val=data_val,
         treatment_masks=masks,
-        random_keys=random_keys,
-        n_permutations=100,
         z_score_sum=1.96,
-        se_method=api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO,
     )
 
     # With only 1 design, std(effects) is 0.
@@ -367,17 +348,13 @@ class TbrTest(parameterized.TestCase):
       masks = masks.at[i, (i + 3) % n_geos].set(2.0)
 
     z_score_sum = 1.96
-    random_keys = jax.random.split(key, n_designs)
 
     results = tbr.get_mde(
         data_pre=data_pre,
         data_val=data_val,
         treatment_masks=masks,
-        random_keys=random_keys,
-        n_permutations=100,
         z_score_sum=z_score_sum,
         test_type=test_type,
-        se_method=api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO,
         cell_ids=cell_ids,
     )
 
@@ -455,200 +432,17 @@ class TbrTest(parameterized.TestCase):
 
     masks = jnp.array([[1.0, 1.0, 2.0, 2.0, 0.0, 0.0]])
 
-    key = jax.random.PRNGKey(0)
-    random_keys = jax.random.split(key, 1)
-
     results = tbr.get_mde(
         data_pre=data_pre,
         data_val=data_val,
         treatment_masks=masks,
-        random_keys=random_keys,
-        n_permutations=100,
         z_score_sum=1.96,
-        se_method=api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO,
         cell_ids=cell_ids,
     )
 
     # MDE should be 0 because all effects are exactly 0 (SE=0).
     np.testing.assert_allclose(results.mde_abs, 0.0, rtol=5e-5, atol=5e-5)
     np.testing.assert_allclose(results.mde_pct, 0.0, rtol=5e-5, atol=5e-5)
-
-  def test_get_mde_multicell_placebo_raises_not_implemented(self):
-    t_pre = 10
-    t_val = 5
-    n_geos = 6
-    cell_ids = jnp.array([1.0, 2.0])
-
-    data_pre = jnp.zeros((t_pre, n_geos))
-    data_val = jnp.zeros((t_val, n_geos))
-    masks = jnp.array([[1.0, 1.0, 2.0, 2.0, 0.0, 0.0]])
-
-    key = jax.random.PRNGKey(0)
-    random_keys = jax.random.split(key, 1)
-
-    with self.assertRaisesRegex(
-        NotImplementedError,
-        'Multicell support is not implemented for _get_mde_placebo.*',
-    ):
-      tbr.get_mde(
-          data_pre=data_pre,
-          data_val=data_val,
-          treatment_masks=masks,
-          random_keys=random_keys,
-          n_permutations=20,
-          z_score_sum=1.96,
-          se_method=api.SeMethod.PLACEBO,
-          cell_ids=cell_ids,
-      )
-
-  @parameterized.named_parameters(
-      dict(
-          testcase_name='two_sided',
-          test_type=api.TestType.TWO_SIDED,
-      ),
-      dict(
-          testcase_name='one_sided',
-          test_type=api.TestType.ONE_SIDED,
-      ),
-  )
-  def test_get_mde_placebo(self, test_type):
-    t_pre = 10
-    t_val = 5
-    n_geos = 10
-    n_treated = 4
-    n_designs = 2
-
-    key = jax.random.PRNGKey(42)
-    # Generate random data.
-    data_pre = jax.random.normal(key, (t_pre, n_geos))
-    data_val = jax.random.normal(key, (t_val, n_geos))
-
-    # Create distinct masks.
-    masks = jnp.zeros((n_designs, n_geos))
-    for i in range(n_designs):
-      # Treat units i to i+n_treated.
-      start = i
-      end = start + n_treated
-      masks = masks.at[i, start:end].set(1.0)
-
-    z_score_sum = 1.96
-    random_keys = jax.random.split(key, n_designs)
-    n_permutations = 50
-
-    results = tbr.get_mde(
-        data_pre=data_pre,
-        data_val=data_val,
-        treatment_masks=masks,
-        random_keys=random_keys,
-        n_permutations=n_permutations,
-        z_score_sum=z_score_sum,
-        test_type=test_type,
-        se_method=api.SeMethod.PLACEBO,
-    )
-
-    # Squeeze the results to remove the extra dimension since there is only 1
-    # treatment cell.
-    results.mde_abs = results.mde_abs.squeeze()
-    results.mde_pct = results.mde_pct.squeeze()
-    results.p_value = results.p_value.squeeze()
-    results.observed_conversions = results.observed_conversions.squeeze()
-    results.counterfactual_conversions = (
-        results.counterfactual_conversions.squeeze()
-    )
-
-    self.assertEqual(results.mde_abs.shape, (n_designs,))
-    self.assertEqual(results.mde_pct.shape, (n_designs,))
-    self.assertEqual(results.p_value.shape, (n_designs,))
-    self.assertEqual(
-        results.observed_conversions.shape, (n_designs, t_pre + t_val)
-    )
-    self.assertEqual(
-        results.counterfactual_conversions.shape, (n_designs, t_pre + t_val)
-    )
-
-    # With random data, MDE should be > 0.
-    self.assertTrue(jnp.all(results.mde_abs > 0.0))
-    self.assertTrue(jnp.all(results.mde_pct > 0.0))
-
-    # P-values should be in [0, 1].
-    self.assertTrue(jnp.all(results.p_value >= 0.0))
-    self.assertTrue(jnp.all(results.p_value <= 1.0))
-
-  def test_get_mde_identical_geos_placebo(self):
-    t_pre = 10
-    t_val = 5
-    n_geos = 10
-    n_treated = 2
-
-    # Create identical data for all geos.
-    time_series = jnp.arange(t_pre + t_val, dtype=jnp.float32)
-    data = jnp.tile(time_series[:, None], (1, n_geos))
-    data_pre = data[:t_pre, :]
-    data_val = data[t_pre:, :]
-
-    masks = jnp.zeros((1, n_geos))
-    masks = masks.at[0, :n_treated].set(1.0)
-
-    key = jax.random.PRNGKey(0)
-    random_keys = jax.random.split(key, 1)
-
-    results = tbr.get_mde(
-        data_pre=data_pre,
-        data_val=data_val,
-        treatment_masks=masks,
-        random_keys=random_keys,
-        n_permutations=20,
-        z_score_sum=1.96,
-        se_method=api.SeMethod.PLACEBO,
-    )
-
-    # Placebo effects should all be 0 because any control group fits perfectly.
-    # Therefore std(placebo_effects) = 0 -> MDE = 0.
-    np.testing.assert_allclose(results.mde_abs, 0.0, rtol=5e-5, atol=5e-5)
-    np.testing.assert_allclose(results.mde_pct, 0.0, rtol=5e-5, atol=5e-5)
-
-  def test_get_mde_placebo_reproducibility(self):
-    t_pre = 10
-    t_val = 5
-    n_geos = 10
-    n_treated = 4
-    n_designs = 2
-
-    key = jax.random.PRNGKey(42)
-    data_pre = jax.random.normal(key, (t_pre, n_geos))
-    data_val = jax.random.normal(key, (t_val, n_geos))
-
-    masks = jnp.zeros((n_designs, n_geos))
-    for i in range(n_designs):
-      masks = masks.at[i, :n_treated].set(1.0)
-
-    z_score_sum = 1.96
-    random_keys = jax.random.split(key, n_designs)
-    n_permutations = 50
-
-    results1 = tbr.get_mde(
-        data_pre=data_pre,
-        data_val=data_val,
-        treatment_masks=masks,
-        random_keys=random_keys,
-        n_permutations=n_permutations,
-        z_score_sum=z_score_sum,
-        se_method=api.SeMethod.PLACEBO,
-    )
-
-    results2 = tbr.get_mde(
-        data_pre=data_pre,
-        data_val=data_val,
-        treatment_masks=masks,
-        random_keys=random_keys,
-        n_permutations=n_permutations,
-        z_score_sum=z_score_sum,
-        se_method=api.SeMethod.PLACEBO,
-    )
-
-    np.testing.assert_allclose(results1.mde_abs, results2.mde_abs, atol=1e-6)
-    np.testing.assert_allclose(results1.mde_pct, results2.mde_pct, atol=1e-6)
-    np.testing.assert_allclose(results1.p_value, results2.p_value, atol=1e-6)
 
   def test_generate_analysis_holdback(self):
     # Setup 6 geos: 2 treatment, 4 control

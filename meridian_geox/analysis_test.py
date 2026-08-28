@@ -64,6 +64,7 @@ class AnalysisTest(parameterized.TestCase):
     )
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=design_obj,
         analysis_start_date=pd.Timestamp('2024-01-01'),
         analysis_end_date=pd.Timestamp('2024-01-05'),
@@ -84,6 +85,7 @@ class AnalysisTest(parameterized.TestCase):
     data = self._create_sample_data(n_days=10, n_geos=2)
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=api.Design(designs={}, control_geos=set(), excluded_geos=set()),
         analysis_start_date=pd.Timestamp('2024-01-06'),
         analysis_end_date=pd.Timestamp('2024-01-08'),
@@ -103,6 +105,7 @@ class AnalysisTest(parameterized.TestCase):
     data = self._create_sample_data(n_days=10, n_geos=2)
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=api.Design(designs={}, control_geos=set(), excluded_geos=set()),
         analysis_start_date=pd.Timestamp('2024-01-08'),
         analysis_end_date=pd.Timestamp('2024-01-10'),
@@ -127,7 +130,6 @@ class AnalysisTest(parameterized.TestCase):
         experiment_duration=datetime.timedelta(days=2),
         experiment_types=api.ExperimentType.HOLDBACK,
         alpha=0.05,
-        n_aa_test_iterations=100,
     )
     design_obj = api.Design(
         designs={},
@@ -138,6 +140,7 @@ class AnalysisTest(parameterized.TestCase):
     # Analysis config has no alpha/test_type, should be filled from design.
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=design_obj,
         analysis_start_date=pd.Timestamp('2024-01-01'),
         analysis_end_date=pd.Timestamp('2024-01-05'),
@@ -295,7 +298,6 @@ class AnalysisTest(parameterized.TestCase):
         experiment_types=api.ExperimentType.HOLDBACK,
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         seed=42,
-        n_aa_test_iterations=10,
     )
 
     study_design = api.Design(
@@ -317,6 +319,7 @@ class AnalysisTest(parameterized.TestCase):
 
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-11'),
         analysis_end_date=pd.Timestamp('2024-01-15'),
@@ -401,7 +404,6 @@ class AnalysisTest(parameterized.TestCase):
         experiment_types=api.ExperimentType.HOLDBACK,
         geo_assignment_rule=api.GeoAssignmentRule.STRATIFIED_SAMPLING,
         seed=42,
-        n_aa_test_iterations=10,
     )
 
     study_design = api.Design(
@@ -424,6 +426,7 @@ class AnalysisTest(parameterized.TestCase):
 
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-11'),
         analysis_end_date=pd.Timestamp('2024-01-15'),
@@ -515,7 +518,7 @@ class AnalysisTest(parameterized.TestCase):
     )
     analysis_config = api.AnalysisConfig(
         design=study_design,
-        analysis_start_date=pd.Timestamp('2024-01-07'),
+        analysis_start_date=pd.Timestamp('2024-01-10'),
         analysis_end_date=pd.Timestamp('2024-01-15'),
     )
 
@@ -562,14 +565,15 @@ class AnalysisTest(parameterized.TestCase):
     )
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
-        analysis_start_date=pd.Timestamp('2024-01-06'),
-        analysis_end_date=pd.Timestamp('2024-01-10'),
+        analysis_start_date=pd.Timestamp('2024-01-07'),
+        analysis_end_date=pd.Timestamp('2024-01-11'),
         alpha=0.1,
         test_type=api.TestType.TWO_SIDED,
     )
 
-    data = self._create_sample_data(n_days=10, n_geos=4)
+    data = self._create_sample_data(n_days=11, n_geos=4)
     with self.assertRaisesRegex(ValueError, 'Unsupported methodology'):
       analysis.analyze(data, config)
 
@@ -584,7 +588,6 @@ class AnalysisTest(parameterized.TestCase):
         experiment_types=api.ExperimentType.HOLDBACK,
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         seed=42,
-        n_aa_test_iterations=5,
     )
 
     # G10 is excluded
@@ -609,6 +612,7 @@ class AnalysisTest(parameterized.TestCase):
 
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-11'),
         analysis_end_date=pd.Timestamp('2024-01-15'),
@@ -635,7 +639,6 @@ class AnalysisTest(parameterized.TestCase):
         experiment_types=api.ExperimentType.HOLDBACK,
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         seed=42,
-        n_aa_test_iterations=5,
     )
 
     study_design = api.Design(
@@ -659,6 +662,7 @@ class AnalysisTest(parameterized.TestCase):
 
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-11'),
         analysis_end_date=pd.Timestamp('2024-01-15'),
@@ -716,6 +720,7 @@ class AnalysisTest(parameterized.TestCase):
 
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-01'),
         analysis_end_date=pd.Timestamp('2024-01-05'),
@@ -735,7 +740,6 @@ class AnalysisTest(parameterized.TestCase):
         experiment_types=api.ExperimentType.HOLDBACK,
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         seed=42,
-        n_aa_test_iterations=5,
     )
 
     study_design = api.Design(
@@ -759,6 +763,7 @@ class AnalysisTest(parameterized.TestCase):
 
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-11'),
         analysis_end_date=pd.Timestamp('2024-01-15'),
@@ -805,7 +810,6 @@ class AnalysisTest(parameterized.TestCase):
         seed=42,
         cell_count=2,
         n_candidates=5,
-        n_aa_test_iterations=10,
     )
 
     study_design = api.Design(
@@ -834,6 +838,7 @@ class AnalysisTest(parameterized.TestCase):
 
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-11'),
         analysis_end_date=pd.Timestamp('2024-01-15'),
@@ -856,7 +861,7 @@ class AnalysisTest(parameterized.TestCase):
       self.assertIsNotNone(metrics.icpd)
 
   def test_analyze_estimated_bau_spend_holdback(self):
-    data = self._create_sample_data(n_days=15, n_geos=10, include_spend=True)
+    data = self._create_sample_data(n_days=20, n_geos=10, include_spend=True)
 
     design_config = api.DesignConfig(
         experiment_duration=datetime.timedelta(days=5),
@@ -864,7 +869,6 @@ class AnalysisTest(parameterized.TestCase):
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         seed=42,
         n_candidates=3,
-        n_aa_test_iterations=5,
     )
 
     study_design = api.Design(
@@ -886,9 +890,10 @@ class AnalysisTest(parameterized.TestCase):
 
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
-        analysis_start_date=pd.Timestamp('2024-01-11'),
-        analysis_end_date=pd.Timestamp('2024-01-15'),
+        analysis_start_date=pd.Timestamp('2024-01-16'),
+        analysis_end_date=pd.Timestamp('2024-01-20'),
         alpha=0.1,
         test_type=api.TestType.TWO_SIDED,
     )
@@ -898,10 +903,10 @@ class AnalysisTest(parameterized.TestCase):
     self.assertIsNotNone(metrics.descriptive_metrics)
     assert metrics.descriptive_metrics is not None
 
-    pretest_data = data[data[api.DATE] < pd.Timestamp('2024-01-11')]
+    pretest_data = data[data[api.DATE] < pd.Timestamp('2024-01-16')]
     test_data = data[
-        (data[api.DATE] >= pd.Timestamp('2024-01-11'))
-        & (data[api.DATE] <= pd.Timestamp('2024-01-15'))
+        (data[api.DATE] >= pd.Timestamp('2024-01-16'))
+        & (data[api.DATE] <= pd.Timestamp('2024-01-20'))
     ]
 
     treatment_geos = {'G1', 'G2'}
@@ -935,7 +940,7 @@ class AnalysisTest(parameterized.TestCase):
   def test_analyze_estimated_bau_spend_go_dark_or_heavy_up(
       self, experiment_type
   ):
-    data = self._create_sample_data(n_days=15, n_geos=10, include_spend=True)
+    data = self._create_sample_data(n_days=20, n_geos=10, include_spend=True)
 
     design_config = api.DesignConfig(
         experiment_duration=datetime.timedelta(days=5),
@@ -943,7 +948,6 @@ class AnalysisTest(parameterized.TestCase):
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         seed=42,
         n_candidates=3,
-        n_aa_test_iterations=5,
     )
 
     study_design = api.Design(
@@ -965,9 +969,10 @@ class AnalysisTest(parameterized.TestCase):
 
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
-        analysis_start_date=pd.Timestamp('2024-01-11'),
-        analysis_end_date=pd.Timestamp('2024-01-15'),
+        analysis_start_date=pd.Timestamp('2024-01-16'),
+        analysis_end_date=pd.Timestamp('2024-01-20'),
         alpha=0.1,
         test_type=api.TestType.TWO_SIDED,
     )
@@ -977,10 +982,10 @@ class AnalysisTest(parameterized.TestCase):
     self.assertIsNotNone(metrics.descriptive_metrics)
     assert metrics.descriptive_metrics is not None
 
-    pretest_data = data[data[api.DATE] < pd.Timestamp('2024-01-11')]
+    pretest_data = data[data[api.DATE] < pd.Timestamp('2024-01-16')]
     test_data = data[
-        (data[api.DATE] >= pd.Timestamp('2024-01-11'))
-        & (data[api.DATE] <= pd.Timestamp('2024-01-15'))
+        (data[api.DATE] >= pd.Timestamp('2024-01-16'))
+        & (data[api.DATE] <= pd.Timestamp('2024-01-20'))
     ]
 
     treatment_geos = {'G1', 'G2'}
@@ -1022,7 +1027,7 @@ class AnalysisTest(parameterized.TestCase):
     )
 
   def test_analyze_estimated_bau_spend_multicell(self):
-    data = self._create_sample_data(n_days=15, n_geos=50, include_spend=True)
+    data = self._create_sample_data(n_days=20, n_geos=50, include_spend=True)
 
     design_config = api.DesignConfig(
         experiment_duration=datetime.timedelta(days=5),
@@ -1030,7 +1035,6 @@ class AnalysisTest(parameterized.TestCase):
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         seed=42,
         n_candidates=3,
-        n_aa_test_iterations=5,
     )
 
     study_design = api.Design(
@@ -1059,9 +1063,10 @@ class AnalysisTest(parameterized.TestCase):
 
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
-        analysis_start_date=pd.Timestamp('2024-01-11'),
-        analysis_end_date=pd.Timestamp('2024-01-15'),
+        analysis_start_date=pd.Timestamp('2024-01-16'),
+        analysis_end_date=pd.Timestamp('2024-01-20'),
         alpha=0.1,
         test_type=api.TestType.TWO_SIDED,
     )
@@ -1070,10 +1075,10 @@ class AnalysisTest(parameterized.TestCase):
     metrics_cell1 = result.results['cell_1']
     assert metrics_cell1.descriptive_metrics is not None
 
-    pretest_data = data[data[api.DATE] < pd.Timestamp('2024-01-11')]
+    pretest_data = data[data[api.DATE] < pd.Timestamp('2024-01-16')]
     test_data = data[
-        (data[api.DATE] >= pd.Timestamp('2024-01-11'))
-        & (data[api.DATE] <= pd.Timestamp('2024-01-15'))
+        (data[api.DATE] >= pd.Timestamp('2024-01-16'))
+        & (data[api.DATE] <= pd.Timestamp('2024-01-20'))
     ]
 
     treatment_geos = {'G1', 'G2'}
@@ -1103,7 +1108,7 @@ class AnalysisTest(parameterized.TestCase):
     )
 
   def test_analyze_estimated_bau_spend_unsupported_type(self):
-    data = self._create_sample_data(n_days=15, n_geos=10, include_spend=True)
+    data = self._create_sample_data(n_days=20, n_geos=10, include_spend=True)
 
     design_config = api.DesignConfig(
         experiment_duration=datetime.timedelta(days=5),
@@ -1111,7 +1116,6 @@ class AnalysisTest(parameterized.TestCase):
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         seed=42,
         n_candidates=3,
-        n_aa_test_iterations=5,
     )
 
     study_design = api.Design(
@@ -1133,9 +1137,10 @@ class AnalysisTest(parameterized.TestCase):
 
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
-        analysis_start_date=pd.Timestamp('2024-01-11'),
-        analysis_end_date=pd.Timestamp('2024-01-15'),
+        analysis_start_date=pd.Timestamp('2024-01-16'),
+        analysis_end_date=pd.Timestamp('2024-01-20'),
         alpha=0.1,
         test_type=api.TestType.TWO_SIDED,
     )
@@ -1197,9 +1202,10 @@ class AnalysisTest(parameterized.TestCase):
     )
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
-        analysis_start_date=pd.Timestamp('2024-01-11'),
-        analysis_end_date=pd.Timestamp('2024-01-15'),
+        analysis_start_date=pd.Timestamp('2024-01-16'),
+        analysis_end_date=pd.Timestamp('2024-01-20'),
     )
     result = analysis._get_estimated_bau_spend(
         analysis_config=config,
@@ -1210,7 +1216,7 @@ class AnalysisTest(parameterized.TestCase):
             pretest=jnp.array([[10.0, 10.0]]),
             test=jnp.array([[10.0, 10.0]]),
             pretest_dates=pd.date_range('2024-01-01', periods=1),
-            test_dates=pd.date_range('2024-01-11', periods=1),
+            test_dates=pd.date_range('2024-01-16', periods=1),
         ),
         experiment_type=api.ExperimentType.HOLDBACK,
     )
@@ -1229,16 +1235,17 @@ class AnalysisTest(parameterized.TestCase):
     )
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
-        analysis_start_date=pd.Timestamp('2024-01-11'),
-        analysis_end_date=pd.Timestamp('2024-01-15'),
+        analysis_start_date=pd.Timestamp('2024-01-16'),
+        analysis_end_date=pd.Timestamp('2024-01-20'),
     )
 
     cell_spend = analysis.TimeSeries(
         pretest=jnp.array([[10.0, 10.0]]),
         test=jnp.array([[10.0, 10.0]]),
         pretest_dates=pd.date_range('2024-01-01', periods=1),
-        test_dates=pd.date_range('2024-01-11', periods=1),
+        test_dates=pd.date_range('2024-01-16', periods=1),
     )
 
     result = analysis._get_estimated_bau_spend(
@@ -1272,16 +1279,17 @@ class AnalysisTest(parameterized.TestCase):
     )
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
-        analysis_start_date=pd.Timestamp('2024-01-11'),
-        analysis_end_date=pd.Timestamp('2024-01-15'),
+        analysis_start_date=pd.Timestamp('2024-01-16'),
+        analysis_end_date=pd.Timestamp('2024-01-20'),
     )
 
     cell_spend = analysis.TimeSeries(
         pretest=jnp.array([[10.0, 10.0]]),
         test=jnp.array([[10.0, 10.0]]),
         pretest_dates=pd.date_range('2024-01-01', periods=1),
-        test_dates=pd.date_range('2024-01-11', periods=1),
+        test_dates=pd.date_range('2024-01-16', periods=1),
     )
 
     with absltest.mock.patch.object(
@@ -1319,16 +1327,17 @@ class AnalysisTest(parameterized.TestCase):
     )
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
-        analysis_start_date=pd.Timestamp('2024-01-11'),
-        analysis_end_date=pd.Timestamp('2024-01-15'),
+        analysis_start_date=pd.Timestamp('2024-01-16'),
+        analysis_end_date=pd.Timestamp('2024-01-20'),
     )
 
     cell_spend = analysis.TimeSeries(
         pretest=jnp.ones((0, 2)),
         test=jnp.ones((1, 2)),
         pretest_dates=pd.date_range('2024-01-01', periods=0),
-        test_dates=pd.date_range('2024-01-11', periods=1),
+        test_dates=pd.date_range('2024-01-16', periods=1),
     )
 
     result = analysis._get_estimated_bau_spend(
@@ -1362,16 +1371,17 @@ class AnalysisTest(parameterized.TestCase):
     )
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
-        analysis_start_date=pd.Timestamp('2024-01-11'),
-        analysis_end_date=pd.Timestamp('2024-01-15'),
+        analysis_start_date=pd.Timestamp('2024-01-16'),
+        analysis_end_date=pd.Timestamp('2024-01-20'),
     )
 
     cell_spend = analysis.TimeSeries(
         pretest=jnp.ones((1, 2)),
         test=jnp.ones((0, 2)),
         pretest_dates=pd.date_range('2024-01-01', periods=1),
-        test_dates=pd.date_range('2024-01-11', periods=0),
+        test_dates=pd.date_range('2024-01-16', periods=0),
     )
 
     result = analysis._get_estimated_bau_spend(
@@ -1405,16 +1415,17 @@ class AnalysisTest(parameterized.TestCase):
     )
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
+        n_top_placebos=2,
         design=study_design,
-        analysis_start_date=pd.Timestamp('2024-01-11'),
-        analysis_end_date=pd.Timestamp('2024-01-15'),
+        analysis_start_date=pd.Timestamp('2024-01-16'),
+        analysis_end_date=pd.Timestamp('2024-01-20'),
     )
 
     cell_spend = analysis.TimeSeries(
         pretest=jnp.ones((1, 2)),
         test=jnp.ones((1, 2)),
         pretest_dates=pd.date_range('2024-01-01', periods=1),
-        test_dates=pd.date_range('2024-01-11', periods=1),
+        test_dates=pd.date_range('2024-01-16', periods=1),
     )
 
     result = analysis._get_estimated_bau_spend(
@@ -1439,7 +1450,6 @@ class AnalysisTest(parameterized.TestCase):
     # This ensures that we aggregate R-squared correctly across all metrics.
     design_config = api.DesignConfig(
         n_candidates=5,
-        n_aa_test_iterations=2,
         experiment_duration=datetime.timedelta(days=1),
         experiment_types={
             'cell_1': api.ExperimentType.HOLDBACK,
@@ -1496,9 +1506,10 @@ class AnalysisTest(parameterized.TestCase):
 
     analysis_config = api.AnalysisConfig(
         n_placebo_candidates=5,
+        n_top_placebos=2,
         design=design_obj,
-        analysis_start_date=pd.Timestamp('2024-01-11'),
-        analysis_end_date=pd.Timestamp('2024-01-15'),
+        analysis_start_date=pd.Timestamp('2024-01-16'),
+        analysis_end_date=pd.Timestamp('2024-01-20'),
         min_placebo_r2=0.0,
         min_placebo_count_warning=0,
         min_placebo_count_error=0,
@@ -1532,7 +1543,6 @@ class AnalysisTest(parameterized.TestCase):
     # Test R-squared thresholding (min_placebo_r2) and warning/error thresholds
     design_config = api.DesignConfig(
         n_candidates=1000,
-        n_aa_test_iterations=500,
         experiment_duration=datetime.timedelta(days=1),
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
     )
@@ -1563,9 +1573,10 @@ class AnalysisTest(parameterized.TestCase):
 
     analysis_config = api.AnalysisConfig(
         n_placebo_candidates=1000,
+        n_top_placebos=500,
         design=design_obj,
-        analysis_start_date=pd.Timestamp('2024-01-11'),
-        analysis_end_date=pd.Timestamp('2024-01-15'),
+        analysis_start_date=pd.Timestamp('2024-01-16'),
+        analysis_end_date=pd.Timestamp('2024-01-20'),
         min_placebo_r2=0.6,
         min_placebo_count_warning=100,
         min_placebo_count_error=10,
@@ -1589,7 +1600,7 @@ class AnalysisTest(parameterized.TestCase):
 
     # 1. Abundance state: 1000 candidates, all pass R2 filter (>= 0.6)
     # Expected: filter leaves 1000, then sorts and subsets to top 500
-    # (n_aa_test_iterations)
+    # (n_top_placebos)
     r2_abundant = jnp.linspace(0.61, 0.99, 1000).reshape((1000, 1))
     result = run_get_placebo_masks(r2_abundant)
     self.assertEqual(result.shape[0], 500)

@@ -183,7 +183,6 @@ class MdeParams:
   """Parameters for MDE calculation."""
 
   top_candidates: jnp.ndarray
-  keys: jax.Array
   z_score_sum: float
   top_indices: jnp.ndarray
 
@@ -192,7 +191,6 @@ def _get_params_for_mde_calculation(
     design_config: api.DesignConfig,
     r2_scores: jnp.ndarray,
     candidates: jnp.ndarray,
-    key: jax.Array,
 ) -> MdeParams:
   """Prepares parameters for MDE calculation."""
   # 1. Select top candidates based on out of sample R2.
@@ -205,10 +203,7 @@ def _get_params_for_mde_calculation(
   top_indices = sorted_indices[:n_top]
   top_candidates = candidates[top_indices]
 
-  # 2. Generate keys for A/A testing.
-  keys = jax.random.split(key, n_top)
-
-  # 3. Calculate Z-score sum for MDE calculation.
+  # 2. Calculate Z-score sum for MDE calculation.
   if design_config.test_type == api.TestType.TWO_SIDED:
     z_alpha = stats.norm.ppf(1 - design_config.alpha / 2)
   else:
@@ -219,7 +214,6 @@ def _get_params_for_mde_calculation(
 
   return MdeParams(
       top_candidates=top_candidates,
-      keys=keys,
       z_score_sum=z_score_sum,
       top_indices=top_indices,
   )
@@ -320,9 +314,6 @@ def _rank_and_filter_metrics(
   top_design_ids = max_mde_df.sort_values(by='max_mde').head(limit)['design_id']
   filtered_metrics = metrics[metrics['design_id'].isin(top_design_ids)].copy()
 
-  ranks = {design_id: rank for rank, design_id in enumerate(top_design_ids, 1)}
-  filtered_metrics['rank'] = filtered_metrics['design_id'].map(ranks)
-
   filtered_metrics['design_id'] = pd.Categorical(
       filtered_metrics['design_id'], categories=top_design_ids, ordered=True
   )
@@ -420,10 +411,13 @@ def _get_design_summary(
       #    - Use MDE * treatment_conversion_volume * CPIC.
       budget_constraint = budget_constraints.get(cell_name)
       if util.is_go_dark_or_heavy_up(experiment_type):
+        default_pct = (
+            -1.0 if experiment_type == api.ExperimentType.GO_DARK else 1.0
+        )
         budget_percent = (
             budget_constraint.budget_pct
             if budget_constraint and budget_constraint.budget_pct is not None
-            else 1.0
+            else default_pct
         )
         estimation_eval_spend_np = estimation_eval_spend_np_dict[cell_name]
         treatment_geo_cost = float(
@@ -436,12 +430,14 @@ def _get_design_summary(
         cpic = cpics[cell_name]
         required_budget = total_mde_abs * cpic
 
+      design_implied_cpic = (
+          abs(required_budget / total_mde_abs) if total_mde_abs > 0 else 0.0
+      )
+
       cell_designs[cell_name] = api.PerCellDesign(
           treatment_geos=treatment_geos,
           minimum_detectable_effect=mde_pct,
-          design_implied_cpic=(
-              required_budget / total_mde_abs if total_mde_abs > 0 else 0.0
-          ),
+          design_implied_cpic=design_implied_cpic,
           p_value=float(p_values_np[i][metrics_cell_index]),
           budget=float(required_budget),
           counterfactual_conversions=pd.DataFrame({
@@ -463,13 +459,15 @@ def _get_design_summary(
           'r2': r2_scores_np[i][metrics_cell_index],
           'mde': mde_pct,
           'mde_abs': total_mde_abs,
-          'p_value': p_values_np[i][metrics_cell_index],
+          'p_value (AA)': p_values_np[i][metrics_cell_index],
           'budget': required_budget,
+          'design_implied_cpic': design_implied_cpic,
           'treatment_conversions_pct': (
               (treatment_conversion_volume / total_conversion_volume) * 100
               if total_conversion_volume > 0
               else 0.0
           ),
+          'treatment_geo_count': len(treatment_geos),
       })
 
     design_obj = api.Design(
@@ -508,13 +506,9 @@ def _get_design_summary(
                 provided_budget.budget,
             )
 
-  # TODO: Populate design_data.
-  design_data = pd.DataFrame()
-
   return api.DesignSet(
       designs=designs,
       design_metrics=design_metrics,
-      design_data=design_data,
   )
 
 
@@ -533,8 +527,10 @@ def run_design(
   """Designs GeoX experiments."""
   del design_scorer  # Unused in skeleton.
 
-  # TODO: Complete the design method following the steps below.
   # 1. Preprocess data.
+  data = data.copy()
+  data.columns = data.columns.astype(str).str.lower()
+
   # Normalization handles scalar-to-dict conversion in DesignConfig and
   # Constraints.
   # Make a deep copy to avoid mutating the user-supplied input constraints
@@ -570,7 +566,7 @@ def run_design(
   )
 
   key = jax.random.PRNGKey(design_config.seed)
-  candidates_key, mde_key = jax.random.split(key)
+  candidates_key, _ = jax.random.split(key)
 
   # 2. Generate candidates.
   geo_stratum_labels = None
@@ -624,7 +620,7 @@ def run_design(
 
   # 4. Filter and score candidates.
   mde_params: MdeParams = _get_params_for_mde_calculation(
-      design_config, r2_scores, candidates, mde_key
+      design_config, r2_scores, candidates
   )
   geos = sorted(processed_data.filtered_data[api.LOCATION].unique())
   if design_config.methodology == api.Methodology.TBR:
@@ -632,8 +628,6 @@ def run_design(
         processed_data.estimation_train,
         processed_data.estimation_eval,
         mde_params.top_candidates,
-        mde_params.keys,
-        design_config.n_aa_test_iterations,
         mde_params.z_score_sum,
         design_config.test_type,
         cell_ids=cell_ids,
@@ -693,15 +687,23 @@ def concat_design_reports(
     design_sets: list[api.DesignSet], design_output_count: int = 10
 ) -> api.DesignSet:
   """Concatenates a list of design sets and return the top N designs."""
+  unique_cell_counts = set()
+  for ds in design_sets:
+    if ds.designs:
+      first_design = next(iter(ds.designs.values()))
+      unique_cell_counts.add(len(first_design.designs))
+
+  if len(unique_cell_counts) > 1:
+    logging.warning(
+        'Mixing designs with different cell counts.'
+    )
+
   all_designs = {}
   all_metrics = []
 
   for ds in design_sets:
     all_designs.update(ds.designs)
     all_metrics.append(ds.design_metrics)
-
-  # TODO: Populate design_data.
-  design_data = pd.DataFrame()
 
   if not all_metrics:
     raise ValueError('No design sets to concatenate.')
@@ -721,7 +723,6 @@ def concat_design_reports(
   return api.DesignSet(
       designs=top_designs,
       design_metrics=top_metrics,
-      design_data=design_data,
   )
 
 

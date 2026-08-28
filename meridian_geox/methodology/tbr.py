@@ -330,78 +330,8 @@ def get_r2(
   return jax.vmap(_get_one_r2)(treatment_masks)
 
 
-@jax.jit
-def _compute_placebo_effect_with_random_design(
-    key: jax.Array,
-    data_pre: jnp.ndarray,
-    data_val: jnp.ndarray,
-    mask: jnp.ndarray,
-    n_treated: jnp.ndarray,
-) -> tuple[jnp.ndarray, jnp.ndarray]:
-  """Computes the effect for a single placebo simulation.
-
-  Args:
-    key: Random key.
-    data_pre: (T_pre, Geos) Pre-period data.
-    data_val: (T_val, Geos) Validation-period data.
-    mask: (Geos,) Treatment mask (1.0 for treated, 0.0 for control).
-    n_treated: Number of treated units.
-
-  Returns:
-    Placebo effect and Placebo RMSE.
-  """
-  n_geos = data_pre.shape[1]
-
-  # Sample placebo units from the CONTROL pool only.
-  # 1. Generate random scores for all units.
-  scores = jax.random.uniform(key, shape=(n_geos,))
-
-  # 2. Penalize units that are already treated in the main design so they
-  # appear at the bottom of the ranking.
-  # mask is 1.0 for treated, 0.0 for control.
-  scores = jnp.where(mask > 0.5, -1.0, scores)
-
-  # 3. Select the top n_treated units from the control pool.
-  # Calling argsort twice produces the rank of each element in the original
-  # array.
-  # - First argsort: returns indices that sort the array.
-  # - Second argsort: returns the rank (0 to n-1) for each original index.
-  #   If ranks[i] == k, then scores[i] is the k-th smallest element.
-  ranks = jnp.argsort(jnp.argsort(scores))
-
-  # We want the top n_treated elements, so we select indices with
-  # rank >= (n_total - n_treated).
-  p_mask = jnp.where(ranks >= (n_geos - n_treated), 1.0, 0.0)
-
-  # Create a mask for valid control units (excluding original treated units).
-  # p_mask is 1.0 for placebo treated, 0.0 otherwise.
-  # mask is 1.0 for original treated, 0.0 otherwise.
-  # We want placebo controls to be: (1 - p_mask) * (1 - mask).
-  valid_control_mask = (1.0 - p_mask) * (1.0 - mask)
-
-  def _compute_placebo_means(data, t_mask, c_mask):
-    n_t = jnp.sum(t_mask)
-    n_c = jnp.sum(c_mask)
-    y_m = jnp.dot(data, t_mask) / jnp.maximum(n_t, 1.0)
-    x_m = jnp.dot(data, c_mask) / jnp.maximum(n_c, 1.0)
-    return y_m, x_m
-
-  # Fit on pre.
-  py_pre, px_pre = _compute_placebo_means(data_pre, p_mask, valid_control_mask)
-  p_alpha, p_beta = _fit_linear_regression(px_pre, py_pre)
-
-  # Predict on val.
-  py_val, px_val = _compute_placebo_means(data_val, p_mask, valid_control_mask)
-  py_pred = p_alpha + p_beta * px_val
-
-  # RMSE on val.
-  p_rmse = jnp.sqrt(jnp.mean((py_val - py_pred) ** 2))
-
-  return jnp.mean(py_val - py_pred), p_rmse
-
-
 @functools.partial(jax.jit, static_argnames=['test_type'])
-def _get_mde_simplified_design_aware_placebo(
+def _get_mde(
     data_pre: jnp.ndarray,
     data_val: jnp.ndarray,
     treatment_masks: jnp.ndarray,
@@ -479,92 +409,25 @@ def _get_mde_simplified_design_aware_placebo(
   )
 
 
-@functools.partial(jax.jit, static_argnames=['n_permutations', 'test_type'])
-def _get_mde_placebo(
+def get_mde(
     data_pre: jnp.ndarray,
     data_val: jnp.ndarray,
     treatment_masks: jnp.ndarray,
-    random_keys: jnp.ndarray,
-    n_permutations: int,
     z_score_sum: float,
     test_type: api.TestType = api.TestType.TWO_SIDED,
+    cell_ids: Optional[jnp.ndarray] = None,
 ) -> MdeResults:
-  """Calculates MDE using placebo method."""
-  n_geos = data_pre.shape[1]
+  """Runs placebo check and calculates MDE for a batch of designs."""
+  if cell_ids is None:
+    cell_ids = jnp.array([1.0])
 
-  def _get_one_mde(mask, key):
-    # Calculate n_treated and n_control.
-    n_treated = jnp.sum(mask)
-    n_control = n_geos - n_treated
-
-    # Calculate n_placebo_treated.
-    # If treatment size is smaller than control size, we use the same size for
-    # placebo. Otherwise, we scale it down proportionally.
-    ratio = n_treated / n_geos
-    scaled_size = jnp.floor(n_control * ratio)
-    n_placebo_treated = jnp.where(n_treated < n_control, n_treated, scaled_size)
-
-    # Ensure at least one treated unit and one control unit remain for placebo.
-    n_placebo_treated = jnp.minimum(n_placebo_treated, n_control - 1.0)
-    n_placebo_treated = jnp.maximum(1.0, n_placebo_treated)
-
-    # 1. Real Effect.
-    # TODO: Add multicell support.
-    y_pre = _compute_group_mean(data_pre, mask, 1.0)
-    x_pre = _compute_group_mean(data_pre, mask, 0.0)
-    alpha, beta = _fit_linear_regression(x_pre, y_pre)
-
-    y_val = _compute_group_mean(data_val, mask, 1.0)
-    x_val = _compute_group_mean(data_val, mask, 0.0)
-    y_pred = alpha + beta * x_val
-
-    # RMSE on val.
-    real_rmse = jnp.sqrt(jnp.mean((y_val - y_pred) ** 2))
-
-    # Effect is the mean difference in the validation period.
-    real_effect = jnp.mean(y_val - y_pred)
-    baseline = jnp.mean(y_val)
-
-    # Combine pre and val for full time series.
-    y_full = jnp.concatenate([y_pre, y_val])
-    y_pred_full = jnp.concatenate([alpha + beta * x_pre, y_pred])
-
-    observed = n_treated * y_full
-    counterfactual = n_treated * y_pred_full
-
-    # 2. Placebo Simulation.
-    keys = jax.random.split(key, n_permutations)
-
-    placebo_effects, placebo_rmses = jax.vmap(
-        _compute_placebo_effect_with_random_design,
-        in_axes=(0, None, None, None, None),
-    )(keys, data_pre, data_val, mask, n_placebo_treated)
-
-    # 3. MDE & P-value.
-    t_placebo = placebo_effects / jnp.maximum(placebo_rmses, 1e-9)
-    se = methodology_util.compute_se(real_rmse, t_placebo)  # pyrefly: ignore[bad-argument-type]
-    mde_abs = se * z_score_sum
-
-    mde_pct = jnp.where(baseline > 1e-9, mde_abs / baseline, jnp.nan)
-
-    # Studentized P-value (Placebo Adjusted).
-    p_value = methodology_util.compute_studentized_p_value(
-        real_effect, real_rmse, t_placebo, test_type
-    )
-
-    return mde_abs, mde_pct, p_value, observed, counterfactual
-
-  # Vmap over designs.
-  mde_abs, mde_pct, p_values, observed, counterfactual = jax.vmap(_get_one_mde)(
-      treatment_masks, random_keys
-  )
-
-  return MdeResults(
-      mde_abs=mde_abs,
-      mde_pct=mde_pct,
-      p_value=p_values,
-      observed_conversions=observed,
-      counterfactual_conversions=counterfactual,
+  return _get_mde(
+      data_pre,
+      data_val,
+      treatment_masks,
+      z_score_sum,
+      cell_ids,
+      test_type,
   )
 
 
@@ -615,65 +478,6 @@ def check_slope_similarity(
     return diff <= tolerance
 
   return jax.vmap(_get_single_slope_diff)(candidates)
-
-
-def get_mde(
-    data_pre: jnp.ndarray,
-    data_val: jnp.ndarray,
-    treatment_masks: jnp.ndarray,
-    random_keys: jnp.ndarray,
-    n_permutations: int,
-    z_score_sum: float,
-    test_type: api.TestType = api.TestType.TWO_SIDED,
-    se_method: api.SeMethod = api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO,
-    cell_ids: Optional[jnp.ndarray] = None,
-) -> MdeResults:
-  """Runs placebo check and calculates MDE for a batch of designs.
-
-  Args:
-    data_pre: (T_pre, Geos) Pre-period data.
-    data_val: (T_val, Geos) Validation-period data.
-    treatment_masks: (N_designs, Geos) Batch of treatment masks.
-    random_keys: (N_designs, 2) Batch of JAX PRNG keys.
-    n_permutations: Number of permutations.
-    z_score_sum: z_alpha + z_power.
-    test_type: Type of test (one-sided or two-sided).
-    se_method: Method to calculate standard error. 'placebo' uses placebo
-      simulations for each design. 'simplified_design_aware_placebo' calculates
-      SE based on the distribution of effects across the provided treatment
-      masks.
-    cell_ids: (k_cells,) Cell IDs for multicell designs.
-
-  Returns:
-    MdeResults object.
-  """
-  if cell_ids is None:
-    cell_ids = jnp.array([1.0])
-
-  if se_method == api.SeMethod.SIMPLIFIED_DESIGN_AWARE_PLACEBO:
-    return _get_mde_simplified_design_aware_placebo(
-        data_pre,
-        data_val,
-        treatment_masks,
-        z_score_sum,
-        cell_ids,
-        test_type,
-    )
-
-  # TODO: Add multicell support for _get_mde_placebo.
-  if len(cell_ids) > 1:
-    raise NotImplementedError(
-        'Multicell support is not implemented for _get_mde_placebo.'
-    )
-  return _get_mde_placebo(
-      data_pre,
-      data_val,
-      treatment_masks,
-      random_keys,
-      n_permutations,
-      z_score_sum,
-      test_type,
-  )
 
 
 @jax.jit

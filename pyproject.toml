@@ -6,7 +6,7 @@ description = "High-performance framework for geo experiment."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
-authors = [{name = "The Meridian GeoX Authors", email="geox-eng@google.com"}]
+authors = [{name = "The Meridian GeoX Authors", email="no-reply@google.com"}]
 classifiers = [  # List of https://pypi.org/classifiers/
     "License :: OSI Approved :: Apache Software License",
     "Intended Audience :: Science/Research",

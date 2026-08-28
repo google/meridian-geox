@@ -64,7 +64,6 @@ class DesignTest(parameterized.TestCase):
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         n_candidates=10,
         n_ranked_candidates=5,
-        n_aa_test_iterations=10,
         design_output_count=2,
         seed=42,
         test_type=test_type,
@@ -99,15 +98,16 @@ class DesignTest(parameterized.TestCase):
     mde_idx = columns_list.index('mde')
     mde_abs_idx = columns_list.index('mde_abs')
     self.assertEqual(mde_abs_idx, mde_idx + 1)
-    self.assertIn('p_value', result.design_metrics.columns)
+    self.assertIn('p_value (AA)', result.design_metrics.columns)
     self.assertIn('cell', result.design_metrics.columns)
     self.assertIn('design_methodology', result.design_metrics.columns)
     self.assertIn('treatment_conversions_pct', result.design_metrics.columns)
+    self.assertIn('treatment_geo_count', result.design_metrics.columns)
+    self.assertIn('design_implied_cpic', result.design_metrics.columns)
     self.assertTrue(
         (result.design_metrics['treatment_conversions_pct'] >= 0.0).all()
         and (result.design_metrics['treatment_conversions_pct'] <= 100.0).all()
     )
-    self.assertIn('rank', result.design_metrics.columns)
     self.assertTrue((result.design_metrics['cell'] == 'cell_1').all())
     self.assertTrue(
         (result.design_metrics['design_methodology'] == 'RANDOM-TBR').all()
@@ -458,13 +458,6 @@ class DesignTest(parameterized.TestCase):
     result = design.run_design(data, design_config, constraints)
 
     self.assertIn('treatment_conversions_pct', result.design_metrics.columns)
-    self.assertIn('rank', result.design_metrics.columns)
-
-    grouped_ranks = result.design_metrics.groupby('design_id')['rank'].nunique()
-    self.assertTrue((grouped_ranks == 1).all())
-
-    ranks = sorted(result.design_metrics['rank'].unique())
-    self.assertEqual(ranks, list(range(1, len(ranks) + 1)))
 
     self.assertTrue(
         (result.design_metrics['treatment_conversions_pct'] >= 0.0).all()
@@ -883,7 +876,6 @@ class DesignTest(parameterized.TestCase):
     ds1 = api.DesignSet(
         designs={d1_id: d1},
         design_metrics=ds1_metrics,
-        design_data=pd.DataFrame(),
     )
 
     d2_id = 'd2'
@@ -911,7 +903,6 @@ class DesignTest(parameterized.TestCase):
     ds2 = api.DesignSet(
         designs={d2_id: d2},
         design_metrics=ds2_metrics,
-        design_data=pd.DataFrame(),
     )
 
     # Concatenate and keep top 1.
@@ -924,8 +915,6 @@ class DesignTest(parameterized.TestCase):
     self.assertEqual(
         result.design_metrics.iloc[0]['design_methodology'], 'RANDOM-TBR'
     )
-    self.assertIn('rank', result.design_metrics.columns)
-    self.assertEqual(result.design_metrics.iloc[0]['rank'], 1)
 
   def test_concat_design_reports_carries_quality_check_result(self):
     design_config = api.DesignConfig(
@@ -979,7 +968,6 @@ class DesignTest(parameterized.TestCase):
     ds1 = api.DesignSet(
         designs={'d1': d1},
         design_metrics=ds1_metrics,
-        design_data=pd.DataFrame(),
     )
     ds2_metrics = pd.DataFrame([{
         'design_id': 'd2',
@@ -990,7 +978,6 @@ class DesignTest(parameterized.TestCase):
     ds2 = api.DesignSet(
         designs={'d2': d2},
         design_metrics=ds2_metrics,
-        design_data=pd.DataFrame(),
     )
     result = design.concat_design_reports([ds2, ds1])
     self.assertEqual(result.designs['d1'].quality_check_result, q_result)
@@ -1033,7 +1020,6 @@ class DesignTest(parameterized.TestCase):
     ds1 = api.DesignSet(
         designs={d1_id: d1},
         design_metrics=ds1_metrics,
-        design_data=pd.DataFrame(),
     )
 
     d2_id = 'd2'
@@ -1059,7 +1045,6 @@ class DesignTest(parameterized.TestCase):
     ds2 = api.DesignSet(
         designs={d2_id: d2},
         design_metrics=ds2_metrics,
-        design_data=pd.DataFrame(),
     )
 
     with absltest.mock.patch.object(
@@ -1090,7 +1075,7 @@ class DesignTest(parameterized.TestCase):
           experiment_types=api.ExperimentType.GO_DARK,
           budget_constraint=None,
           has_spend=True,
-          expected_budget=50.0,  # treatment_geo_cost
+          expected_budget=-50.0,  # treatment_geo_cost * -1.0
       ),
       dict(
           testcase_name='heavy_up_ignore_absolute_budget',
@@ -1102,9 +1087,9 @@ class DesignTest(parameterized.TestCase):
       dict(
           testcase_name='go_dark_budget_percent',
           experiment_types=api.ExperimentType.GO_DARK,
-          budget_constraint=api.Budget(budget_pct=0.5),
+          budget_constraint=api.Budget(budget_pct=-0.5),
           has_spend=True,
-          expected_budget=50.0 * 0.5,
+          expected_budget=50.0 * -0.5,
       ),
       dict(
           testcase_name='go_dark_missing_spend',
@@ -1289,10 +1274,10 @@ class DesignTest(parameterized.TestCase):
         cell2_design.minimum_detectable_effect, 0.2, places=5
     )
     self.assertAlmostEqual(cell2_design.p_value, 0.6, places=5)
-    # budget for cell_2: defaults to treatment_geo_cost = 25.0
-    self.assertAlmostEqual(cell2_design.budget, 25.0, places=5)
+    # budget for cell_2: defaults to treatment_geo_cost = -25.0
+    self.assertAlmostEqual(cell2_design.budget, -25.0, places=5)
     # design_implied_cpic for cell_2:
-    # budget / (mde_pct * volume) = 25 / (0.2 * 50) = 2.5
+    # abs(budget / (mde_pct * volume)) = abs(-25 / (0.2 * 50)) = 2.5
     self.assertAlmostEqual(cell2_design.design_implied_cpic, 2.5, places=5)
 
     # Verify control geos.
@@ -1304,19 +1289,23 @@ class DesignTest(parameterized.TestCase):
         result.design_metrics['cell'] == 'cell_1'
     ].iloc[0]
     self.assertAlmostEqual(cell1_metrics['mde'], 0.1, places=5)
-    self.assertAlmostEqual(cell1_metrics['p_value'], 0.5, places=5)
+    self.assertAlmostEqual(cell1_metrics['p_value (AA)'], 0.5, places=5)
     self.assertAlmostEqual(cell1_metrics['r2'], 0.9, places=5)
     self.assertAlmostEqual(cell1_metrics['mde_abs'], 5.0, places=5)
     self.assertAlmostEqual(cell1_metrics['budget'], 50.0, places=5)
+    self.assertAlmostEqual(cell1_metrics['design_implied_cpic'], 10.0, places=5)
+    self.assertEqual(cell1_metrics['treatment_geo_count'], 1)
 
     cell2_metrics = result.design_metrics[
         result.design_metrics['cell'] == 'cell_2'
     ].iloc[0]
     self.assertAlmostEqual(cell2_metrics['mde'], 0.2, places=5)
-    self.assertAlmostEqual(cell2_metrics['p_value'], 0.6, places=5)
+    self.assertAlmostEqual(cell2_metrics['p_value (AA)'], 0.6, places=5)
     self.assertAlmostEqual(cell2_metrics['r2'], 0.8, places=5)
     self.assertAlmostEqual(cell2_metrics['mde_abs'], 10.0, places=5)
-    self.assertAlmostEqual(cell2_metrics['budget'], 25.0, places=5)
+    self.assertAlmostEqual(cell2_metrics['budget'], -25.0, places=5)
+    self.assertAlmostEqual(cell2_metrics['design_implied_cpic'], 2.5, places=5)
+    self.assertEqual(cell2_metrics['treatment_geo_count'], 1)
 
   def test_run_design_populates_data_field(self):
     dates = pd.date_range(start='2023-01-01', periods=10)
@@ -1605,7 +1594,6 @@ class DesignTest(parameterized.TestCase):
         geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
         n_candidates=10,
         n_ranked_candidates=5,
-        n_aa_test_iterations=10,
         design_output_count=1,
         seed=42,
     )

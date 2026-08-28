@@ -130,7 +130,6 @@ class GenerateCandidatesTest(parameterized.TestCase):
         experiment_types=api.ExperimentType.HOLDBACK,
         n_candidates=10,
         seed=42,
-        pad_length=20,
     )
     stratum_counts = jnp.array([2, 2, 2])
     geo_stratum_labels = jnp.array([0, 0, 1, 1, 2, 2])
@@ -138,7 +137,8 @@ class GenerateCandidatesTest(parameterized.TestCase):
     max_conversions = 15.0
     key = jax.random.PRNGKey(0)
     sampler = stats.qmc.Sobol(d=1, scramble=True, rng=42)
-    sobol_seq = jnp.ravel(sampler.random(6 + design_config.pad_length))
+    pad_length = max(10000, design_config.n_candidates)
+    sobol_seq = jnp.ravel(sampler.random(6 + pad_length))
     candidates = (
         generate_candidates.get_unconstrained_stratified_sampling_candidates(
             design_config,
@@ -148,6 +148,7 @@ class GenerateCandidatesTest(parameterized.TestCase):
             max_conversions,
             key,
             sobol_seq,
+            pad_length=pad_length,
         )
     )
     self.assertEqual(candidates.shape, (10, 6))
@@ -163,7 +164,6 @@ class GenerateCandidatesTest(parameterized.TestCase):
         experiment_types=api.ExperimentType.HOLDBACK,
         n_candidates=10,
         seed=42,
-        pad_length=20,
     )
     constraints = api.Constraints(
         max_conversions_percent=0.4,
@@ -226,7 +226,6 @@ class GenerateCandidatesTest(parameterized.TestCase):
         experiment_types=api.ExperimentType.HOLDBACK,
         n_candidates=10,
         seed=42,
-        pad_length=20,
     )
     # With 6 geos and max_conversions_percent=0.2, only 1 geo can be treated
     # (1/6 = 0.166... < 0.2 while 2/6 = 0.333... > 0.2).

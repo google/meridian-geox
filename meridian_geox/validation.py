@@ -175,10 +175,14 @@ def _validate_budget_constraints(
           budget_constraint.budget_pct if budget_constraint else None
       )
       if budget_percent is None:
+        default_pct = (
+            -100 if experiment_type == api.ExperimentType.GO_DARK else 100
+        )
         logging.warning(
-            '%s is %s but budget_pct is not provided. Using 100%% as default.',
+            '%s is %s but budget_pct is not provided. Using %d%% as default.',
             cell_name,
             experiment_type.name,
+            default_pct,
         )
         if budget_constraint and budget_constraint.budget is not None:
           logging.warning(
@@ -186,6 +190,20 @@ def _validate_budget_constraints(
               ' budget_pct.',
               cell_name,
               experiment_type.name,
+          )
+      else:
+        if experiment_type == api.ExperimentType.GO_DARK and budget_percent > 0:
+          raise ValueError(
+              f'Cell {cell_name} is GO_DARK but has positive budget_pct'
+              f' {budget_percent}. Expected a negative value.'
+          )
+        if (
+            experiment_type == api.ExperimentType.HEAVY_UP
+            and budget_percent < 0
+        ):
+          raise ValueError(
+              f'Cell {cell_name} is HEAVY_UP but has negative budget_pct'
+              f' {budget_percent}. Expected a positive value.'
           )
     else:
       # HOLDBACK
@@ -245,10 +263,10 @@ def validate_analysis_input(
     experiment_duration_days = (
         analysis_config.design.design_config.experiment_duration.days
     )
-    if pretest_duration < 2 * experiment_duration_days:
+    if pretest_duration < 3 * experiment_duration_days:
       errors.append(
           f'Pretest data has {pretest_duration} dates, but experiment duration'
-          f' is {experiment_duration_days}. Need at least 2 * experiment'
+          f' is {experiment_duration_days}. Need at least 3 * experiment'
           ' duration pretest dates during analysis phase.'
       )
 

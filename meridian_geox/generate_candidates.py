@@ -302,6 +302,7 @@ def get_unconstrained_stratified_sampling_candidates(
     max_conversions: float,
     key: jax.Array,
     sobol_seq: jnp.ndarray,
+    pad_length: int,
 ):
   """Generates stratified sampling study candidates.
 
@@ -332,6 +333,8 @@ def get_unconstrained_stratified_sampling_candidates(
     max_conversions: A float representing the max treatment conversions.
     key: The JAX PRNG key.
     sobol_seq: A pre-generated Sobol sequence of floats between 0 and 1.
+    pad_length: An integer determining how many extra entries in the Sobol
+      sequence to generate.
 
   Returns:
     A boolean mask of treatment geos of shape (n_candidates, n_geos). For a
@@ -346,7 +349,7 @@ def get_unconstrained_stratified_sampling_candidates(
       offset_key,
       (design_config.n_candidates,),
       minval=0,
-      maxval=design_config.pad_length - 1,
+      maxval=pad_length - 1,
   )
   # Generate sequences of stratum labels, one per candidate, with minimal
   # discrepancy. This means that the frequency of each stratum label in the
@@ -474,6 +477,8 @@ def get_stratified_sampling_candidates(
 
   # Split keys for the loop.
   loop_keys = jax.random.split(key, max_retries)
+  # TODO: Determine how to set the optimal pad length.
+  pad_length = max(10000, design_config.n_candidates)
 
   for i in range(max_retries):
     if current_count >= n_designs:
@@ -488,7 +493,7 @@ def get_stratified_sampling_candidates(
     # generate. This should be larger than the number of study candidates
     # generated for best results.
     sobol_seq = _generate_sobol_sequence(
-        sobol_key, len(filtered_geo_indices) + design_config.pad_length
+        sobol_key, len(filtered_geo_indices) + pad_length
     )
 
     # Generate a batch of candidates.
@@ -501,6 +506,7 @@ def get_stratified_sampling_candidates(
             float(constraints.max_conversions_percent * total_conversions),
             candidates_key,
             sobol_seq,
+            pad_length=pad_length,
         )
     )
 
