@@ -116,11 +116,11 @@ guides, visit the official [Meridian GeoX Documentation][1]:
 | [Meridian GeoX basics][2]                  | Learn about Meridian GeoX features and methodologies.                          |
 | [Getting started colab][3]                 | Install and quickly learn how to use Meridian GeoX with this colab tutorial using sample data. |
 | [Design][4]                                | A detailed walk-through of how to use the library to generate GeoX designs.    |
-| [Implementation of Geo Testing][5]         | Step-by-step in-platform campaign configuration and best practices.            |
+| [Implementation of geo testing][5]         | Step-by-step in-platform campaign configuration and best practices.            |
 | [Analysis][6]                              | A detailed walk-through of how to use the library to generate GeoX analysis outputs. |
 | [Data validation and quality checks][7]    | Learn about the built-in data validation and quality checks in Meridian GeoX.  |
-| [MMM Calibration][8]                       | Synthesizing GeoX results into ROI priors for Google Meridian MMM.             |
-| [API Reference][9]                         | Complete public API reference for all classes, methods, and parameters.        |
+| [MMM calibration][8]                       | Synthesizing GeoX results into ROI priors for Google Meridian MMM.             |
+| [API reference][9]                         | Complete public API reference for all classes, methods, and parameters.        |
 
 [1]: https://developers.google.com/meridian/geox
 [2]: https://developers.google.com/meridian/geox/intro-to-geox
