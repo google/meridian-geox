@@ -174,7 +174,7 @@ To cite this repository:
   author = {Google Meridian GeoX Team},
   title = {Meridian GeoX: High-Performance Framework for Geographic Incrementality Experiments},
   url = {https://github.com/google/meridian-geox},
-  version = {0.1.0},
+  version = {0.1.1},
   year = {2026},
 }
 ```
