@@ -16,7 +16,7 @@
 
 # A new PyPI release will be pushed every time `__version__` is increased.
 # When changing this, also update the CHANGELOG.md.
-__version__ = '0.1.1'
+__version__ = '1.0.0'
 
 from .analysis import analyze
 from .analysis import plot_analysis
