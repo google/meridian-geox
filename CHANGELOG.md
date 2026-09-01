@@ -23,9 +23,9 @@ To release a new version (e.g. from `1.0.0` -> `2.0.0`):
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-07-01
+## [0.1.1] - 2026-08-31
 
 * Initial release
 
-[Unreleased]: https://github.com/google/meridian-geox/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/google/meridian-geox/releases/tag/v0.1.0
+[Unreleased]: https://github.com/google/meridian-geox/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/google/meridian-geox/releases/tag/v0.1.1
