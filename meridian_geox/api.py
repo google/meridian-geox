@@ -494,6 +494,9 @@ class AnalysisMetrics:
       default=None, repr=False
   )
   descriptive_metrics: Optional[DescriptiveMetrics] = None
+  analysis_metrics: Optional[DataFrame] = dataclasses.field(
+      default=None, repr=False
+  )
 
 
 @dataclasses.dataclass

@@ -461,6 +461,7 @@ def _get_analysis_summary(
         icpd=tbr_result.icpd,
         cumulative_icpd=cumulative_icpd,
         descriptive_metrics=descriptive_metrics,
+        analysis_metrics=tbr_result.analysis_metrics,
     )
 
   excluded_geos = (

@@ -371,7 +371,11 @@ class AnalysisTest(parameterized.TestCase):
     )
 
     self.assertIsInstance(metrics, api.AnalysisMetrics)
+    self.assertIsNotNone(metrics.analysis_metrics)
+    self.assertFalse(metrics.analysis_metrics.empty)
+    self.assertIn('metric', metrics.analysis_metrics.columns)
     self.assertAlmostEqual(metrics.lift.point_estimate, 0.0, places=1)
+
     self.assertAlmostEqual(metrics.percent_lift.point_estimate, 0.0, places=1)
     self.assertEqual(
         list(metrics.cumulative_lift.columns),
