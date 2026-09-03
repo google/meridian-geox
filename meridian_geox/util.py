@@ -14,10 +14,10 @@
 
 """Utility functions for GeoX modules."""
 
+import logging
 import re
 from typing import Optional
 
-from absl import logging
 import jax.numpy as jnp
 from meridian_geox import api
 import pandas as pd

@@ -15,6 +15,7 @@
 """Tests for GeoX analysis library."""
 
 import datetime
+import logging
 import typing
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -1611,7 +1612,7 @@ class AnalysisTest(parameterized.TestCase):
     r2_acceptable = jnp.concatenate(
         [jnp.ones(200) * 0.8, jnp.ones(800) * 0.1]
     ).reshape((1000, 1))
-    with absltest.mock.patch('absl.logging.warning') as mock_warning:
+    with absltest.mock.patch.object(logging, 'warning') as mock_warning:
       result = run_get_placebo_masks(r2_acceptable)
       self.assertEqual(result.shape[0], 200)
       mock_warning.assert_not_called()
@@ -1621,7 +1622,7 @@ class AnalysisTest(parameterized.TestCase):
     r2_warning = jnp.concatenate(
         [jnp.ones(50) * 0.8, jnp.ones(950) * 0.1]
     ).reshape((1000, 1))
-    with absltest.mock.patch('absl.logging.warning') as mock_warning:
+    with absltest.mock.patch.object(logging, 'warning') as mock_warning:
       result = run_get_placebo_masks(r2_warning)
       self.assertEqual(result.shape[0], 50)
       mock_warning.assert_called_once()
