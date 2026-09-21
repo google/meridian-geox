@@ -194,13 +194,18 @@ def _get_params_for_mde_calculation(
 ) -> MdeParams:
   """Prepares parameters for MDE calculation."""
   # 1. Select top candidates based on out of sample R2.
-
   # For multicell, we select the minimum R2 score across cells for each
   # candidate.
   r2_scores = jnp.min(r2_scores, axis=1)
   sorted_indices = jnp.argsort(r2_scores)[::-1]
-  n_top = min(design_config.n_ranked_candidates, len(r2_scores))
-  top_indices = sorted_indices[:n_top]
+  sorted_candidates = candidates[sorted_indices]
+  _, unique_indices = np.unique(
+      np.asarray(sorted_candidates), axis=0, return_index=True
+  )
+  sorted_unique_indices = np.sort(unique_indices)
+  top_indices = sorted_indices[
+      sorted_unique_indices[: design_config.n_ranked_candidates]
+  ]
   top_candidates = candidates[top_indices]
 
   # 2. Calculate Z-score sum for MDE calculation.

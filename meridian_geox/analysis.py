@@ -219,8 +219,14 @@ def _get_placebo_masks(
   valid_mask = util.filter_by_r2(
       r2_scores=r2_scores_agg,
       min_r2=analysis_config.min_placebo_r2,
-      min_count_error=analysis_config.min_placebo_count_error,
-      min_count_warning=analysis_config.min_placebo_count_warning,
+      min_count_error=min(
+          analysis_config.min_placebo_count_error,
+          analysis_config.n_top_placebos,
+      ),
+      min_count_warning=min(
+          analysis_config.min_placebo_count_warning,
+          analysis_config.n_top_placebos,
+      ),
       error_message=error_message,
       warning_message=warning_message,
   )
@@ -230,7 +236,14 @@ def _get_placebo_masks(
 
   # Sort by R2 descending
   indices = jnp.argsort(valid_r2)[::-1]
-  selected_subset = valid_placebos[indices[: analysis_config.n_top_placebos]]
+  sorted_placebos = valid_placebos[indices]
+  _, unique_indices = np.unique(
+      np.asarray(sorted_placebos), axis=0, return_index=True
+  )
+  sorted_unique_indices = np.sort(unique_indices)
+  selected_subset = sorted_placebos[
+      sorted_unique_indices[: analysis_config.n_top_placebos]
+  ]
 
   return jax.vmap(_get_full_mask, in_axes=(None, 0))(
       treatment.mask, selected_subset

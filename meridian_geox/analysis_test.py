@@ -730,7 +730,9 @@ class AnalysisTest(parameterized.TestCase):
     with self.assertRaisesRegex(
         ValueError, 'locations in the analysis data do not match'
     ):
-      analysis.analyze(analysis_data, config)  # pyrefly: ignore[bad-argument-type]
+      analysis.analyze(
+          analysis_data, config
+      )  # pyrefly: ignore[bad-argument-type]
 
   def test_plot_analysis_with_gap(self):
     data = self._create_sample_data(n_days=15, n_geos=10)
@@ -1638,6 +1640,149 @@ class AnalysisTest(parameterized.TestCase):
         ValueError, 'Insufficient valid placebo candidates'
     ):
       run_get_placebo_masks(r2_error)
+
+  def test_get_placebo_masks_unique_in_small_panel(self):
+    # In a panel with 6 geos, 1 treatment and 5 controls,
+    # max_conversions_percent=0.40 -> n_treated = 2.
+    # C(5, 2) = 10 distinct placebo masks exist.
+    # When n_top_placebos=20, all returned placebo masks must be unique.
+    dates = pd.date_range('2024-01-01', periods=30)
+    geos = [f'G{i}' for i in range(6)]
+    data_rows = []
+    for d in dates:
+      for g in geos:
+        data_rows.append({'date': d, 'location': g, 'conversions': 50.0})
+    df = pd.DataFrame(data_rows)
+
+    dcfg = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=7),
+        experiment_types=api.ExperimentType.GO_DARK,
+        methodology=api.Methodology.TBR,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        cell_count=1,
+        seed=42,
+    )
+    design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G0'},
+                minimum_detectable_effect=float('nan'),
+                design_implied_cpic=float('nan'),
+                p_value=float('nan'),
+                budget=0.0,
+            )
+        },
+        control_geos=set(geos[1:]),
+        excluded_geos=set(),
+        excluded_dates=set(),
+        design_config=dcfg,
+        constraints=api.Constraints(max_conversions_percent=0.40),
+        data=df,
+    )
+    acfg = api.AnalysisConfig(
+        design=design,
+        n_placebo_candidates=100,
+        n_top_placebos=20,
+        min_placebo_r2=0.0,
+        min_placebo_count_warning=0,
+        min_placebo_count_error=0,
+        analysis_start_date=df.date.max() - pd.Timedelta(days=6),
+        analysis_end_date=df.date.max(),
+    )
+    treatment_mask = analysis._get_treatment_mask(df, design)
+    prepared_dcfg = analysis._prepare_design_config(acfg)
+    masks = analysis._get_placebo_masks(
+        design,
+        treatment_mask,
+        prepared_dcfg,
+        acfg,
+        jax.random.fold_in(jax.random.key(42), 12345),
+    )
+    masks_np = np.array(masks)
+    unique_masks = np.unique(masks_np, axis=0)
+    self.assertEqual(
+        len(masks_np),
+        len(unique_masks),
+        f'Expected unique placebo masks, but got {len(masks_np)} masks with'
+        f' only {len(unique_masks)} unique.',
+    )
+    self.assertLessEqual(len(masks_np), 10)
+
+  def test_analyze_aa_no_point_mass_collapse(self):
+    # Deterministic A/A test on 13 geos.
+    # Asserts that standard deviation does not collapse to 0,
+    # confidence interval is valid, and p-value is not mechanically 1 / (1 + n_top_placebos).
+    n_geos, n_days, test_days = 13, 120, 21
+    geos = [f'geo_{i:02d}' for i in range(n_geos)]
+    rng = np.random.default_rng(0)
+    dates = pd.date_range('2026-01-01', periods=n_days, freq='D')
+    dow = 1 + 0.15 * np.sin(np.arange(n_days) * 2 * np.pi / 7)
+    df = pd.concat(
+        [
+            pd.DataFrame({
+                'date': dates,
+                'location': g,
+                'conversions': (
+                    lv * dow * (1 + 0.02 * rng.standard_normal(n_days))
+                ),
+            })
+            for g, lv in zip(geos, np.linspace(100, 220, n_geos))
+        ],
+        ignore_index=True,
+    )
+
+    dcfg = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=test_days),
+        experiment_types=api.ExperimentType.GO_DARK,
+        methodology=api.Methodology.TBR,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        cell_count=1,
+        alpha=0.10,
+        test_type=api.TestType.TWO_SIDED,
+        seed=42,
+    )
+    design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={geos[0]},
+                minimum_detectable_effect=float('nan'),
+                design_implied_cpic=float('nan'),
+                p_value=float('nan'),
+                budget=0.0,
+            )
+        },
+        control_geos=set(geos[1:]),
+        excluded_geos=set(),
+        excluded_dates=set(),
+        design_config=dcfg,
+        constraints=api.Constraints(max_conversions_percent=0.20),
+        data=df,
+    )
+    acfg = api.AnalysisConfig(
+        design=design,
+        analysis_start_date=df.date.max() - pd.Timedelta(days=test_days - 1),
+        analysis_end_date=df.date.max(),
+    )
+    results = analysis.analyze(df, acfg)
+    lift = results.results['cell_1'].lift
+
+    # Invariants for statistical validity
+    self.assertGreater(
+        lift.standard_deviation,
+        0.0,
+        'Standard deviation collapsed to 0 due to duplicate placebos.',
+    )
+    self.assertGreater(
+        lift.upper_bound,
+        lift.lower_bound,
+        'Confidence interval collapsed to zero width.',
+    )
+    self.assertNotAlmostEqual(
+        lift.p_value,
+        1.0 / (1.0 + acfg.n_top_placebos),
+        places=4,
+        msg='p-value mechanically equal to 1 / (1 + n_top_placebos).',
+    )
 
 
 if __name__ == '__main__':

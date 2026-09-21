@@ -323,6 +323,78 @@ class GenerateCandidatesTest(parameterized.TestCase):
       treated_mask = candidates[i, :] > 0
       self.assertLessEqual(np.sum(geo_conversions[treated_mask]), 50.0)
 
+  def test_get_random_candidates_unique_masks(self):
+    # In a small mask space (6 geos, max_conversions_percent=0.35 -> 2 treated),
+    # C(6, 2) = 15 total masks exist. Requesting 50 candidates must return
+    # only unique masks without duplicates.
+    conversions_data = pd.DataFrame([
+        {
+            'date': pd.Timestamp('2024-01-01'),
+            'location': f'G{i}',
+            'conversions': 10.0,
+        }
+        for i in range(6)
+    ])
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1),
+        cell_count=1,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        n_candidates=50,
+        seed=42,
+    )
+    constraints = api.Constraints(max_conversions_percent=0.35)
+    key = jax.random.PRNGKey(0)
+    candidates = generate_candidates.get_random_candidates(
+        filtered_data=conversions_data,
+        design_config=design_config,
+        constraints=constraints,
+        key=key,
+        selection_train=jnp.zeros((1, 6)),
+    )
+    candidates_np = np.array(candidates)
+    unique_candidates = np.unique(candidates_np, axis=0)
+    self.assertEqual(
+        len(candidates_np),
+        len(unique_candidates),
+        'Expected all returned candidates to be unique, but got'
+        f' {len(candidates_np)} rows with only {len(unique_candidates)} unique'
+        ' masks.',
+    )
+    self.assertLessEqual(len(candidates_np), 15)
+
+  def test_get_random_candidates_deterministic_order(self):
+    conversions_data = pd.DataFrame([
+        {
+            'date': pd.Timestamp('2024-01-01'),
+            'location': f'G{i}',
+            'conversions': 10.0,
+        }
+        for i in range(8)
+    ])
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1),
+        cell_count=1,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        n_candidates=20,
+        seed=123,
+    )
+    constraints = api.Constraints(max_conversions_percent=0.30)
+    c1 = generate_candidates.get_random_candidates(
+        filtered_data=conversions_data,
+        design_config=design_config,
+        constraints=constraints,
+        key=jax.random.PRNGKey(42),
+        selection_train=jnp.zeros((1, 8)),
+    )
+    c2 = generate_candidates.get_random_candidates(
+        filtered_data=conversions_data,
+        design_config=design_config,
+        constraints=constraints,
+        key=jax.random.PRNGKey(42),
+        selection_train=jnp.zeros((1, 8)),
+    )
+    np.testing.assert_array_equal(c1, c2)
+
 
 if __name__ == '__main__':
   absltest.main()
