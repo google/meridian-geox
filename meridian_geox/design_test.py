@@ -1425,7 +1425,9 @@ class DesignTest(parameterized.TestCase):
         estimation_eval_spend={api.CELL_1: jnp.zeros((1, 4))},
     )
 
-    constraints.normalize(design_config.experiment_types)  # pyrefly: ignore[bad-argument-type]
+    constraints.normalize(
+        design_config.experiment_types
+    )  # pyrefly: ignore[bad-argument-type]
 
     with absltest.mock.patch.object(logging, 'warning') as mock_warning:
       design._get_design_summary(
@@ -1619,6 +1621,52 @@ class DesignTest(parameterized.TestCase):
 
     # Assert that Design.excluded_geos contains both manual and outlier geos
     self.assertEqual(design_obj.excluded_geos, {'geo_1', 'geo_2'})
+
+  def test_run_design_returns_distinct_treatment_sets(self):
+    # In a panel with 10 geos, requesting design_output_count=5 should return
+    # designs with distinct treatment geo assignments rather than duplicates.
+    dates = pd.date_range('2026-01-01', periods=165, freq='D')
+    dow = 1 + 0.15 * np.sin(np.arange(165) * 2 * np.pi / 7)
+    rng = np.random.default_rng(0)
+    geos = [f'geo_{i:02d}' for i in range(10)]
+    df = pd.concat(
+        [
+            pd.DataFrame({
+                'date': dates,
+                'location': g,
+                'conversions': lv * dow * (1 + 0.20 * rng.standard_normal(165)),
+            })
+            for g, lv in zip(geos, np.geomspace(20, 900, 10))
+        ],
+        ignore_index=True,
+    )
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=28),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.STRATIFIED_SAMPLING,
+        cell_count=1,
+        alpha=0.10,
+        power=0.8,
+        test_type=api.TestType.ONE_SIDED,
+        cost_per_incremental_conversion=60.0,
+        design_output_count=5,
+        n_candidates=2000,
+        n_ranked_candidates=50,
+        min_r2=0.30,
+        seed=42,
+    )
+    constraints = api.Constraints(max_conversions_percent=0.20)
+    result = design.run_design(df, design_config, constraints)
+    treatment_sets = [
+        tuple(sorted(d.designs['cell_1'].treatment_geos))
+        for d in result.designs.values()
+    ]
+    self.assertEqual(
+        len(treatment_sets),
+        len(set(treatment_sets)),
+        'Expected distinct treatment geo sets, but got duplicates:'
+        f' {treatment_sets}',
+    )
 
 
 if __name__ == '__main__':

@@ -429,6 +429,16 @@ def _generate_sobol_sequence(
   return jnp.ravel(sampler.random(num_samples))
 
 
+def _deduplicate_candidate_masks(candidates: jnp.ndarray) -> jnp.ndarray:
+  """Deduplicates candidate masks while preserving first-occurrence order."""
+  candidates_np = np.asarray(candidates)
+  if len(candidates_np) <= 1:
+    return candidates
+  _, unique_indices = np.unique(candidates_np, axis=0, return_index=True)
+  sorted_indices = np.sort(unique_indices)
+  return jnp.asarray(candidates_np[sorted_indices])
+
+
 def get_stratified_sampling_candidates(
     selection_train: jnp.ndarray,
     filtered_data: pd.DataFrame,
@@ -550,7 +560,12 @@ def get_stratified_sampling_candidates(
 
     if len(valid_batch) > 0:
       valid_candidates_list.append(valid_batch)
-      current_count += len(valid_batch)
+      accumulated = _deduplicate_candidate_masks(
+          jnp.concatenate(valid_candidates_list, axis=0)
+      )
+      if len(accumulated) == current_count and len(valid_batch) >= n_designs:
+        break
+      current_count = len(accumulated)
 
   if not valid_candidates_list:
     raise ValueError(
@@ -558,8 +573,10 @@ def get_stratified_sampling_candidates(
         ' and/or slope similarity criteria. Consider relaxing constraints.'
     )
 
-  # Concatenate all valid batches.
-  candidates = jnp.concatenate(valid_candidates_list, axis=0)
+  # De-duplicate candidate masks while preserving sampling order.
+  candidates = _deduplicate_candidate_masks(
+      jnp.concatenate(valid_candidates_list, axis=0)
+  )
 
   # Trim to the requested number of candidates.
   if len(candidates) > n_designs:
@@ -743,7 +760,12 @@ def get_random_candidates(
 
     if len(valid_batch) > 0:
       valid_candidates_list.append(valid_batch)
-      current_count += len(valid_batch)
+      accumulated = _deduplicate_candidate_masks(
+          jnp.concatenate(valid_candidates_list, axis=0)
+      )
+      if len(accumulated) == current_count and len(valid_batch) >= n_designs:
+        break
+      current_count = len(accumulated)
 
   if not valid_candidates_list:
     raise ValueError(
@@ -751,8 +773,10 @@ def get_random_candidates(
         ' and/or slope similarity criteria. Consider relaxing constraints.'
     )
 
-  # Concatenate all valid batches.
-  candidates = jnp.concatenate(valid_candidates_list, axis=0)
+  # De-duplicate candidate masks while preserving sampling order.
+  candidates = _deduplicate_candidate_masks(
+      jnp.concatenate(valid_candidates_list, axis=0)
+  )
 
   # Trim to the requested number of candidates.
   if len(candidates) > n_designs:
