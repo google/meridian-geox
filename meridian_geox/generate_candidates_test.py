@@ -24,6 +24,38 @@ import pandas as pd
 from scipy import stats
 
 
+def _reference_stratified_geo_sequence(stratum_seq, geos, geo_stratum_labels):
+  """Reference lexsort implementation of get_stratified_geo_sequence."""
+  sort_indices = np.lexsort([np.arange(len(stratum_seq)), stratum_seq])
+  geo_strata = np.take(geo_stratum_labels, geos)
+  geos_by_cluster = np.take(
+      geos, np.lexsort([np.arange(len(geo_strata)), geo_strata])
+  )
+  return np.take(geos_by_cluster, np.argsort(sort_indices))
+
+
+def _reference_mask_maximizing_conversions(
+    geos, geo_strata, geo_conversions, max_conversions_per_cell, num_cells
+):
+  """Reference Python-loop implementation of the greedy multicell mask."""
+  mask = np.zeros(len(geos), dtype=np.int32)
+  n_geos = len(geos)
+  for i in range(1, num_cells + 1):
+    lb, ub = (i - 1) * n_geos // num_cells, i * n_geos // num_cells
+    cell_geos, cell_strata = geos[lb:ub], geo_strata[lb:ub]
+    geo_cluster_index, conversions = 0, 0.0
+    for j, geo in enumerate(cell_geos):
+      added_conversions = geo_conversions[geo]
+      if (
+          cell_strata[j] == cell_strata[geo_cluster_index]
+          and conversions + added_conversions <= max_conversions_per_cell
+      ):
+        mask[geo] = i
+        conversions += added_conversions
+        geo_cluster_index += 1
+  return mask
+
+
 class GenerateCandidatesTest(parameterized.TestCase):
 
   def test_get_minimal_discrepancy_stratum_labels(self):
@@ -105,6 +137,15 @@ class GenerateCandidatesTest(parameterized.TestCase):
     )
     expected_mask_low = np.array([1, 0, 0, 1, 0, 1])
     np.testing.assert_array_equal(mask_low, expected_mask_low)
+
+    # A geo that brings conversions exactly to the cap is still selected.
+    mask_tie = generate_candidates.compute_mask_maximizing_conversions(
+        np.array([3, 0, 2, 1]),
+        np.array([0, 1, 0, 1]),
+        np.array([10.0, 20.0, 30.0, 40.0]),
+        50.0,
+    )
+    np.testing.assert_array_equal(mask_tie, np.array([1, 0, 0, 1]))
 
   def test_compute_mask_maximizing_conversions_multicell(self):
     geos = np.array([0, 2, 4, 1, 3, 5])
@@ -322,6 +363,53 @@ class GenerateCandidatesTest(parameterized.TestCase):
     for i in range(design_config.n_candidates):
       treated_mask = candidates[i, :] > 0
       self.assertLessEqual(np.sum(geo_conversions[treated_mask]), 50.0)
+
+  @parameterized.parameters(0, 1, 2)
+  def test_get_stratified_geo_sequence_matches_reference(self, seed):
+    rng = np.random.default_rng(seed)
+    n_geos, num_strata = 50, 4
+    geo_stratum_labels = rng.integers(0, num_strata, n_geos)
+    stratum_seq = rng.permutation(geo_stratum_labels)
+    geos = rng.permutation(n_geos)
+    stratified_geos = generate_candidates.get_stratified_geo_sequence(
+        jnp.array(stratum_seq), jnp.array(geos), jnp.array(geo_stratum_labels)
+    )
+    self.assertEqual(stratified_geos.shape, (n_geos,))
+    np.testing.assert_array_equal(
+        stratified_geos,
+        _reference_stratified_geo_sequence(
+            stratum_seq, geos, geo_stratum_labels
+        ),
+    )
+
+  @parameterized.product(num_cells=(1, 2, 3), seed=(0, 1, 2))
+  def test_compute_mask_maximizing_conversions_matches_reference(
+      self, num_cells, seed
+  ):
+    rng = np.random.default_rng(seed)
+    n_geos, num_strata = 50, 4
+    geos = rng.permutation(n_geos)
+    geo_strata = rng.integers(0, num_strata, n_geos)
+    geo_conversions = rng.lognormal(5.0, 1.0, n_geos).astype(np.float32)
+    max_conversions_per_cell = float(0.3 * geo_conversions.sum()) / num_cells
+    mask = generate_candidates.compute_mask_maximizing_conversions(
+        jnp.array(geos),
+        jnp.array(geo_strata),
+        jnp.array(geo_conversions),
+        max_conversions_per_cell,
+        num_cells=num_cells,
+    )
+    self.assertEqual(mask.shape, (n_geos,))
+    np.testing.assert_array_equal(
+        mask,
+        _reference_mask_maximizing_conversions(
+            geos,
+            geo_strata,
+            geo_conversions,
+            max_conversions_per_cell,
+            num_cells,
+        ),
+    )
 
 
 if __name__ == '__main__':

@@ -180,34 +180,34 @@ def get_stratified_geo_sequence(
       geo_stratum_labels[i] is the stratum label of geo i.
   """
   # get indices for sorting stratum_seq first by the cluster labels, then by
-  # their order of appearance.
+  # their order of appearance. A stable sort preserves the order of appearance.
   # Ex. stratum_seq = [2, 2, 1, 0, 3, 2] -> [3, 2, 0, 1, 5, 4].
-  clusters_lex_sort_indices = jnp.lexsort(
-      [jnp.arange(len(stratum_seq)), stratum_seq]
-  )
-  # get indices for inverting the sort.
-  # Ex. stratum_seq_sort_indices = [3, 2, 0, 1, 5, 4] -> [2, 3, 1, 0, 5, 4]
-  inverse_clusters_lex_sort_indices = jnp.argsort(clusters_lex_sort_indices)
+  clusters_lex_sort_indices = jnp.argsort(stratum_seq, stable=True)
 
   # get the geo cluster labels in order of the geo permutation.
   permuted_geo_stratum_labels = jnp.take(geo_stratum_labels, geos)
   # get indices for sorting the geo cluster labels.
-  geo_strata_lex_sort_indices = jnp.lexsort([
-      jnp.arange(len(permuted_geo_stratum_labels)),
-      permuted_geo_stratum_labels,
-  ])
+  geo_strata_lex_sort_indices = jnp.argsort(
+      permuted_geo_stratum_labels, stable=True
+  )
 
   # get the list of geos sorted by cluster labels and order of appearance.
   geos_by_cluster_ordering = jnp.take(geos, geo_strata_lex_sort_indices)
 
-  # returns geos constrained to the stratum_seq ordering.
-  return jnp.take(geos_by_cluster_ordering, inverse_clusters_lex_sort_indices)
+  # returns geos constrained to the stratum_seq ordering. Scattering into the
+  # sort indices inverts the sort in O(n_geos) without a third argsort.
+  return (
+      jnp.zeros_like(geos)
+      .at[clusters_lex_sort_indices]
+      .set(geos_by_cluster_ordering)
+  )
 
 
-def get_treatment_geos_for_one_cell_greedy(
-    geos: np.ndarray,
-    geo_strata: np.ndarray,
-    geo_conversions: np.ndarray,
+@jax.jit
+def _get_treatment_geos_for_one_cell_greedy(
+    geos: jnp.ndarray,
+    geo_strata: jnp.ndarray,
+    geo_conversions: jnp.ndarray,
     max_conversions_per_cell: float,
 ):
   """Generates a list of treatment geos for one cell greedily.
@@ -222,36 +222,40 @@ def get_treatment_geos_for_one_cell_greedy(
       conversions.
 
   Returns:
-    A list of treatment geos.
+    An integer array of shape (n_geos,), aligned with `geos`. Element j is
+    geos[j] if that geo is selected as a treatment geo, and len(geo_conversions)
+    (an out-of-bounds geo index) otherwise. Callers must drop the out-of-bounds
+    entries, e.g. `mask.at[treatment_geos].set(value, mode='drop')`.
   """
-  geo_sorted_conversions = np.take(geo_conversions, geos)
-  treatment_geos = []
-  geo_cluster_index = 0
-  geo_conversion_index = 0
-  conversions = 0.0
-  while geo_cluster_index < len(geo_strata) and geo_conversion_index < len(
-      geo_sorted_conversions
-  ):
+  geo_sorted_conversions = jnp.take(geo_conversions, geos)
+
+  # Every geo is visited exactly once in order, so the greedy loop is a scan.
+  def _step(carry, x):
+    geo_cluster_index, conversions = carry
+    geo_stratum, added_conversions = x
     required_cluster = geo_strata[geo_cluster_index]
-    added_conversions = geo_sorted_conversions[geo_conversion_index]
-    if (
-        geo_strata[geo_conversion_index] == required_cluster
-        and conversions + added_conversions <= max_conversions_per_cell
-    ):
-      treatment_geos.append(geos[geo_conversion_index])
-      conversions += added_conversions
-      geo_cluster_index += 1
-      geo_conversion_index += 1
-    else:
-      geo_conversion_index += 1
+    is_selected = (geo_stratum == required_cluster) & (
+        conversions + added_conversions <= max_conversions_per_cell
+    )
+    conversions = jnp.where(
+        is_selected, conversions + added_conversions, conversions
+    )
+    return (geo_cluster_index + is_selected, conversions), is_selected
+
+  init = (jnp.int32(0), jnp.zeros((), geo_sorted_conversions.dtype))
+  _, is_selected = jax.lax.scan(
+      _step, init, (geo_strata, geo_sorted_conversions)
+  )
+  treatment_geos = jnp.where(is_selected, geos, len(geo_conversions))
 
   return treatment_geos
 
 
+@functools.partial(jax.jit, static_argnames=['num_cells'])
 def compute_mask_maximizing_conversions(
-    geos: np.ndarray,
-    geo_strata: np.ndarray,
-    geo_conversions: np.ndarray,
+    geos: jnp.ndarray,
+    geo_strata: jnp.ndarray,
+    geo_conversions: jnp.ndarray,
     max_conversions_per_cell: float,
     num_cells: int = 1,
 ):
@@ -260,9 +264,7 @@ def compute_mask_maximizing_conversions(
   The function splits geos and geo_strata into num_cells sub-sequences, and
   then applies a greedy algorithm for each sub-sequence. It follows two rules:
   it adds geos from strata in the order specified by geo_strata, and it
-  maximizes the conversions while staying under max_conversions_per_cell. The
-  sequential nature of this algorithm requires us to use standard numpy instead
-  of JAX.
+  maximizes the conversions while staying under max_conversions_per_cell.
 
   Args:
     geos: A sequence of geos of shape (n_geos,).
@@ -276,20 +278,21 @@ def compute_mask_maximizing_conversions(
 
   Returns:
     An integer mask of treatment geos of shape (n_geos,). The value at index i
-    is 1 if geo i is a treatment geo, and 0 otherwise.
+    is 0 if geo i is a control geo, and c in {1, ..., num_cells} if geo i is a
+    treatment geo in cell c.
   """
-  mask = np.full(len(geos), 0)
+  mask = jnp.full(len(geos), 0)
 
   n_geos = len(geos)
   for i in range(1, num_cells + 1):
     lb, ub = (i - 1) * n_geos // num_cells, i * n_geos // num_cells
-    treatment_geos = get_treatment_geos_for_one_cell_greedy(
+    treatment_geos = _get_treatment_geos_for_one_cell_greedy(
         geos[lb:ub],
         geo_strata[lb:ub],
         geo_conversions,
         max_conversions_per_cell,
     )
-    mask[treatment_geos] = i
+    mask = mask.at[treatment_geos].set(i, mode='drop')
 
   return mask.astype(jnp.int32)
 
@@ -337,9 +340,9 @@ def get_unconstrained_stratified_sampling_candidates(
       sequence to generate.
 
   Returns:
-    A boolean mask of treatment geos of shape (n_candidates, n_geos). For a
-    fixed row (candidate), the value at index i is True if and only if geo i is
-    a treatment geo.
+    An integer mask of treatment geos of shape (n_candidates, n_geos). For a
+    fixed row (candidate), the value at index i is 0 if geo i is a control geo,
+    and c in {1, ..., cell_count} if geo i is a treatment geo in cell c.
   """
   offset_key, permutation_key = jax.random.split(key)
   seq_length = np.sum(np.array(stratum_counts))
@@ -379,19 +382,16 @@ def get_unconstrained_stratified_sampling_candidates(
       geo_stratum_labels, stratified_random_geos
   )
 
-  get_geo_masks = np.vectorize(
-      compute_mask_maximizing_conversions,
-      excluded={'geo_conversions', 'max_conversions_per_cell', 'num_cells'},
-      signature='(n),(n)->(n)',
+  get_geo_masks = jax.vmap(
+      functools.partial(
+          compute_mask_maximizing_conversions,
+          geo_conversions=geo_conversions,
+          max_conversions_per_cell=max_conversions / design_config.cell_count,
+          num_cells=design_config.cell_count,
+      )
   )
 
-  return get_geo_masks(
-      geos=np.array(stratified_random_geos),
-      geo_strata=np.array(stratified_random_geos_strata),
-      geo_conversions=np.array(geo_conversions),
-      max_conversions_per_cell=max_conversions / design_config.cell_count,
-      num_cells=design_config.cell_count,
-  )
+  return get_geo_masks(stratified_random_geos, stratified_random_geos_strata)
 
 
 def _get_expanded_mask(reduced_mask, expanded_mask_size, filtered_geo_indices):
