@@ -24,6 +24,7 @@ from jax.scipy import stats
 from meridian_geox import api
 from meridian_geox.methodology import util as methodology_util
 import numpy as np
+import pandas as pd
 
 
 @dataclasses.dataclass
@@ -111,6 +112,7 @@ class TbrAnalysisResult:
       CIs.
     pointwise_difference_with_cis: (T, 3) Pointwise difference and CIs.
     counterfactual_spend: (T,) Predicted counterfactual spend.
+    analysis_metrics: Per-cell analysis metrics DataFrame.
   """
 
   lift: api.Estimate
@@ -125,6 +127,7 @@ class TbrAnalysisResult:
       default_factory=lambda: np.array([])
   )
   counterfactual_spend: Optional[np.ndarray] = None
+  analysis_metrics: Optional[pd.DataFrame] = None
 
 
 @jax.jit
@@ -631,6 +634,20 @@ def analyze(
       signed_t_placebo[:, -1],
       test_type,
   )
+  pb_lift = methodology_util.check_and_warn_placebo_bias(
+      signed_t_placebo[:, -1],
+      metric_name='lift',
+      treatment_cell_id=treatment_cell_id,
+  )
+  ci_lift = methodology_util.check_and_warn_ci(
+      total_lower_cis[-1],
+      signed_total_cumul_effect[-1],
+      total_upper_cis[-1],
+      metric_name='lift',
+      treatment_cell_id=treatment_cell_id,
+  )
+  analysis_metrics_list = [pb_lift, ci_lift]
+
   lift_standard_deviation = n_treatment_geos * methodology_util.compute_se(
       rmse, signed_t_placebo[:, -1]  # pyrefly: ignore[bad-argument-type]
   )
@@ -651,6 +668,10 @@ def analyze(
       alpha,
       experiment_type,
       test_type,
+  )
+
+  analysis_metrics_df = pd.DataFrame(
+      analysis_metrics_list, columns=['metric', 'value', 'message', 'threshold']
   )
 
   cumulative_lift_with_cis = np.array(
@@ -772,4 +793,5 @@ def analyze(
       counterfactual_conversions_with_cis=counterfactual_conversions_with_cis,
       pointwise_difference_with_cis=pointwise_difference_with_cis,
       counterfactual_spend=counterfactual_spend,
+      analysis_metrics=analysis_metrics_df,
   )

@@ -15,10 +15,13 @@
 """Utility functions for GeoX methodologies."""
 
 import functools
+import logging
+from typing import Any
 
 import jax
 import jax.numpy as jnp
 from meridian_geox import api
+import numpy as np
 
 
 @functools.partial(jax.jit, static_argnames=['test_type'])
@@ -202,3 +205,91 @@ def compute_regularized_log_ratio(
   return jnp.log(
       jnp.maximum(y_num, threshold) / jnp.maximum(y_den, threshold)
   )
+
+
+def check_and_warn_placebo_bias(
+    placebo_effects: jnp.ndarray,
+    metric_name: str = '',
+    treatment_cell_id: jnp.ndarray | float | None = None,
+) -> dict[str, Any]:
+  """Checks if the placebo distribution deviates significantly from zero-mean."""
+  effects_val = np.atleast_2d(np.asarray(placebo_effects))
+  cell_str = ''
+  if treatment_cell_id is not None:
+    cell_id_val = np.atleast_1d(np.asarray(treatment_cell_id))
+    cell_idx = int(cell_id_val[0])
+    cell_str = f' (cell_{cell_idx})'
+
+  mean_val = float(np.mean(effects_val))
+  std_val = float(np.std(effects_val))
+  threshold = 0.5 * std_val
+  is_biased = abs(mean_val) > threshold
+
+  msg = ''
+  if is_biased:
+    metric_label = (
+        f'{metric_name}{cell_str}' if metric_name else cell_str.strip()
+    )
+    msg = (
+        f'Placebo distribution for {metric_label} deviates significantly from'
+        f' zero-mean (mean: {mean_val:.4g}, std: {std_val:.4g}). This is'
+        ' usually caused by heterogeneity and volatility among geos, such'
+        ' that the exchangeability assumption among geos is violated.'
+    )
+    logging.warning(msg)
+
+  metric_label_name = (
+      f'Placebo distribution bias ({metric_name})'
+      if metric_name
+      else 'Placebo distribution bias'
+  )
+  return {
+      'metric': metric_label_name,
+      'value': mean_val,
+      'threshold': f'[-{threshold}, {threshold}]',
+      'message': msg,
+  }
+
+
+def check_and_warn_ci(
+    lower_ci: jnp.ndarray | float,
+    estimate: jnp.ndarray | float,
+    upper_ci: jnp.ndarray | float,
+    metric_name: str = '',
+    treatment_cell_id: jnp.ndarray | float | None = None,
+) -> dict[str, Any]:
+  """Checks if the confidence interval contains the point estimate."""
+  lower_val = float(np.asarray(lower_ci).flat[0])
+  est_val = float(np.asarray(estimate).flat[0])
+  upper_val = float(np.asarray(upper_ci).flat[0])
+
+  cell_str = ''
+  if treatment_cell_id is not None:
+    cell_id_val = np.atleast_1d(np.asarray(treatment_cell_id))
+    cell_str = f' (cell_{int(cell_id_val[0])})'
+
+  is_outside = lower_val > est_val or est_val > upper_val
+  msg = ''
+  if is_outside:
+    metric_label = (
+        f'{metric_name}{cell_str}' if metric_name else cell_str.strip()
+    )
+    msg = (
+        f'Confidence interval for {metric_label} does not contain the point'
+        f' estimate (CI: [{lower_val}, {upper_val}], Estimate: {est_val}).'
+        ' This is usually caused by a violation of the assumption of'
+        ' exchangeability among geos in the placebo test.'
+    )
+    logging.warning(msg)
+
+  metric_label_name = (
+      f'Confidence interval bounds ({metric_name})'
+      if metric_name
+      else 'Confidence interval bounds'
+  )
+  return {
+      'metric': metric_label_name,
+      'value': est_val,
+      'threshold': f'[{lower_val}, {upper_val}]',
+      'message': msg,
+  }

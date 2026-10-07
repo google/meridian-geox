@@ -12,55 +12,70 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
+from unittest import mock
+
 from absl.testing import absltest
 from absl.testing import parameterized
 import jax.numpy as jnp
+from meridian_geox import api
 from meridian_geox.methodology import util
 import numpy as np
 
 
 class UtilTest(parameterized.TestCase):
 
-  def test_compute_regularized_log_ratio_standard(self):
-    y_num = jnp.array([2.0])
-    y_den = jnp.array([1.0])
-    expected = jnp.log(2.0 / 1.0)
+  def test_compute_studentized_p_value_two_sided(self):
+    t_placebo = jnp.array([-2.0, -1.0, 0.0, 1.0, 2.0])
+    estimate = 1.5
+    rmse = 1.0
+    # t_obs = 1.5. Extreme left <= 1.5: 4 (-2, -1, 0, 1).
+    # Extreme right >= 1.5: 1 (2).
+    # n_extreme = 2 * min(4, 1) = 2.
+    # p_value = (1 + 2) / (1 + 5) = 3 / 6 = 0.5.
+    expected = jnp.array(0.5)
+    result = util.compute_studentized_p_value(
+        estimate, rmse, t_placebo, test_type=api.TestType.TWO_SIDED
+    )
+    np.testing.assert_allclose(result, expected, atol=1e-6)
+
+  def test_compute_studentized_p_value_one_sided(self):
+    t_placebo = jnp.array([-2.0, -1.0, 0.0, 1.0, 2.0])
+    estimate = 1.5
+    rmse = 1.0
+    # t_obs = 1.5. Extreme right >= 1.5: 1 (2).
+    # p_value = (1 + 1) / (1 + 5) = 2 / 6 = 1/3.
+    expected = jnp.array(1 / 3)
+    result = util.compute_studentized_p_value(
+        estimate, rmse, t_placebo, test_type=api.TestType.ONE_SIDED
+    )
+    np.testing.assert_allclose(result, expected, atol=1e-6)
+
+  def test_compute_cis_two_sided(self):
+    t_placebo = jnp.array([-2.0, -1.0, 0.0, 1.0, 2.0])
+    estimate = 0.0
+    rmse = 1.0
+    alpha = 0.4  # quantile 0.2 and 0.8
+    # quantile(0.8) = 1.2, quantile(0.2) = -1.2
+    # lower = 0 - 1.2 = -1.2, upper = 0 - (-1.2) = 1.2
+    lower, upper = util.compute_cis(
+        estimate, rmse, t_placebo, alpha, test_type=api.TestType.TWO_SIDED
+    )
+    np.testing.assert_allclose(lower, -1.2, atol=1e-5)
+    np.testing.assert_allclose(upper, 1.2, atol=1e-5)
+
+  def test_compute_regularized_log_ratio_unscaled(self):
+    y_num = jnp.array([10.0, 0.0])
+    y_den = jnp.array([20.0, 5.0])
+    # For element 1: num=10, den=20. scale=20. threshold=0.02.
+    # ratio=10/20=0.5. log(0.5) ~ -0.693147
+    # For element 2: num=0, den=5. scale=5. threshold=0.005.
+    # num clipped to 0.005. ratio=0.005/5=0.001. log(0.001) ~ -6.907755
+    expected = jnp.array([np.log(0.5), np.log(0.001)])
     result = util.compute_regularized_log_ratio(y_num, y_den)
     np.testing.assert_allclose(result, expected, atol=1e-6)
 
-  def test_compute_regularized_log_ratio_zero(self):
-    # Both exactly zero.
-    y_num = jnp.array([0.0])
-    y_den = jnp.array([0.0])
-    # Both are thresholded to 1e-9, so ratio is 1.0, log is 0.0
-    expected = jnp.array([0.0])
-    result = util.compute_regularized_log_ratio(y_num, y_den)
-    np.testing.assert_allclose(result, expected, atol=1e-6)
-
-  def test_compute_regularized_log_ratio_asymmetric_extreme(self):
-    # num is 100, den is 0.0
-    y_num = jnp.array([100.0])
-    y_den = jnp.array([0.0])
-    # scale = 100.0, threshold = 1e-3 * 100.0 = 0.1
-    # num is max(100.0, 0.1) = 100.0
-    # den is max(0.0, 0.1) = 0.1
-    expected = jnp.log(100.0 / 0.1)
-    result = util.compute_regularized_log_ratio(y_num, y_den)
-    np.testing.assert_allclose(result, expected, atol=1e-6)
-
-  def test_compute_regularized_log_ratio_negative(self):
-    # Negative values are clipped to a positive threshold before log.
-    y_num = jnp.array([-10.0])
-    y_den = jnp.array([-5.0])
-    # scale = 10.0, threshold = 1e-3 * 10.0 = 0.01
-    # num -> max(-10.0, 0.01) = 0.01
-    # den -> max(-5.0, 0.01) = 0.01
-    # Both are clipped to threshold, log ratio is log(1) = 0.0
-    expected = jnp.array([0.0])
-    result = util.compute_regularized_log_ratio(y_num, y_den)
-    np.testing.assert_allclose(result, expected, atol=1e-6)
-
-  def test_compute_regularized_log_ratio_custom_scale(self):
+  def test_compute_regularized_log_ratio_scaled(self):
     y_num = jnp.array([0.0])
     y_den = jnp.array([0.0])
     # Provide a global scale
@@ -70,6 +85,47 @@ class UtilTest(parameterized.TestCase):
     expected = jnp.array([0.0])
     result = util.compute_regularized_log_ratio(y_num, y_den, scale=scale)
     np.testing.assert_allclose(result, expected, atol=1e-6)
+
+  @mock.patch.object(logging, 'warning')
+  def test_check_and_warn_placebo_bias_triggered(self, mock_warning):
+    # Mean = 3.0, std = ~0.0. Bias is very high.
+    placebo_effects = jnp.array([[3.0, 3.0, 3.0]])
+    res = util.check_and_warn_placebo_bias(placebo_effects, metric_name='lift')
+    mock_warning.assert_called_once()
+    self.assertEqual(res['metric'], 'Placebo distribution bias (lift)')
+    self.assertEqual(res['threshold'], '[-0.0, 0.0]')
+    self.assertIn('deviates significantly', res['message'])
+
+  @mock.patch.object(logging, 'warning')
+  def test_check_and_warn_placebo_bias_not_triggered(self, mock_warning):
+    # Mean = 0.0, std = > 0.
+    placebo_effects = jnp.array([[-1.0, 0.0, 1.0]])
+    res = util.check_and_warn_placebo_bias(placebo_effects, metric_name='lift')
+    mock_warning.assert_not_called()
+    self.assertEqual(res['message'], '')
+
+  @mock.patch.object(logging, 'warning')
+  def test_check_and_warn_ci_triggered(self, mock_warning):
+    lower_ci = jnp.array([1.0])
+    estimate = jnp.array([0.0])
+    upper_ci = jnp.array([2.0])
+    res = util.check_and_warn_ci(
+        lower_ci, estimate, upper_ci, metric_name='lift'
+    )
+    mock_warning.assert_called_once()
+    self.assertEqual(res['threshold'], '[1.0, 2.0]')
+    self.assertIn('does not contain the point estimate', res['message'])
+
+  @mock.patch.object(logging, 'warning')
+  def test_check_and_warn_ci_not_triggered(self, mock_warning):
+    lower_ci = jnp.array([0.0])
+    estimate = jnp.array([1.0])
+    upper_ci = jnp.array([2.0])
+    res = util.check_and_warn_ci(
+        lower_ci, estimate, upper_ci, metric_name='lift'
+    )
+    mock_warning.assert_not_called()
+    self.assertEqual(res['message'], '')
 
 
 if __name__ == '__main__':
