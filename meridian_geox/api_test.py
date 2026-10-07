@@ -193,6 +193,64 @@ class ApiTest(parameterized.TestCase):
           pretest_end_date='2024-01-20',
       )
 
+  def test_design_config_methodology_config_defaults_and_sync(self):
+    tbr_default = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=7),
+        slope_tolerance=0.15,
+    )
+    self.assertIsInstance(tbr_default.methodology_config, api.TbrConfig)
+    self.assertEqual(tbr_default.methodology_config.slope_tolerance, 0.15)
+
+    tbr_explicit = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=7),
+        methodology_config=api.TbrConfig(slope_tolerance=0.25),
+    )
+    self.assertEqual(tbr_explicit.slope_tolerance, 0.25)
+
+    sc_default = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=7),
+        methodology=api.Methodology.SC,
+    )
+    self.assertIsInstance(sc_default.methodology_config, api.ScConfig)
+
+    sdid_default = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=7),
+        methodology=api.Methodology.SDID,
+    )
+    self.assertIsInstance(sdid_default.methodology_config, api.SdidConfig)
+
+  def test_design_json_round_trip_with_methodology_config(self):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=7),
+        methodology=api.Methodology.SDID,
+        methodology_config=api.SdidConfig(
+            max_iterations=250, learning_rate=0.05
+        ),
+    )
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G0', 'G1'},
+                minimum_detectable_effect=0.05,
+                design_implied_cpic=1.0,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={'G2', 'G3'},
+        excluded_geos=set(),
+        design_config=design_config,
+    )
+    loaded = api.Design.load_from_json(study_design.export_to_json())
+    self.assertIsNotNone(loaded.design_config)
+    self.assertEqual(loaded.design_config.methodology, api.Methodology.SDID)
+    self.assertIsInstance(
+        loaded.design_config.methodology_config, api.SdidConfig
+    )
+    self.assertEqual(
+        loaded.design_config.methodology_config.max_iterations, 250
+    )
+
 
 if __name__ == '__main__':
   absltest.main()

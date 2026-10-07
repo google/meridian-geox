@@ -189,6 +189,7 @@ class GeoAssignmentRule(enum.Enum):
 class Methodology(enum.Enum):
   TBR = 1
   SDID = 2
+  SC = 3
 
 
 class TestType(enum.Enum):
@@ -200,6 +201,34 @@ class GeoGroup(enum.Enum):
   CONTROL = 1
   TREATMENT = 2
   EXCLUDED = 3
+
+
+@pydantic.dataclasses.dataclass
+class TbrConfig:
+  """Parameters specific to Time-Based Regression (TBR)."""
+
+  slope_tolerance: float = 0.2
+
+
+@pydantic.dataclasses.dataclass
+class ScConfig:
+  """Parameters specific to Synthetic Control (SC)."""
+
+  max_iterations: Annotated[int, pydantic.Field(gt=0)] = 100
+  learning_rate: Annotated[float, pydantic.Field(gt=0.0)] = 0.1
+
+
+@pydantic.dataclasses.dataclass
+class SdidConfig:
+  """Parameters specific to Synthetic Difference-in-Differences (SDID)."""
+
+  max_iterations: Annotated[int, pydantic.Field(gt=0)] = 100
+  learning_rate: Annotated[float, pydantic.Field(gt=0.0)] = 0.1
+  zeta_unit: Optional[float] = None
+  zeta_time: Optional[float] = None
+
+
+MethodologyConfig = Union[TbrConfig, ScConfig, SdidConfig]
 
 
 @pydantic.dataclasses.dataclass
@@ -223,7 +252,7 @@ class DesignConfig:
   # The methodologies to be considered for the experiment design.
   methodology: Methodology = Methodology.TBR
   geo_assignment_rule: GeoAssignmentRule = GeoAssignmentRule.STRATIFIED_SAMPLING
-  # TODO: If needed, add per-methodology configs.
+  methodology_config: Optional[MethodologyConfig] = None
   cell_count: Annotated[int, pydantic.Field(gt=0)] = 1
   alpha: float = 0.1
   power: float = 0.8
@@ -252,6 +281,25 @@ class DesignConfig:
           for cell, et in self.experiment_types.items()
           if et == ExperimentType.HOLDBACK
       }
+
+    if self.methodology_config is None:
+      if self.methodology == Methodology.TBR:
+        self.methodology_config = TbrConfig(
+            slope_tolerance=self.slope_tolerance
+        )
+      elif self.methodology == Methodology.SC:
+        self.methodology_config = ScConfig()
+      elif self.methodology == Methodology.SDID:
+        self.methodology_config = SdidConfig()
+    elif isinstance(self.methodology_config, TbrConfig):
+      self.slope_tolerance = self.methodology_config.slope_tolerance
+    elif self.methodology == Methodology.SDID and isinstance(
+        self.methodology_config, ScConfig
+    ):
+      self.methodology_config = SdidConfig(
+          max_iterations=self.methodology_config.max_iterations,
+          learning_rate=self.methodology_config.learning_rate,
+      )
     return self
 
   # Advanced design search parameters.
