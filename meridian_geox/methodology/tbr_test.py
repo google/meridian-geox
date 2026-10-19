@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
+from unittest import mock
+
 from absl.testing import parameterized
 import jax
 import jax.numpy as jnp
@@ -23,6 +26,9 @@ import numpy as np
 import pandas as pd
 
 from absl.testing import absltest
+
+# Placebo t-statistics whose absolute values are 1, ..., 9.
+_PLACEBO_T = (1.0, -2.0, 3.0, -4.0, 5.0, -6.0, 7.0, -8.0, 9.0)
 
 
 class TbrTest(parameterized.TestCase):
@@ -866,6 +872,88 @@ class TbrTest(parameterized.TestCase):
     assert icpd is not None
     self.assertAlmostEqual(icpd.point_estimate, 1.0, delta=0.01)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='two_sided_too_few_placebos',
+          test_type=api.TestType.TWO_SIDED,
+          n_placebo=8,
+          use_absolute_placebo_statistics=True,
+          expect_warning=True,
+      ),
+      dict(
+          testcase_name='two_sided_enough_placebos',
+          test_type=api.TestType.TWO_SIDED,
+          n_placebo=9,
+          use_absolute_placebo_statistics=True,
+          expect_warning=False,
+      ),
+      dict(
+          testcase_name='one_sided_too_few_placebos',
+          test_type=api.TestType.ONE_SIDED,
+          n_placebo=3,
+          use_absolute_placebo_statistics=True,
+          expect_warning=True,
+      ),
+      dict(
+          testcase_name='one_sided_enough_placebos',
+          test_type=api.TestType.ONE_SIDED,
+          n_placebo=4,
+          use_absolute_placebo_statistics=True,
+          expect_warning=False,
+      ),
+      dict(
+          testcase_name='signed_two_sided_few_placebos',
+          test_type=api.TestType.TWO_SIDED,
+          n_placebo=3,
+          use_absolute_placebo_statistics=False,
+          expect_warning=False,
+      ),
+      dict(
+          testcase_name='signed_one_sided_few_placebos',
+          test_type=api.TestType.ONE_SIDED,
+          n_placebo=3,
+          use_absolute_placebo_statistics=False,
+          expect_warning=False,
+      ),
+  )
+  def test_analyze_warns_when_too_few_placebos(
+      self,
+      test_type,
+      n_placebo,
+      use_absolute_placebo_statistics,
+      expect_warning,
+  ):
+    data = 100.0 + jax.random.normal(jax.random.PRNGKey(0), (15, 6))
+    placebo_masks = jnp.array([
+        [0, 0, 1, 1, 0, 0],
+        [0, 0, 0, 0, 1, 1],
+        [0, 0, 1, 0, 1, 0],
+        [0, 0, 0, 1, 0, 1],
+        [0, 0, 1, 0, 0, 1],
+        [0, 0, 0, 1, 1, 0],
+        [0, 0, 1, 1, 0, 0],
+        [0, 0, 0, 0, 1, 1],
+        [0, 0, 1, 0, 1, 0],
+    ])[:n_placebo]
+    with mock.patch.object(logging, 'warning') as mock_warning:
+      tbr_result = tbr.analyze(
+          pretest_train_conversions=data[:5],
+          pretest_val_conversions=data[5:10],
+          test_conversions=data[10:],
+          treatment_mask=jnp.array([1, 1, 0, 0, 0, 0]),
+          placebo_masks=placebo_masks,
+          alpha=0.1,
+          experiment_type=api.ExperimentType.HOLDBACK,
+          test_type=test_type,
+          use_absolute_placebo_statistics=use_absolute_placebo_statistics,
+      )
+    # With absolute placebo statistics at alpha = 0.1, finite two-sided bounds
+    # require at least 9 placebos and finite one-sided bounds at least 4.
+    self.assertEqual(mock_warning.call_count, int(expect_warning))
+    self.assertEqual(np.isinf(tbr_result.lift.lower_bound), expect_warning)
+    if test_type == api.TestType.TWO_SIDED:
+      self.assertEqual(np.isinf(tbr_result.lift.upper_bound), expect_warning)
+
   def test_compute_studentized_p_value(self):
     p_val = methodology_util.compute_studentized_p_value(
         estimate=10.0,
@@ -878,6 +966,43 @@ class TbrTest(parameterized.TestCase):
     # n_extreme = 2 * min(3, 2) = 4
     # p_val = (1 + 4) / (1 + 4) = 1.0
     self.assertAlmostEqual(p_val, 1.0)
+
+  def test_compute_studentized_p_value_absolute(self):
+    p_val = methodology_util.compute_studentized_p_value(
+        estimate=10.0,
+        rmse=1.0,
+        t_placebo=jnp.array([0.0, 5.0, 10.0, 15.0]),
+        test_type=api.TestType.TWO_SIDED,
+        use_absolute_placebo_statistics=True,
+    )
+    # n_extreme = sum(|[0, 5, 10, 15]| >= |10.0|) = 2
+    # p_val = (1 + 2) / (1 + 4) = 0.6
+    self.assertAlmostEqual(p_val, 0.6, places=6)
+
+  @parameterized.parameters(-5.0, 5.0)
+  def test_compute_studentized_p_value_two_sided_symmetric(self, estimate):
+    p_val = methodology_util.compute_studentized_p_value(
+        estimate=estimate,
+        rmse=1.0,
+        t_placebo=jnp.array(_PLACEBO_T),
+        test_type=api.TestType.TWO_SIDED,
+        use_absolute_placebo_statistics=True,
+    )
+    # n_extreme = sum(|t| >= 5) = 5, so p_val = (1 + 5) / (1 + 9) = 0.6.
+    self.assertAlmostEqual(p_val, 0.6, places=6)
+
+  @parameterized.parameters((5.0, 0.3), (-5.0, 0.7))
+  def test_compute_studentized_p_value_one_sided(self, estimate, expected):
+    p_val = methodology_util.compute_studentized_p_value(
+        estimate=estimate,
+        rmse=1.0,
+        t_placebo=jnp.array(_PLACEBO_T),
+        test_type=api.TestType.ONE_SIDED,
+        use_absolute_placebo_statistics=True,
+    )
+    # The two-sided p-value is (1 + 5) / (1 + 9) = 0.6; the one-sided p-value
+    # is 0.6 / 2 for a positive estimate and 1 - 0.6 / 2 otherwise.
+    self.assertAlmostEqual(p_val, expected, places=6)
 
   def test_compute_se(self):
     rmse = 2.0
@@ -899,8 +1024,8 @@ class TbrTest(parameterized.TestCase):
     # quantile(t_placebo, 0.05) = quantile([-1, 0, 1], 0.05)
     expected_lower = estimate - jnp.quantile(t_placebo, 0.95) * rmse
     expected_upper = estimate - jnp.quantile(t_placebo, 0.05) * rmse
-    self.assertAlmostEqual(lower, expected_lower)
-    self.assertAlmostEqual(upper, expected_upper)
+    self.assertAlmostEqual(float(lower), float(expected_lower))
+    self.assertAlmostEqual(float(upper), float(expected_upper))
 
   def test_compute_cis_one_sided(self):
     estimate = 100.0
@@ -912,8 +1037,162 @@ class TbrTest(parameterized.TestCase):
     )
     expected_lower = estimate - jnp.quantile(t_placebo, 0.9) * rmse
     expected_upper = jnp.inf
-    self.assertAlmostEqual(lower, expected_lower)
+    self.assertAlmostEqual(float(lower), float(expected_lower))
     self.assertEqual(upper, expected_upper)
+
+  @parameterized.named_parameters(
+      dict(testcase_name='mixed_signs', t_placebo=_PLACEBO_T),
+      dict(
+          testcase_name='all_positive',
+          t_placebo=tuple(abs(t) for t in _PLACEBO_T),
+      ),
+  )
+  def test_compute_cis_two_sided_absolute(self, t_placebo):
+    lower, upper = methodology_util.compute_cis(
+        100.0,
+        10.0,
+        jnp.array(t_placebo),
+        0.2,
+        api.TestType.TWO_SIDED,
+        use_absolute_placebo_statistics=True,
+    )
+    # k = ceil(0.8 * (9 + 1)) = 8 and the 8th smallest |t| is 8, so the CI is
+    # 100 -/+ 8 * 10 regardless of the signs of t.
+    self.assertAlmostEqual(float(lower), 20.0, places=4)
+    self.assertAlmostEqual(float(upper), 180.0, places=4)
+
+  def test_compute_cis_two_sided_integer_rank(self):
+    lower, upper = methodology_util.compute_cis(
+        100.0,
+        10.0,
+        jnp.array(_PLACEBO_T),
+        0.1,
+        api.TestType.TWO_SIDED,
+        use_absolute_placebo_statistics=True,
+    )
+    # k = 0.9 * (9 + 1) = 9 exactly, so the 9th smallest |t| (9) is used.
+    self.assertAlmostEqual(float(lower), 10.0, places=4)
+    self.assertAlmostEqual(float(upper), 190.0, places=4)
+
+  @parameterized.named_parameters(
+      dict(testcase_name='mixed_signs', t_placebo=_PLACEBO_T),
+      dict(
+          testcase_name='all_negative',
+          t_placebo=tuple(-abs(t) for t in _PLACEBO_T),
+      ),
+  )
+  def test_compute_cis_one_sided_absolute(self, t_placebo):
+    lower, upper = methodology_util.compute_cis(
+        100.0,
+        10.0,
+        jnp.array(t_placebo),
+        0.2,
+        api.TestType.ONE_SIDED,
+        use_absolute_placebo_statistics=True,
+    )
+    # k = ceil(0.6 * (9 + 1)) = 6 and the 6th smallest |t| is 6, so the lower
+    # bound is 100 - 6 * 10 regardless of the signs of t.
+    self.assertAlmostEqual(float(lower), 40.0, places=4)
+    self.assertEqual(upper, jnp.inf)
+
+  @parameterized.parameters(
+      (api.TestType.TWO_SIDED, 8), (api.TestType.ONE_SIDED, 3)
+  )
+  def test_compute_cis_too_few_placebos(self, test_type, n_placebo):
+    # At alpha = 0.1, finite two-sided bounds require 9 placebos and finite
+    # one-sided bounds require 4.
+    lower, upper = methodology_util.compute_cis(
+        1.0,
+        0.0,
+        jnp.array(_PLACEBO_T[:n_placebo]),
+        0.1,
+        test_type,
+        use_absolute_placebo_statistics=True,
+    )
+    self.assertEqual(lower, -jnp.inf)
+    self.assertEqual(upper, jnp.inf)
+
+  @parameterized.parameters(api.TestType.TWO_SIDED, api.TestType.ONE_SIDED)
+  def test_compute_cis_excludes_zero_iff_p_value_at_most_alpha(self, test_type):
+    alpha = 0.1
+    t_placebo = jax.random.normal(jax.random.PRNGKey(0), (19,)) + 0.7
+    estimates = jnp.concatenate(
+        [t_placebo, -t_placebo, jnp.linspace(-4.0, 4.0, 41)]
+    )
+    for estimate in estimates:
+      lower, upper = methodology_util.compute_cis(
+          estimate,
+          1.0,
+          t_placebo,
+          alpha,
+          test_type,
+          use_absolute_placebo_statistics=True,
+      )
+      p_val = methodology_util.compute_studentized_p_value(
+          estimate,
+          1.0,
+          t_placebo,
+          test_type,
+          use_absolute_placebo_statistics=True,
+      )
+      self.assertEqual(
+          bool(lower > 0.0 or upper < 0.0),
+          bool(p_val <= alpha),
+          msg=f'estimate={estimate}',
+      )
+
+  @parameterized.parameters(
+      (0.05, 19), (0.1, 9), (0.2, 4), (1 / 3, 2), (0.5, 1)
+  )
+  def test_compute_cis_finite_iff_enough_placebos(self, alpha, min_count):
+    t_placebo = jnp.arange(1.0, min_count + 1.0)
+    lower, upper = methodology_util.compute_cis(
+        0.0, 1.0, t_placebo, alpha, use_absolute_placebo_statistics=True
+    )
+    self.assertTrue(np.isfinite(lower) and np.isfinite(upper))
+    lower, upper = methodology_util.compute_cis(
+        0.0, 1.0, t_placebo[:-1], alpha, use_absolute_placebo_statistics=True
+    )
+    self.assertEqual(lower, -jnp.inf)
+    self.assertEqual(upper, jnp.inf)
+
+  @parameterized.parameters((0.05, 9), (0.1, 4), (0.2, 2), (0.25, 1))
+  def test_compute_cis_one_sided_finite_iff_enough_placebos(
+      self, alpha, min_count
+  ):
+    t_placebo = jnp.arange(1.0, min_count + 1.0)
+    lower, _ = methodology_util.compute_cis(
+        0.0,
+        1.0,
+        t_placebo,
+        alpha,
+        api.TestType.ONE_SIDED,
+        use_absolute_placebo_statistics=True,
+    )
+    self.assertTrue(np.isfinite(lower))
+    lower, _ = methodology_util.compute_cis(
+        0.0,
+        1.0,
+        t_placebo[:-1],
+        alpha,
+        api.TestType.ONE_SIDED,
+        use_absolute_placebo_statistics=True,
+    )
+    self.assertEqual(lower, -jnp.inf)
+
+  def test_compute_cis_one_sided_contains_estimate(self):
+    # Placebos centered well below zero, against the tested direction.
+    t_placebo = jax.random.normal(jax.random.PRNGKey(0), (19,)) - 3.0
+    for estimate in jnp.linspace(-4.0, 4.0, 41):
+      lower, _ = methodology_util.compute_cis(
+          estimate,
+          1.0,
+          t_placebo,
+          0.1,
+          api.TestType.ONE_SIDED,
+          use_absolute_placebo_statistics=True,
+      )
+      self.assertLessEqual(lower, estimate, msg=f'estimate={estimate}')
 
   @parameterized.named_parameters(
       dict(
@@ -979,6 +1258,172 @@ class TbrTest(parameterized.TestCase):
     self.assertIsInstance(estimate.upper_bound, float)
     self.assertIsInstance(estimate.standard_deviation, float)
     self.assertIsInstance(estimate.p_value, float)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='holdback_two_sided',
+          experiment_type=api.ExperimentType.HOLDBACK,
+          test_type=api.TestType.TWO_SIDED,
+          log_estimate=0.125,
+          expected_estimate=np.exp(0.125) - 1.0,
+          expected_lower=np.exp(-0.245) - 1.0,
+          expected_upper=np.exp(0.445) - 1.0,
+          expected_p_value=0.9,
+      ),
+      dict(
+          testcase_name='go_dark_two_sided',
+          experiment_type=api.ExperimentType.GO_DARK,
+          test_type=api.TestType.TWO_SIDED,
+          log_estimate=-0.125,
+          expected_estimate=1.0 - np.exp(-0.125),
+          expected_lower=1.0 - np.exp(0.195),
+          expected_upper=1.0 - np.exp(-0.495),
+          expected_p_value=0.7,
+      ),
+      dict(
+          testcase_name='holdback_one_sided',
+          experiment_type=api.ExperimentType.HOLDBACK,
+          test_type=api.TestType.ONE_SIDED,
+          log_estimate=0.125,
+          expected_estimate=np.exp(0.125) - 1.0,
+          expected_lower=np.exp(-0.165) - 1.0,
+          expected_upper=np.inf,
+          expected_p_value=0.5,
+      ),
+      dict(
+          testcase_name='go_dark_one_sided',
+          experiment_type=api.ExperimentType.GO_DARK,
+          test_type=api.TestType.ONE_SIDED,
+          log_estimate=-0.125,
+          expected_estimate=1.0 - np.exp(-0.125),
+          expected_lower=1.0 - np.exp(0.115),
+          expected_upper=np.inf,
+          expected_p_value=0.4,
+      ),
+  )
+  def test_get_percent_lift_bounds_and_p_value(
+      self,
+      experiment_type,
+      test_type,
+      log_estimate,
+      expected_estimate,
+      expected_lower,
+      expected_upper,
+      expected_p_value,
+  ):
+    # Placebo log effects are t * log_rmse, so the placebo t-statistics are t,
+    # and t_obs = log_estimate / log_rmse = +/-2.5. With alpha = 0.2, the log
+    # bounds use the interpolated quantiles of t at levels 0.1, 0.2, 0.8 and
+    # 0.9: -6.4, -4.8, 5.8 and 7.4.
+    log_rmse = 0.05
+    t = jnp.array(_PLACEBO_T)
+    estimate = methodology_util.get_percent_lift(
+        y_test=jnp.exp(jnp.array(log_estimate)),
+        y_pred=jnp.array(1.0),
+        log_rmse=jnp.array(log_rmse),
+        y_test_placebos=jnp.exp(t * log_rmse),
+        y_pred_placebos=jnp.ones_like(t),
+        placebo_log_rmses=jnp.full_like(t, log_rmse),
+        alpha=0.2,
+        experiment_type=experiment_type,
+        test_type=test_type,
+    )
+
+    self.assertAlmostEqual(estimate.point_estimate, expected_estimate, places=5)
+    self.assertAlmostEqual(estimate.lower_bound, expected_lower, places=5)
+    self.assertAlmostEqual(estimate.upper_bound, expected_upper, places=5)
+    self.assertAlmostEqual(estimate.p_value, expected_p_value, places=5)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='holdback_two_sided',
+          experiment_type=api.ExperimentType.HOLDBACK,
+          test_type=api.TestType.TWO_SIDED,
+          log_estimate=0.125,
+          expected_estimate=np.exp(0.125) - 1.0,
+          expected_lower=np.exp(-0.275) - 1.0,
+          expected_upper=np.exp(0.525) - 1.0,
+          expected_p_value=0.8,
+      ),
+      dict(
+          testcase_name='go_dark_two_sided',
+          experiment_type=api.ExperimentType.GO_DARK,
+          test_type=api.TestType.TWO_SIDED,
+          log_estimate=-0.125,
+          expected_estimate=1.0 - np.exp(-0.125),
+          expected_lower=1.0 - np.exp(0.275),
+          expected_upper=1.0 - np.exp(-0.525),
+          expected_p_value=0.8,
+      ),
+      dict(
+          testcase_name='holdback_one_sided',
+          experiment_type=api.ExperimentType.HOLDBACK,
+          test_type=api.TestType.ONE_SIDED,
+          log_estimate=0.125,
+          expected_estimate=np.exp(0.125) - 1.0,
+          expected_lower=np.exp(-0.175) - 1.0,
+          expected_upper=np.inf,
+          expected_p_value=0.4,
+      ),
+      dict(
+          testcase_name='go_dark_one_sided',
+          experiment_type=api.ExperimentType.GO_DARK,
+          test_type=api.TestType.ONE_SIDED,
+          log_estimate=-0.125,
+          expected_estimate=1.0 - np.exp(-0.125),
+          expected_lower=1.0 - np.exp(0.175),
+          expected_upper=np.inf,
+          expected_p_value=0.4,
+      ),
+      dict(
+          testcase_name='go_dark_one_sided_increase',
+          experiment_type=api.ExperimentType.GO_DARK,
+          test_type=api.TestType.ONE_SIDED,
+          log_estimate=0.125,
+          expected_estimate=1.0 - np.exp(0.125),
+          expected_lower=1.0 - np.exp(0.425),
+          expected_upper=np.inf,
+          expected_p_value=0.6,
+      ),
+  )
+  def test_get_percent_lift_bounds_and_p_value_absolute(
+      self,
+      experiment_type,
+      test_type,
+      log_estimate,
+      expected_estimate,
+      expected_lower,
+      expected_upper,
+      expected_p_value,
+  ):
+    # Placebo log effects are t * log_rmse, so the placebo t-statistics are t,
+    # and t_obs = log_estimate / log_rmse = +/-2.5. The two-sided p-value is
+    # (1 + 7) / (1 + 9) = 0.8. With alpha = 0.2:
+    # Two-sided: k = 8 and |t|_(8) = 8, so the log CI is
+    # log_estimate -/+ 8 * 0.05.
+    # One-sided: k = 6 and |t|_(6) = 6, so the log bound is log_estimate -/+
+    # 6 * 0.05 on the side opposite to the tested direction. The p-value is
+    # 0.8 / 2 if the estimate is in the tested direction and 1 - 0.8 / 2
+    # otherwise.
+    log_rmse = 0.05
+    t = jnp.array(_PLACEBO_T)
+    estimate = methodology_util.get_percent_lift(
+        y_test=jnp.exp(jnp.array(log_estimate)),
+        y_pred=jnp.array(1.0),
+        log_rmse=jnp.array(log_rmse),
+        y_test_placebos=jnp.exp(t * log_rmse),
+        y_pred_placebos=jnp.ones_like(t),
+        placebo_log_rmses=jnp.full_like(t, log_rmse),
+        alpha=0.2,
+        experiment_type=experiment_type,
+        test_type=test_type,
+        use_absolute_placebo_statistics=True,
+    )
+
+    self.assertAlmostEqual(estimate.point_estimate, expected_estimate, places=5)
+    self.assertAlmostEqual(estimate.lower_bound, expected_lower, places=5)
+    self.assertAlmostEqual(estimate.upper_bound, expected_upper, places=5)
+    self.assertAlmostEqual(estimate.p_value, expected_p_value, places=5)
 
   def test_compute_placebo_effect_from_mask(self):
     # Setup simple data where linear fit is perfect
