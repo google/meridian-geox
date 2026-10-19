@@ -197,23 +197,26 @@ def _get_placebo_masks(
 
   # Filter by R2 threshold
   error_message = (
-      'Insufficient valid placebo candidates (found {count}, required at least '
-      '{min_count_error}). Only placebo designs with '
+      'Insufficient valid placebo candidates (found {count} distinct, required'
+      ' at least {min_count_error}). Only placebo designs with '
       'an out-of-sample R-squared score >= {min_r2} are '
-      'kept for analysis. This is usually caused by heterogeneity and '
-      'volatility among geos, such that the exchangeability assumption '
-      'among geos is violated. Consider providing more stationary pre-test '
-      "data or lowering the 'min_placebo_r2' threshold in your AnalysisConfig."
+      'kept for analysis. This is usually caused by a small number of control '
+      'geos, which limits the number of distinct placebo designs, or by '
+      'heterogeneity and volatility among geos, such that the exchangeability '
+      'assumption among geos is violated. Consider providing more stationary '
+      "pre-test data or lowering the 'min_placebo_r2' threshold in your "
+      'AnalysisConfig.'
   )
 
   warning_message = (
-      'Low number of valid placebo candidates (found {count}, recommended at '
-      'least {min_count_warning}). Only placebo designs with an out-of-sample '
-      'R-squared score >= {min_r2} were kept. This is usually caused by '
-      'heterogeneity and volatility among geos. Confidence intervals and '
-      'p-values may be less reliable as a result. Consider providing more '
-      "stationary pre-test data or lowering the 'min_placebo_r2' threshold in "
-      'your AnalysisConfig.'
+      'Low number of valid placebo candidates (found {count} distinct,'
+      ' recommended at least {min_count_warning}). Only placebo designs with an'
+      ' out-of-sample R-squared score >= {min_r2} were kept. This is usually'
+      ' caused by a small number of control geos, which limits the number of'
+      ' distinct placebo designs, or by heterogeneity and volatility among'
+      ' geos. Confidence intervals and p-values may be less reliable as a'
+      ' result. Consider providing more stationary pre-test data or lowering'
+      " the 'min_placebo_r2' threshold in your AnalysisConfig."
   )
 
   valid_mask = util.filter_by_r2(

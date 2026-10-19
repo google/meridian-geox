@@ -321,6 +321,7 @@ class AnalysisTest(parameterized.TestCase):
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
         n_top_placebos=2,
+        min_placebo_count_error=2,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-11'),
         analysis_end_date=pd.Timestamp('2024-01-15'),
@@ -428,6 +429,7 @@ class AnalysisTest(parameterized.TestCase):
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
         n_top_placebos=2,
+        min_placebo_count_error=2,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-11'),
         analysis_end_date=pd.Timestamp('2024-01-15'),
@@ -614,6 +616,7 @@ class AnalysisTest(parameterized.TestCase):
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
         n_top_placebos=2,
+        min_placebo_count_error=2,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-11'),
         analysis_end_date=pd.Timestamp('2024-01-15'),
@@ -664,6 +667,7 @@ class AnalysisTest(parameterized.TestCase):
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
         n_top_placebos=2,
+        min_placebo_count_error=2,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-11'),
         analysis_end_date=pd.Timestamp('2024-01-15'),
@@ -765,6 +769,7 @@ class AnalysisTest(parameterized.TestCase):
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
         n_top_placebos=2,
+        min_placebo_count_error=2,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-11'),
         analysis_end_date=pd.Timestamp('2024-01-15'),
@@ -892,6 +897,7 @@ class AnalysisTest(parameterized.TestCase):
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
         n_top_placebos=2,
+        min_placebo_count_error=2,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-16'),
         analysis_end_date=pd.Timestamp('2024-01-20'),
@@ -971,6 +977,7 @@ class AnalysisTest(parameterized.TestCase):
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
         n_top_placebos=2,
+        min_placebo_count_error=2,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-16'),
         analysis_end_date=pd.Timestamp('2024-01-20'),
@@ -1139,6 +1146,7 @@ class AnalysisTest(parameterized.TestCase):
     config = api.AnalysisConfig(
         n_placebo_candidates=10,
         n_top_placebos=2,
+        min_placebo_count_error=2,
         design=study_design,
         analysis_start_date=pd.Timestamp('2024-01-16'),
         analysis_end_date=pd.Timestamp('2024-01-20'),
@@ -1638,6 +1646,52 @@ class AnalysisTest(parameterized.TestCase):
         ValueError, 'Insufficient valid placebo candidates'
     ):
       run_get_placebo_masks(r2_error)
+
+  def test_get_placebo_masks_are_distinct(self):
+    data = self._create_sample_data(n_days=15, n_geos=8)
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=3),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        seed=42,
+    )
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={f'G{i}' for i in range(2, 9)},
+        excluded_geos=set(),
+        design_config=design_config,
+        constraints=api.Constraints(max_conversions_percent=0.5),
+        data=data,
+    )
+    config = api.AnalysisConfig(
+        n_placebo_candidates=1000,
+        n_top_placebos=500,
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-13'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+    )
+
+    placebo_masks = np.asarray(
+        analysis._get_placebo_masks(
+            design_obj=study_design,
+            treatment=analysis._get_treatment_mask(data, study_design),
+            design_config=analysis._prepare_design_config(config),
+            analysis_config=config,
+            key=jax.random.PRNGKey(0),
+        )
+    )
+
+    # The 7 control geos admit C(7, 3) = 35 placebo masks with 3 treated geos.
+    self.assertLen(placebo_masks, 35)
+    self.assertLen(np.unique(placebo_masks, axis=0), 35)
 
 
 if __name__ == '__main__':

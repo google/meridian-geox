@@ -16,7 +16,9 @@
 
 import dataclasses
 import functools
+import itertools
 import logging
+import math
 from typing import Any, Optional
 
 import jax
@@ -429,6 +431,13 @@ def _generate_sobol_sequence(
   return jnp.ravel(sampler.random(num_samples))
 
 
+def _distinct_rows(masks: jnp.ndarray) -> jnp.ndarray:
+  """Returns the distinct rows of `masks` in order of first occurrence."""
+  masks_np = np.asarray(masks)
+  _, first_indices = np.unique(masks_np, axis=0, return_index=True)
+  return jnp.asarray(masks_np[np.sort(first_indices)])
+
+
 def get_stratified_sampling_candidates(
     selection_train: jnp.ndarray,
     filtered_data: pd.DataFrame,
@@ -438,7 +447,7 @@ def get_stratified_sampling_candidates(
     key: jax.Array,
     selection_train_spend: Optional[dict[str, jnp.ndarray]] = None,
 ):
-  """Generates stratified sampling study candidates subject to constraints.
+  """Generates distinct stratified sampling candidates subject to constraints.
 
   Args:
     selection_train: The pre-period conversions data.
@@ -451,9 +460,10 @@ def get_stratified_sampling_candidates(
     selection_train_spend: The pre-period spend data, keyed by cell name.
 
   Returns:
-    A boolean mask of treatment geos of shape (n_candidates, n_geos). For a
-    fixed row (candidate), the value at index i is True if and only if geo i is
-    a treatment geo. The geos are in increasing order of name.
+    A boolean mask of treatment geos of shape (n, n_geos), whose n <=
+    n_candidates rows are distinct. For a fixed row (candidate), the value at
+    index i is True if and only if geo i is a treatment geo. The geos are in
+    increasing order of name.
   """
   conversions = selection_train
   geo_conversions = jnp.sum(conversions, axis=0)
@@ -574,7 +584,21 @@ def get_stratified_sampling_candidates(
         n_designs,
     )
 
-  return candidates
+  return _distinct_rows(candidates)
+
+
+def _get_cell_ranks(n_treated: int, n_cells: int) -> jnp.ndarray:
+  """Returns the exclusive upper rank bound of each treatment cell."""
+  return jnp.full((n_cells,), n_treated / n_cells).cumsum()
+
+
+def _get_cell(rank: jnp.ndarray, cell_ranks: jnp.ndarray) -> jnp.ndarray:
+  """Returns the cell of a geo with the given rank, where 0 is control."""
+  return jax.lax.cond(
+      rank >= cell_ranks[-1],
+      lambda: 0.0,
+      lambda: jnp.argmax(rank < cell_ranks) + 1.0,
+  )
 
 
 @functools.partial(
@@ -589,13 +613,6 @@ def _generate_random_masks(
     key: jax.Array,
 ) -> jnp.ndarray:
   """Generates random treatment masks with fixed group sizes."""
-
-  def get_cell(rank, cell_ranks):
-    return jax.lax.cond(
-        rank >= cell_ranks[-1],
-        lambda: 0.0,
-        lambda: jnp.argmax(rank < cell_ranks) + 1.0,
-    )
 
   def _generate_single_mask(single_key, cell_ranks):
     # Generate random scores for shuffling. "Scores" here refers to random
@@ -617,11 +634,97 @@ def _generate_random_masks(
     # Ranks n_treated/n_cells to 2*n_treated/n_cells - 1 -> Cell 2.
     # ...
     # Ranks n_treated to n_geos-1 -> Control (0).
-    return jax.vmap(get_cell, in_axes=(0, None))(ranks, cell_ranks)
+    return jax.vmap(_get_cell, in_axes=(0, None))(ranks, cell_ranks)
 
-  cell_ranks = jnp.full((n_cells,), n_treated / n_cells).cumsum()
+  cell_ranks = _get_cell_ranks(n_treated, n_cells)
   keys = jax.random.split(key, n_designs)
   return jax.vmap(_generate_single_mask, in_axes=(0, None))(keys, cell_ranks)
+
+
+def _get_random_cell_sizes(
+    n_geos: int, n_treated: int, n_cells: int
+) -> list[int]:
+  """Returns the number of geos per cell in `_generate_random_masks` masks."""
+  cells = jax.vmap(_get_cell, in_axes=(0, None))(
+      jnp.arange(n_geos), _get_cell_ranks(n_treated, n_cells)
+  )
+  return [int(jnp.sum(cells == cell)) for cell in range(1, n_cells + 1)]
+
+
+def _count_random_masks(n_available: int, cell_sizes: list[int]) -> int:
+  """Returns the number of masks with the given cell sizes."""
+  count = 1
+  remaining = n_available
+  for size in cell_sizes:
+    count *= math.comb(remaining, size)
+    remaining -= size
+  return count
+
+
+def _enumerate_random_masks(
+    n_geos: int, available_geos: np.ndarray, cell_sizes: list[int]
+) -> jnp.ndarray:
+  """Returns all masks assigning `cell_sizes[c]` available geos to cell c+1."""
+  masks = []
+  mask = np.zeros(n_geos, dtype=np.float32)
+
+  def _assign(cell_index: int, remaining_geos: tuple[int, ...]):
+    if cell_index == len(cell_sizes):
+      masks.append(mask.copy())
+      return
+    for chosen in itertools.combinations(
+        remaining_geos, cell_sizes[cell_index]
+    ):
+      mask[list(chosen)] = cell_index + 1
+      _assign(
+          cell_index + 1, tuple(g for g in remaining_geos if g not in chosen)
+      )
+      mask[list(chosen)] = 0.0
+
+  _assign(0, tuple(available_geos))
+  return jnp.asarray(np.array(masks, dtype=np.float32).reshape(-1, n_geos))
+
+
+def _get_valid_random_indices(
+    candidates: jnp.ndarray,
+    geo_weights: jnp.ndarray,
+    design_config: api.DesignConfig,
+    constraints: api.Constraints,
+    selection_train: jnp.ndarray,
+    selection_train_spend: Optional[dict[str, jnp.ndarray]],
+) -> jnp.ndarray:
+  """Returns whether each candidate satisfies the volume and slope criteria."""
+  total_volume = jnp.sum(geo_weights)
+
+  # Filter by volume constraint.
+  def _get_treated_pct(mask):
+    cell_ids = jnp.arange(1, design_config.cell_count + 1, dtype=jnp.float32)
+    binary_cells = (mask == cell_ids[:, None]).astype(jnp.float32)
+    cell_volumes = jnp.dot(binary_cells, geo_weights)
+    return jnp.sum(cell_volumes) / total_volume
+
+  treated_pcts = jax.vmap(_get_treated_pct)(candidates)
+  valid_indices = treated_pcts <= constraints.max_conversions_percent
+
+  # Filter by slope similarity criteria if applicable.
+  if selection_train_spend is not None:
+    experiment_types = design_config.experiment_types
+    if isinstance(experiment_types, api.ExperimentType):
+      experiment_types = {api.CELL_1: experiment_types}
+    for cell_name, experiment_type in experiment_types.items():
+      if _should_apply_slope_filter(
+          experiment_type, selection_train_spend.get(cell_name)
+      ):
+        slope_mask = tbr.check_slope_similarity(
+            candidates,
+            selection_train,
+            selection_train_spend[cell_name],
+            design_config.slope_tolerance,
+            util.cell_id_from_cell_name(cell_name),
+        )
+        valid_indices = jnp.logical_and(valid_indices, slope_mask)
+
+  return valid_indices
 
 
 def get_random_candidates(
@@ -632,7 +735,7 @@ def get_random_candidates(
     selection_train: jnp.ndarray,
     selection_train_spend: Optional[dict[str, jnp.ndarray]] = None,
 ) -> jnp.ndarray:
-  """Generates random candidates for experiment design."""
+  """Generates distinct random candidates for experiment design."""
   # Generate a batch of valid treatment masks (N_designs, Geos) satisfying
   # the design constraints and convert to jax array. 0 for control, 1 for
   # treatment1, 2 for treatment2, etc.
@@ -683,7 +786,31 @@ def get_random_candidates(
   geo_conversions = filtered_data.groupby('location')['conversions'].sum()
   # Reindex to ensure order matches 'geos'.
   geo_weights = jnp.array(geo_conversions.reindex(geos).fillna(0).values)
-  total_volume = jnp.sum(geo_weights)
+
+  # Enumerate all masks if there are at most `n_designs` of them.
+  cell_sizes = _get_random_cell_sizes(
+      n_geos, n_treated, design_config.cell_count
+  )
+  available_geos = np.flatnonzero(~forced_control_mask)
+  n_masks = _count_random_masks(len(available_geos), cell_sizes)
+  if n_masks <= n_designs:
+    candidates = _enumerate_random_masks(n_geos, available_geos, cell_sizes)
+    candidates = candidates[
+        _get_valid_random_indices(
+            candidates,
+            geo_weights,
+            design_config,
+            constraints,
+            selection_train,
+            selection_train_spend,
+        )
+    ]
+    if len(candidates) == 0:
+      raise ValueError(
+          'Could not find enough valid candidates satisfying design constraints'
+          ' and/or slope similarity criteria. Consider relaxing constraints.'
+      )
+    return candidates
 
   # Generate candidates in batches until we have enough.
   valid_candidates_list = []
@@ -711,35 +838,16 @@ def get_random_candidates(
         loop_keys[i],
     )
 
-    # Filter by volume constraint.
-    def _get_treated_pct(mask):
-      cell_ids = jnp.arange(1, design_config.cell_count + 1, dtype=jnp.float32)
-      binary_cells = (mask == cell_ids[:, None]).astype(jnp.float32)
-      cell_volumes = jnp.dot(binary_cells, geo_weights)
-      return jnp.sum(cell_volumes) / total_volume
-
-    treated_pcts = jax.vmap(_get_treated_pct)(candidates_batch)
-    valid_indices = treated_pcts <= max_conversions_percent
-
-    # Filter by slope similarity criteria if applicable.
-    if selection_train_spend is not None:
-      experiment_types = design_config.experiment_types
-      if isinstance(experiment_types, api.ExperimentType):
-        experiment_types = {api.CELL_1: experiment_types}
-      for cell_name, experiment_type in experiment_types.items():
-        if _should_apply_slope_filter(
-            experiment_type, selection_train_spend.get(cell_name)
-        ):
-          slope_mask = tbr.check_slope_similarity(
-              candidates_batch,
-              selection_train,
-              selection_train_spend[cell_name],
-              design_config.slope_tolerance,
-              util.cell_id_from_cell_name(cell_name),
-          )
-          valid_indices = jnp.logical_and(valid_indices, slope_mask)
-
-    valid_batch = candidates_batch[valid_indices]
+    valid_batch = candidates_batch[
+        _get_valid_random_indices(
+            candidates_batch,
+            geo_weights,
+            design_config,
+            constraints,
+            selection_train,
+            selection_train_spend,
+        )
+    ]
 
     if len(valid_batch) > 0:
       valid_candidates_list.append(valid_batch)
@@ -767,4 +875,4 @@ def get_random_candidates(
         n_designs,
     )
 
-  return candidates
+  return _distinct_rows(candidates)
