@@ -32,7 +32,9 @@ from meridian_geox import generate_candidates
 from meridian_geox import util
 from meridian_geox import validation
 from meridian_geox.data_quality import data_quality
-from meridian_geox.methodology import tbr
+from meridian_geox.methodology import registry
+# Imported for its side effect of registering TbrMethodology with the registry.
+from meridian_geox.methodology import tbr  # pylint: disable=unused-import
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -527,6 +529,10 @@ def run_design(
   """Designs GeoX experiments."""
   del design_scorer  # Unused in skeleton.
 
+  # Resolve the counterfactual methodology up front so that unsupported
+  # methodologies fail fast, before any expensive candidate generation.
+  methodology = registry.get_methodology(design_config.methodology)
+
   # 1. Preprocess data.
   data = data.copy()
   data.columns = data.columns.astype(str).str.lower()
@@ -578,6 +584,7 @@ def run_design(
         key=candidates_key,
         selection_train=processed_data.selection_train,
         selection_train_spend=processed_data.selection_train_spend,
+        methodology=methodology,
     )
   elif (
       design_config.geo_assignment_rule
@@ -598,6 +605,7 @@ def run_design(
             geo_stratum_labels=geo_stratum_labels,
             key=sampling_key,
             selection_train_spend=processed_data.selection_train_spend,
+            methodology=methodology,
         )
     )
   else:
@@ -608,32 +616,26 @@ def run_design(
   # 3. Fast score based on out of sample R2 and select top X candidates for full
   # scoring.
   cell_ids = jnp.arange(1, design_config.cell_count + 1).astype(jnp.float32)
-  if design_config.methodology == api.Methodology.TBR:
-    r2_scores: jnp.ndarray = tbr.get_r2(
-        processed_data.selection_train,
-        processed_data.selection_eval,
-        candidates,
-        cell_ids,
-    )
-  else:
-    raise ValueError(f'Unsupported methodology: {design_config.methodology}')
+  r2_scores: jnp.ndarray = methodology.get_r2(
+      processed_data.selection_train,
+      processed_data.selection_eval,
+      candidates,
+      cell_ids,
+  )
 
   # 4. Filter and score candidates.
   mde_params: MdeParams = _get_params_for_mde_calculation(
       design_config, r2_scores, candidates
   )
   geos = sorted(processed_data.filtered_data[api.LOCATION].unique())
-  if design_config.methodology == api.Methodology.TBR:
-    mde_results = tbr.get_mde(
-        processed_data.estimation_train,
-        processed_data.estimation_eval,
-        mde_params.top_candidates,
-        mde_params.z_score_sum,
-        design_config.test_type,
-        cell_ids=cell_ids,
-    )
-  else:
-    raise ValueError(f'Unsupported methodology: {design_config.methodology}')
+  mde_results = methodology.get_mde(
+      processed_data.estimation_train,
+      processed_data.estimation_eval,
+      mde_params.top_candidates,
+      mde_params.z_score_sum,
+      design_config.test_type,
+      cell_ids=cell_ids,
+  )
 
   # Filter by min R2 and AA test.
   scored_candidates = ScoredCandidates(
