@@ -24,6 +24,7 @@ import jax.numpy as jnp
 from meridian_geox import api
 from meridian_geox import design
 from meridian_geox import generate_candidates
+from meridian_geox.methodology import registry
 import numpy as np
 import pandas as pd
 
@@ -1680,6 +1681,88 @@ class DesignTest(parameterized.TestCase):
     # Assert that Design.excluded_geos contains both manual and outlier geos
     self.assertEqual(design_obj.excluded_geos, {'geo_1', 'geo_2'})
 
+  def _get_simple_design_inputs(
+      self,
+      methodology,
+      geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+  ):
+    dates = pd.date_range(start='2023-01-01', periods=30)
+    locations = [f'geo_{i}' for i in range(20)]
+    data = pd.DataFrame([
+        {
+            api.DATE: date,
+            api.LOCATION: loc,
+            api.CONVERSIONS: 100.0 + (date.day % 7) * 5.0,
+        }
+        for date, loc in itertools.product(dates, locations)
+    ])
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=5),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        methodology=methodology,
+        geo_assignment_rule=geo_assignment_rule,
+        n_candidates=10,
+        n_ranked_candidates=5,
+        design_output_count=2,
+        seed=42,
+    )
+    return data, design_config
+
+  def test_run_design_unregistered_methodology_fails_fast(self):
+    data, design_config = self._get_simple_design_inputs(api.Methodology.SDID)
+
+    with mock.patch.object(
+        generate_candidates, 'get_random_candidates', autospec=True
+    ) as mock_get_random_candidates:
+      with self.assertRaisesRegex(
+          ValueError, r'Unsupported methodology: Methodology\.SDID'
+      ):
+        design.run_design(data, design_config, api.Constraints())
+
+    mock_get_random_candidates.assert_not_called()
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='random',
+          geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+          candidates_fn_name='get_random_candidates',
+      ),
+      dict(
+          testcase_name='stratified_sampling',
+          geo_assignment_rule=api.GeoAssignmentRule.STRATIFIED_SAMPLING,
+          candidates_fn_name='get_stratified_sampling_candidates',
+      ),
+  )
+  def test_run_design_dispatches_to_registered_methodology(
+      self, geo_assignment_rule, candidates_fn_name
+  ):
+    data, design_config = self._get_simple_design_inputs(
+        api.Methodology.TBR, geo_assignment_rule
+    )
+    methodology = registry.get_methodology(api.Methodology.TBR)
+
+    with (
+        mock.patch.object(
+            methodology, 'get_r2', wraps=methodology.get_r2
+        ) as mock_get_r2,
+        mock.patch.object(
+            methodology, 'get_mde', wraps=methodology.get_mde
+        ) as mock_get_mde,
+        mock.patch.object(
+            generate_candidates,
+            candidates_fn_name,
+            wraps=getattr(generate_candidates, candidates_fn_name),
+        ) as mock_get_candidates,
+    ):
+      result = design.run_design(data, design_config, api.Constraints())
+
+    self.assertNotEmpty(result.designs)
+    mock_get_r2.assert_called_once()
+    mock_get_mde.assert_called_once()
+    mock_get_candidates.assert_called_once()
+    self.assertIs(
+        mock_get_candidates.call_args.kwargs['methodology'], methodology
+    )
 
 if __name__ == '__main__':
   absltest.main()

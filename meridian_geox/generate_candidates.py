@@ -27,7 +27,10 @@ import jax.numpy as jnp
 from jaxkd import extras
 from meridian_geox import api
 from meridian_geox import util
-from meridian_geox.methodology import tbr
+from meridian_geox.methodology import base
+from meridian_geox.methodology import registry
+# Imported for its side effect of registering TbrMethodology with the registry.
+from meridian_geox.methodology import tbr  # pylint: disable=unused-import
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -403,42 +406,60 @@ def _get_expanded_mask(reduced_mask, expanded_mask_size, filtered_geo_indices):
   return expanded_mask
 
 
-def _should_apply_slope_filter(
+def _should_apply_compatibility_filter(
     experiment_type: api.ExperimentType,
     selection_train_spend: Optional[jnp.ndarray],
 ) -> bool:
-  """Checks if slope filter should be applied."""
+  """Checks if the methodology compatibility filter should be applied."""
   return (
       util.is_go_dark_or_heavy_up(experiment_type)
       and selection_train_spend is not None
   )
 
 
-def _filter_by_slope_similarity(
-    valid_indices: jnp.ndarray,
-    candidates: jnp.ndarray,
-    design_config: api.DesignConfig,
+def _get_compatibility_mask(
+    candidates_batch: jnp.ndarray,
     selection_train: jnp.ndarray,
-    selection_train_spend: Mapping[str, jnp.ndarray] | None,
+    selection_train_spend: Optional[Mapping[str, jnp.ndarray]],
+    design_config: api.DesignConfig,
+    methodology: base.CounterfactualMethodology,
 ) -> jnp.ndarray:
-  """Returns `valid_indices` restricted to candidates with similar slopes."""
+  """Returns a mask of candidates passing methodology compatibility checks.
+
+  The compatibility check (e.g. TBR slope similarity between conversions and
+  spend) is only applied to GO_DARK and HEAVY_UP cells with spend data.
+
+  Args:
+    candidates_batch: (N_designs, N_geos) Treatment masks.
+    selection_train: (T, N_geos) Pre-period conversions data.
+    selection_train_spend: The pre-period spend data, keyed by cell name.
+    design_config: The design config.
+    methodology: The counterfactual methodology used to check compatibility.
+
+  Returns:
+    mask: (N_designs,) Boolean mask where True indicates the design passed.
+  """
+  mask = jnp.ones(candidates_batch.shape[0], dtype=bool)
   if selection_train_spend is None:
-    return valid_indices
+    return mask
+  # DesignConfig normalizes scalar experiment types into a per-cell dict at
+  # construction, but guard against scalars assigned after construction.
   experiment_types = design_config.experiment_types
-  assert isinstance(experiment_types, dict)
+  if isinstance(experiment_types, api.ExperimentType):
+    experiment_types = {api.CELL_1: experiment_types}
   for cell_name, experiment_type in experiment_types.items():
-    if _should_apply_slope_filter(
+    if _should_apply_compatibility_filter(
         experiment_type, selection_train_spend.get(cell_name)
     ):
-      slope_mask = tbr.check_slope_similarity(
-          candidates,
-          selection_train,
-          selection_train_spend[cell_name],
-          design_config.slope_tolerance,
-          util.cell_id_from_cell_name(cell_name),
+      compatibility_mask = methodology.check_candidate_compatibility(
+          candidates=candidates_batch,
+          conversion_data=selection_train,
+          spend_data=selection_train_spend[cell_name],
+          design_config=design_config,
+          cell_id=util.cell_id_from_cell_name(cell_name),
       )
-      valid_indices = jnp.logical_and(valid_indices, slope_mask)
-  return valid_indices
+      mask = jnp.logical_and(mask, compatibility_mask)
+  return mask
 
 
 def _generate_sobol_sequence(
@@ -477,14 +498,15 @@ def _combine_valid_batches(
   if not valid_batches:
     raise ValueError(
         'Could not find enough valid candidates satisfying design constraints'
-        ' and/or slope similarity criteria. Consider relaxing constraints.'
+        ' and/or methodology candidate compatibility criteria. Consider relaxing'
+        ' constraints.'
     )
   candidates = _distinct_rows(jnp.concatenate(valid_batches, axis=0))
   if len(candidates) < n_designs:
     logging.warning(
         'Found %d distinct valid candidates, but requested %d. This is likely'
-        ' due to a small number of geos, strict constraints and/or slope'
-        ' similarity criteria. Proceeding with fewer candidates.',
+        ' due to a small number of geos, strict constraints and/or methodology'
+        ' candidate compatibility criteria. Proceeding with fewer candidates.',
         len(candidates),
         n_designs,
     )
@@ -499,6 +521,7 @@ def get_stratified_sampling_candidates(
     geo_stratum_labels: jnp.ndarray,
     key: jax.Array,
     selection_train_spend: Optional[dict[str, jnp.ndarray]] = None,
+    methodology: Optional[base.CounterfactualMethodology] = None,
 ) -> jnp.ndarray:
   """Generates distinct stratified sampling candidates subject to constraints.
 
@@ -511,6 +534,9 @@ def get_stratified_sampling_candidates(
       geo_stratum_labels[i] is the stratum to which geo i belongs.
     key: The JAX PRNG key.
     selection_train_spend: The pre-period spend data, keyed by cell name.
+    methodology: The counterfactual methodology used to filter incompatible
+      candidates. Defaults to the methodology registered for
+      `design_config.methodology`.
 
   Returns:
     An int32 mask of treatment geos of shape (n, n_geos), whose
@@ -519,6 +545,8 @@ def get_stratified_sampling_candidates(
     {1, ..., cell_count} if geo i is a treatment geo in cell c. The geos are in
     increasing order of name.
   """
+  if methodology is None:
+    methodology = registry.get_methodology(design_config.methodology)
   conversions = selection_train
   geo_conversions = jnp.sum(conversions, axis=0)
   total_conversions = np.sum(geo_conversions)
@@ -592,13 +620,16 @@ def get_stratified_sampling_candidates(
 
     valid_indices = jax.vmap(_check_min_geos_per_cell)(candidates_batch)
 
-    # Filter by slope similarity criteria if applicable.
-    valid_indices = _filter_by_slope_similarity(
+    # Filter by methodology compatibility criteria if applicable.
+    valid_indices = jnp.logical_and(
         valid_indices,
-        candidates_batch,
-        design_config,
-        selection_train,
-        selection_train_spend,
+        _get_compatibility_mask(
+            candidates_batch,
+            selection_train,
+            selection_train_spend,
+            design_config,
+            methodology,
+        ),
     )
 
     valid_batch = candidates_batch[valid_indices]
@@ -705,18 +736,22 @@ def _get_valid_random_indices(
     constraints: api.Constraints,
     selection_train: jnp.ndarray,
     selection_train_spend: Mapping[str, jnp.ndarray] | None,
+    methodology: base.CounterfactualMethodology,
 ) -> jnp.ndarray:
-  """Returns whether each candidate satisfies the volume and slope criteria."""
+  """Returns whether each candidate meets volume and compatibility criteria."""
   # Filter by volume constraint.
   treated_pcts = jnp.dot(candidates > 0, geo_weights) / jnp.sum(geo_weights)
   assert constraints.max_conversions_percent is not None
   valid_indices = treated_pcts <= constraints.max_conversions_percent
-  return _filter_by_slope_similarity(
+  return jnp.logical_and(
       valid_indices,
-      candidates,
-      design_config,
-      selection_train,
-      selection_train_spend,
+      _get_compatibility_mask(
+          candidates,
+          selection_train,
+          selection_train_spend,
+          design_config,
+          methodology,
+      ),
   )
 
 
@@ -727,6 +762,7 @@ def get_random_candidates(
     key: jax.Array,
     selection_train: jnp.ndarray,
     selection_train_spend: Optional[dict[str, jnp.ndarray]] = None,
+    methodology: Optional[base.CounterfactualMethodology] = None,
 ) -> jnp.ndarray:
   """Generates distinct random candidates for experiment design.
 
@@ -737,6 +773,9 @@ def get_random_candidates(
     key: The JAX PRNG key.
     selection_train: The pre-period conversions data.
     selection_train_spend: The pre-period spend data, keyed by cell name.
+    methodology: The counterfactual methodology used to filter incompatible
+      candidates. Defaults to the methodology registered for
+      `design_config.methodology`.
 
   Returns:
     A float32 mask of treatment geos of shape (n, n_geos), whose
@@ -751,6 +790,8 @@ def get_random_candidates(
     ValueError: If there are too few geos for 2 treatment geos per cell and 2
       control geos, or if no candidate satisfies the constraints.
   """
+  if methodology is None:
+    methodology = registry.get_methodology(design_config.methodology)
 
   # Determine the number of geos.
   geos = sorted(filtered_data['location'].unique())
@@ -813,12 +854,14 @@ def get_random_candidates(
             constraints,
             selection_train,
             selection_train_spend,
+            methodology,
         )
     ]
     if len(candidates) == 0:
       raise ValueError(
           'Could not find enough valid candidates satisfying design constraints'
-          ' and/or slope similarity criteria. Consider relaxing constraints.'
+          ' and/or methodology candidate compatibility criteria. Consider'
+          ' relaxing constraints.'
       )
     return candidates
 
@@ -856,6 +899,7 @@ def get_random_candidates(
             constraints,
             selection_train,
             selection_train_spend,
+            methodology,
         )
     ]
 
