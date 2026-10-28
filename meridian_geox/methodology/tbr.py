@@ -14,7 +14,6 @@
 
 """TBR methodology implementation."""
 
-import dataclasses
 import functools
 from typing import Optional
 
@@ -22,109 +21,15 @@ import jax
 import jax.numpy as jnp
 from jax.scipy import stats
 from meridian_geox import api
+from meridian_geox.methodology import base
+from meridian_geox.methodology import registry
 from meridian_geox.methodology import util as methodology_util
 import numpy as np
 
 
-@dataclasses.dataclass
-class MdeResults:
-  """Results of the MDE calculation.
-
-  Attributes:
-    mde_abs: (N_designs, k_cells) Absolute MDE.
-    mde_pct: (N_designs, k_cells) Relative MDE (percentage).
-    p_value: (N_designs, k_cells) The AA p-value.
-    observed_conversions: (N_designs, k_cells, T) Observed conversions.
-    counterfactual_conversions: (N_designs, k_cells, T) Counterfactual
-      conversions.
-  """
-
-  mde_abs: jnp.ndarray
-  mde_pct: jnp.ndarray
-  p_value: jnp.ndarray
-  observed_conversions: jnp.ndarray
-  counterfactual_conversions: jnp.ndarray
-
-
-jax.tree_util.register_pytree_node(
-    MdeResults,
-    lambda node: (
-        (
-            node.mde_abs,
-            node.mde_pct,
-            node.p_value,
-            node.observed_conversions,
-            node.counterfactual_conversions,
-        ),
-        None,
-    ),
-    lambda _, children: MdeResults(*children),
-)
-
-
-@dataclasses.dataclass
-class IcpdResults:
-  """Results of the ICPD calculation.
-
-  Attributes:
-    cumulative_icpd: (T,) Cumulative ICPD.
-    lower_bound: (T,) Lower bound of the cumulative ICPD.
-    upper_bound: (T,) Upper bound of the cumulative ICPD.
-    cumulative_incremental_spend: (T,) Cumulative incremental spend.
-    counterfactual_spend: (T,) Predicted counterfactual spend.
-  """
-
-  cumulative_icpd: jnp.ndarray
-  lower_bound: jnp.ndarray
-  upper_bound: jnp.ndarray
-  cumulative_incremental_spend: jnp.ndarray
-  counterfactual_spend: jnp.ndarray
-
-
-jax.tree_util.register_pytree_node(
-    IcpdResults,
-    lambda node: (
-        (
-            node.cumulative_icpd,
-            node.lower_bound,
-            node.upper_bound,
-            node.cumulative_incremental_spend,
-            node.counterfactual_spend,
-        ),
-        None,
-    ),
-    lambda _, children: IcpdResults(*children),
-)
-
-
-@dataclasses.dataclass
-class TbrAnalysisResult:
-  """Results of the TBR analysis.
-
-  Attributes:
-    lift: The incremental lift estimate.
-    cumulative_lift_with_cis: (T, 3) Cumulative lift estimates with CIs.
-    percent_lift: The relative lift estimate.
-    icpd: The incremental cost per dollar estimate.
-    cumulative_icpd_with_cis: (T, 3) Cumulative ICPD estimates with CIs.
-    counterfactual_conversions_with_cis: (T, 4) Observed, counterfactual, and
-      CIs.
-    pointwise_difference_with_cis: (T, 3) Pointwise difference and CIs.
-    counterfactual_spend: (T,) Predicted counterfactual spend.
-  """
-
-  lift: api.Estimate
-  cumulative_lift_with_cis: np.ndarray
-  percent_lift: api.Estimate
-  icpd: Optional[api.Estimate] = None
-  cumulative_icpd_with_cis: Optional[np.ndarray] = None
-  counterfactual_conversions_with_cis: np.ndarray = dataclasses.field(
-      default_factory=lambda: np.array([])
-  )
-  pointwise_difference_with_cis: np.ndarray = dataclasses.field(
-      default_factory=lambda: np.array([])
-  )
-  counterfactual_spend: Optional[np.ndarray] = None
+MdeResults = base.MdeResults
+IcpdResults = base.IcpdResults
+TbrAnalysisResult = base.MethodologyAnalysisResult
 
 
 @jax.jit
@@ -773,3 +678,93 @@ def analyze(
       pointwise_difference_with_cis=pointwise_difference_with_cis,
       counterfactual_spend=counterfactual_spend,
   )
+
+
+@registry.register_methodology(api.Methodology.TBR)
+class TbrMethodology(base.CounterfactualMethodology):
+  """Time-Based Regression (TBR) counterfactual methodology."""
+
+  def _fit_and_predict_single(
+      self,
+      data_train: jnp.ndarray,
+      data_eval: jnp.ndarray,
+      treatment_group_mask: jnp.ndarray,
+      control_group_mask: jnp.ndarray,
+  ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Fits TBR on `data_train` and predicts geo-average counterfactuals."""
+    raise NotImplementedError()
+
+  def check_candidate_compatibility(
+      self,
+      candidates: jnp.ndarray,
+      conversion_data: jnp.ndarray,
+      spend_data: jnp.ndarray,
+      design_config: api.DesignConfig,
+      cell_id: float,
+  ) -> jnp.ndarray:
+    """Checks if the TBR slope between conversion and spend is similar."""
+    return check_slope_similarity(
+        candidates=candidates,
+        conversion_data=conversion_data,
+        spend_data=spend_data,
+        tolerance=design_config.slope_tolerance,
+        cell_id=cell_id,
+    )
+
+  def get_r2(
+      self,
+      data_pre: jnp.ndarray,
+      data_val: jnp.ndarray,
+      treatment_masks: jnp.ndarray,
+      cell_ids: jnp.ndarray,
+  ) -> jnp.ndarray:
+    """See base class."""
+    return get_r2(data_pre, data_val, treatment_masks, cell_ids)
+
+  def get_mde(
+      self,
+      data_pre: jnp.ndarray,
+      data_val: jnp.ndarray,
+      treatment_masks: jnp.ndarray,
+      z_score_sum: float,
+      test_type: api.TestType = api.TestType.TWO_SIDED,
+      cell_ids: Optional[jnp.ndarray] = None,
+  ) -> MdeResults:
+    """See base class."""
+    return get_mde(
+        data_pre,
+        data_val,
+        treatment_masks,
+        z_score_sum,
+        test_type=test_type,
+        cell_ids=cell_ids,
+    )
+
+  def analyze(
+      self,
+      pretest_train_conversions: jnp.ndarray,
+      pretest_val_conversions: jnp.ndarray,
+      test_conversions: jnp.ndarray,
+      treatment_mask: jnp.ndarray,
+      placebo_masks: jnp.ndarray,
+      alpha: float,
+      experiment_type: api.ExperimentType,
+      test_type: api.TestType = api.TestType.TWO_SIDED,
+      treatment_cell_id: float = 1.0,
+      pretest_spend: Optional[jnp.ndarray] = None,
+      test_spend: Optional[jnp.ndarray] = None,
+  ) -> base.MethodologyAnalysisResult:
+    """See base class."""
+    return analyze(
+        pretest_train_conversions=pretest_train_conversions,
+        pretest_val_conversions=pretest_val_conversions,
+        test_conversions=test_conversions,
+        treatment_mask=treatment_mask,
+        placebo_masks=placebo_masks,
+        alpha=alpha,
+        experiment_type=experiment_type,
+        test_type=test_type,
+        treatment_cell_id=treatment_cell_id,
+        pretest_spend=pretest_spend,
+        test_spend=test_spend,
+    )
