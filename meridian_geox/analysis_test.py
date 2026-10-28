@@ -23,6 +23,8 @@ import jax
 import jax.numpy as jnp
 from meridian_geox import analysis
 from meridian_geox import api
+from meridian_geox.methodology import base
+from meridian_geox.methodology import registry
 import numpy as np
 import pandas as pd
 
@@ -575,8 +577,67 @@ class AnalysisTest(parameterized.TestCase):
     )
 
     data = self._create_sample_data(n_days=11, n_geos=4)
-    with self.assertRaisesRegex(ValueError, 'Unsupported methodology'):
-      analysis.analyze(data, config)
+    with absltest.mock.patch.object(
+        analysis, '_get_placebo_masks', autospec=True
+    ) as mock_get_placebo_masks:
+      with self.assertRaisesRegex(
+          ValueError, r'Unsupported methodology: Methodology\.SDID'
+      ):
+        analysis.analyze(data, config)
+
+    mock_get_placebo_masks.assert_not_called()
+
+  def test_analyze_dispatches_to_registered_methodology(self):
+    data = self._create_sample_data(n_days=15, n_geos=6)
+    design_config = api.DesignConfig(
+        n_candidates=500,
+        experiment_duration=datetime.timedelta(days=3),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        methodology=api.Methodology.TBR,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        seed=42,
+    )
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1', 'G2'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={f'G{i}' for i in range(3, 7)},
+        excluded_geos=set(),
+        design_config=design_config,
+        constraints=api.Constraints(max_conversions_percent=0.5),
+        data=data,
+    )
+    config = api.AnalysisConfig(
+        n_placebo_candidates=10,
+        n_top_placebos=2,
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-11'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+        alpha=0.1,
+        test_type=api.TestType.TWO_SIDED,
+    )
+    methodology = registry.get_methodology(api.Methodology.TBR)
+
+    with (
+        absltest.mock.patch.object(
+            methodology, 'get_r2', wraps=methodology.get_r2
+        ) as mock_get_r2,
+        absltest.mock.patch.object(
+            methodology, 'analyze', wraps=methodology.analyze
+        ) as mock_analyze,
+    ):
+      result = analysis.analyze(data, config)
+
+    self.assertIn('cell_1', result.results)
+    mock_get_r2.assert_called_once()
+    mock_analyze.assert_called_once()
+    self.assertEqual(mock_analyze.call_args.kwargs['treatment_cell_id'], 1.0)
 
   def test_analyze_excluded_geos(self):
     # Setup with more geos to avoid "Not enough geos" error in placebo
@@ -1439,14 +1500,17 @@ class AnalysisTest(parameterized.TestCase):
     )
     self.assertIsNone(result)
 
-  @absltest.mock.patch.object(analysis.tbr, 'get_r2')
   @absltest.mock.patch.object(
       analysis.generate_candidates, 'get_random_candidates'
   )
   @absltest.mock.patch.object(analysis.design, 'prepare_data')
   def test_get_placebo_masks_multicell(
-      self, mock_prepare_data, mock_get_random_candidates, mock_get_r2
+      self, mock_prepare_data, mock_get_random_candidates
   ):
+    mock_methodology = absltest.mock.create_autospec(
+        base.CounterfactualMethodology, instance=True
+    )
+    mock_get_r2 = mock_methodology.get_r2
     # Verify that multicell placebo selection correctly optimizes min(R2).
     # This ensures that we aggregate R-squared correctly across all metrics.
     design_config = api.DesignConfig(
@@ -1522,6 +1586,7 @@ class AnalysisTest(parameterized.TestCase):
         design_config=design_config,
         analysis_config=analysis_config,
         key=jax.random.PRNGKey(0),
+        methodology=mock_methodology,
     )
 
     # _get_full_mask populates the treatment mask with 0 at treatment geos,
@@ -1533,14 +1598,17 @@ class AnalysisTest(parameterized.TestCase):
 
     np.testing.assert_array_equal(result_masks, expected_masks)
 
-  @absltest.mock.patch.object(analysis.tbr, 'get_r2')
   @absltest.mock.patch.object(
       analysis.generate_candidates, 'get_random_candidates'
   )
   @absltest.mock.patch.object(analysis.design, 'prepare_data')
   def test_get_placebo_masks_r2_filtering_and_thresholds(
-      self, mock_prepare_data, mock_get_random_candidates, mock_get_r2
+      self, mock_prepare_data, mock_get_random_candidates
   ):
+    mock_methodology = absltest.mock.create_autospec(
+        base.CounterfactualMethodology, instance=True
+    )
+    mock_get_r2 = mock_methodology.get_r2
     # Test R-squared thresholding (min_placebo_r2) and warning/error thresholds
     design_config = api.DesignConfig(
         n_candidates=1000,
@@ -1597,6 +1665,7 @@ class AnalysisTest(parameterized.TestCase):
           design_config=design_config,
           analysis_config=analysis_config,
           key=jax.random.PRNGKey(0),
+          methodology=mock_methodology,
       )
 
     # 1. Abundance state: 1000 candidates, all pass R2 filter (>= 0.6)

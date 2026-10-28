@@ -30,7 +30,10 @@ from meridian_geox import generate_candidates
 from meridian_geox import util
 from meridian_geox import validation
 from meridian_geox.data_quality import data_quality
-from meridian_geox.methodology import tbr
+from meridian_geox.methodology import base
+from meridian_geox.methodology import registry
+# Imported for its side effect of registering TbrMethodology with the registry.
+from meridian_geox.methodology import tbr  # pylint: disable=unused-import
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -128,8 +131,22 @@ def _get_placebo_masks(
     design_config: api.DesignConfig,
     analysis_config: api.AnalysisConfig,
     key: jax.Array,
+    methodology: base.CounterfactualMethodology,
 ) -> jnp.ndarray:
-  """Generates placebo masks for a GeoX experiment."""
+  """Generates placebo masks for a GeoX experiment.
+
+  Args:
+    design_obj: The experiment design.
+    treatment: The treatment mask and treatment geo names.
+    design_config: The design config used to generate placebo candidates.
+    analysis_config: The analysis config.
+    key: The JAX PRNG key.
+    methodology: The counterfactual methodology used to rank placebo
+      candidates by out-of-sample R-squared.
+
+  Returns:
+    (N_placebos, N_geos) Placebo masks.
+  """
   if design_obj.data is None:
     raise ValueError('Design data is required for placebo mask generation.')
 
@@ -187,7 +204,7 @@ def _get_placebo_masks(
   )
 
   # Compute R2 for all placebo candidates on T1
-  r2_scores = tbr.get_r2(
+  r2_scores = methodology.get_r2(
       data_pre=processed_placebo_data.selection_train,
       data_val=processed_placebo_data.selection_eval,
       treatment_masks=placebo_masks_without_treatment_geos,
@@ -255,12 +272,6 @@ def _prepare_design_config(
   if analysis_config.test_type is None:
     analysis_config.test_type = design_config.test_type
 
-  if design_config.methodology != api.Methodology.TBR:
-    raise ValueError(
-        f'Unsupported methodology: {design_config.methodology}. Only TBR is'
-        ' supported.'
-    )
-
   return design_config
 
 
@@ -324,7 +335,7 @@ def _get_estimated_bau_spend_go_dark_or_heavy_up(
     treatment_mask: np.ndarray,
     control_mask: np.ndarray,
     test_spend: jnp.ndarray,
-    result: Optional[tbr.TbrAnalysisResult] = None,
+    result: Optional[base.MethodologyAnalysisResult] = None,
 ) -> Optional[float]:
   """Computes estimated BAU spend for a GO_DARK or HEAVY_UP experiment."""
   num_treatment_geos = jnp.sum(treatment_mask.astype(jnp.float32))
@@ -352,7 +363,7 @@ def _get_estimated_bau_spend(
     spend: dict[str, TimeSeries],
     conversions: TimeSeries,
     experiment_type: api.ExperimentType,
-    result: Optional[tbr.TbrAnalysisResult] = None,
+    result: Optional[base.MethodologyAnalysisResult] = None,
 ) -> Optional[float]:
   """Computes estimated BAU spend for a cell during the test period."""
   if cell not in spend:
@@ -399,7 +410,7 @@ def _get_estimated_bau_spend(
 
 
 def _get_analysis_summary(
-    tbr_results: dict[str, tbr.TbrAnalysisResult],
+    methodology_results: dict[str, base.MethodologyAnalysisResult],
     pretest_dates: pd.Index,
     test_dates: pd.Index,
     analysis_config: api.AnalysisConfig,
@@ -413,29 +424,29 @@ def _get_analysis_summary(
   results = {}
   full_dates = pretest_dates.append(test_dates)
 
-  for cell, tbr_result in tbr_results.items():
+  for cell, methodology_result in methodology_results.items():
     cumulative_lift = pd.DataFrame(
-        data=tbr_result.cumulative_lift_with_cis,
+        data=methodology_result.cumulative_lift_with_cis,
         index=test_dates,
         columns=['lift', 'lower_bound', 'upper_bound'],
     )
 
     cumulative_icpd = None
-    if tbr_result.cumulative_icpd_with_cis is not None:
+    if methodology_result.cumulative_icpd_with_cis is not None:
       cumulative_icpd = pd.DataFrame(
-          data=tbr_result.cumulative_icpd_with_cis,
+          data=methodology_result.cumulative_icpd_with_cis,
           index=test_dates,
           columns=['icpd', 'lower_bound', 'upper_bound'],
       )
 
     counterfactual_conversions = pd.DataFrame(
-        data=tbr_result.counterfactual_conversions_with_cis,
+        data=methodology_result.counterfactual_conversions_with_cis,
         index=full_dates,
         columns=['observed', 'counterfactual', 'lower_bound', 'upper_bound'],
     )
 
     pointwise_difference = pd.DataFrame(
-        data=tbr_result.pointwise_difference_with_cis,
+        data=methodology_result.pointwise_difference_with_cis,
         index=full_dates,
         columns=['difference', 'lower_bound', 'upper_bound'],
     )
@@ -448,17 +459,17 @@ def _get_analysis_summary(
             spend=spend,
             conversions=conversions,
             experiment_type=experiment_types[cell],
-            result=tbr_result,
+            result=methodology_result,
         )
     )
 
     results[cell] = api.AnalysisMetrics(
-        lift=tbr_result.lift,
-        percent_lift=tbr_result.percent_lift,
+        lift=methodology_result.lift,
+        percent_lift=methodology_result.percent_lift,
         cumulative_lift=cumulative_lift,
         counterfactual_conversions=counterfactual_conversions,
         pointwise_difference=pointwise_difference,
-        icpd=tbr_result.icpd,
+        icpd=methodology_result.icpd,
         cumulative_icpd=cumulative_icpd,
         descriptive_metrics=descriptive_metrics,
     )
@@ -510,6 +521,9 @@ def analyze(
   # 1. Prepare configuration.
   design_config = _prepare_design_config(analysis_config)
   experiment_types = _get_experiment_types(design_config)
+  # Resolve the counterfactual methodology up front so that unsupported
+  # methodologies fail fast, before placebo generation.
+  methodology = registry.get_methodology(design_config.methodology)
 
   # 2. Prepare data and masks.
   data = _prepare_data(data, analysis_config)
@@ -555,16 +569,17 @@ def analyze(
       design_config=design_config,
       analysis_config=analysis_config,
       key=analysis_key,
+      methodology=methodology,
   )
 
   # 5. Run methodology analysis.
-  tbr_results = {}
+  methodology_results = {}
   experiment_duration_days = design_config.experiment_duration.days
   pretest_train = conversions.pretest[:-experiment_duration_days]
   pretest_val = conversions.pretest[-experiment_duration_days:]
 
   for cell, experiment_type in experiment_types.items():
-    tbr_results[cell] = tbr.analyze(
+    methodology_results[cell] = methodology.analyze(
         pretest_train_conversions=pretest_train,
         pretest_val_conversions=pretest_val,
         test_conversions=conversions.test,
@@ -582,7 +597,7 @@ def analyze(
 
   # 6. Package and return results.
   return _get_analysis_summary(
-      tbr_results=tbr_results,
+      methodology_results=methodology_results,
       pretest_dates=conversions.pretest_dates,
       test_dates=conversions.test_dates,
       analysis_config=analysis_config,
