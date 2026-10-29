@@ -436,6 +436,9 @@ class AnalysisConfig:
   min_placebo_count_warning: Annotated[int, pydantic.Field(ge=0)] = 100
   # Number of valid placebo candidates below which an error will be raised.
   min_placebo_count_error: Annotated[int, pydantic.Field(ge=0)] = 10
+  # If True, placebo p-values and confidence intervals use the absolute placebo
+  # t-statistics, so confidence intervals always contain the point estimate.
+  use_absolute_placebo_statistics: bool = False
 
 
 @dataclasses.dataclass

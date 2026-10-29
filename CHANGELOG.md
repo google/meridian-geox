@@ -23,6 +23,13 @@ To release a new version (e.g. from `1.0.0` -> `2.0.0`):
 
 ## [Unreleased]
 
+* Add `AnalysisConfig.use_absolute_placebo_statistics` (default `False`). If
+  `True`, placebo p-values and confidence intervals use the absolute placebo
+  t-statistics, so confidence intervals always contain the point estimate. A
+  one-sided bound is the corresponding end of the two-sided interval at level
+  `2 * alpha`. Bounds are infinite, with a warning, when there are too few
+  placebos for the given `alpha`.
+
 ## [1.0.1] - 2026-09-02
 
 ## [1.0.0] - 2026-09-01

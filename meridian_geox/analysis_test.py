@@ -396,6 +396,53 @@ class AnalysisTest(parameterized.TestCase):
     )
     self.assertLen(metrics.pointwise_difference, 15)
 
+  @parameterized.parameters(True, False)
+  def test_analyze_forwards_use_absolute_placebo_statistics(
+      self, use_absolute_placebo_statistics
+  ):
+    data = self._create_sample_data(n_days=15, n_geos=6)
+    design_config = api.DesignConfig(
+        n_candidates=500,
+        experiment_duration=datetime.timedelta(days=3),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        seed=42,
+    )
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1', 'G2'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={f'G{i}' for i in range(3, 7)},
+        excluded_geos=set(),
+        design_config=design_config,
+        constraints=api.Constraints(max_conversions_percent=0.5),
+        data=data,
+    )
+    config = api.AnalysisConfig(
+        n_placebo_candidates=10,
+        n_top_placebos=2,
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-11'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+        use_absolute_placebo_statistics=use_absolute_placebo_statistics,
+    )
+
+    with absltest.mock.patch.object(
+        analysis.tbr, 'analyze', wraps=analysis.tbr.analyze
+    ) as mock_analyze:
+      analysis.analyze(data, config)
+
+    self.assertEqual(
+        mock_analyze.call_args.kwargs['use_absolute_placebo_statistics'],
+        use_absolute_placebo_statistics,
+    )
+
   def test_analyze_stratified_sampling(self):
     data = self._create_sample_data(n_days=15, n_geos=10)
 
