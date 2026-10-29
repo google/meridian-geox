@@ -255,7 +255,9 @@ class DesignConfig:
     return self
 
   # Advanced design search parameters.
-  # Number of candidates for the fast scoring step.
+  # Maximum number of distinct candidates for the fast scoring step. With
+  # RANDOM geo assignment, all candidates are enumerated if there are at most
+  # this many.
   n_candidates: Annotated[int, pydantic.Field(gt=0)] = 100_000
   # Number of fully scored candidates.
   n_ranked_candidates: Annotated[int, pydantic.Field(gt=0)] = 100
@@ -425,7 +427,9 @@ class AnalysisConfig:
     return self
 
   # Advanced analysis parameters
-  # Number of initial placebo candidates generated before selection.
+  # Maximum number of distinct placebo candidates generated before selection.
+  # With RANDOM geo assignment, all placebo candidates are enumerated if there
+  # are at most this many.
   n_placebo_candidates: int = 100_000
   # Number of top valid placebo candidates used for analysis.
   n_top_placebos: Annotated[int, pydantic.Field(gt=0)] = 500
