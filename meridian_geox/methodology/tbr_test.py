@@ -17,6 +17,7 @@ import jax
 import jax.numpy as jnp
 from jax.scipy import stats
 from meridian_geox import api
+from meridian_geox.methodology import registry
 from meridian_geox.methodology import tbr
 from meridian_geox.methodology import util as methodology_util
 import numpy as np
@@ -1002,7 +1003,7 @@ class TbrTest(parameterized.TestCase):
         y_pred,
         rmse,
         log_rmse,
-    ) = tbr._compute_placebo_effect_from_mask(
+    ) = tbr.TbrMethodology()._compute_placebo_effect_from_mask(
         data_pretest,
         data_pretest_train,
         data_pretest_val,
@@ -1047,7 +1048,7 @@ class TbrTest(parameterized.TestCase):
         y_pred,
         rmse,
         log_rmse,
-    ) = tbr._compute_placebo_effect_from_mask(
+    ) = tbr.TbrMethodology()._compute_placebo_effect_from_mask(
         data_pretest,
         data_pretest_train,
         data_pretest_val,
@@ -1062,6 +1063,193 @@ class TbrTest(parameterized.TestCase):
     self.assertAlmostEqual(float(y_pred[0]), 30.0, delta=1e-4)
     self.assertAlmostEqual(float(effect[0]), 20.0, delta=1e-4)
     self.assertAlmostEqual(float(log_rmse), 0.0, delta=1e-4)
+
+  def test_tbr_methodology_delegation(self):
+    methodology = registry.get_methodology(api.Methodology.TBR)
+    self.assertIsInstance(methodology, tbr.TbrMethodology)
+
+    data_pre = jnp.array([
+        [10.0, 20.0, 10.0, 20.0],
+        [20.0, 40.0, 20.0, 40.0],
+        [30.0, 60.0, 30.0, 60.0],
+        [40.0, 80.0, 40.0, 80.0],
+    ])
+    data_val = jnp.array([
+        [60.0, 100.0, 50.0, 100.0],
+        [70.0, 120.0, 60.0, 120.0],
+    ])
+    spend_pre = jnp.array([
+        [6.0, 10.0, 10.0, 10.0],
+        [12.0, 20.0, 20.0, 20.0],
+        [18.0, 30.0, 30.0, 30.0],
+        [24.0, 40.0, 40.0, 40.0],
+    ])
+    candidates = jnp.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]])
+    design_config = api.DesignConfig(
+        experiment_duration=pd.Timedelta(days=2).to_pytimedelta(),
+        slope_tolerance=0.2,
+    )
+
+    compat = methodology.check_candidate_compatibility(
+        candidates=candidates,
+        conversion_data=data_pre,
+        spend_data=spend_pre,
+        design_config=design_config,
+        cell_id=1.0,
+    )
+    expected_compat = tbr.check_slope_similarity(
+        candidates=candidates,
+        conversion_data=data_pre,
+        spend_data=spend_pre,
+        tolerance=design_config.slope_tolerance,
+        cell_id=1.0,
+    )
+    self.assertEqual(compat.shape, (2,))
+    np.testing.assert_array_equal(compat, jnp.array([True, False]))
+    np.testing.assert_array_equal(compat, expected_compat)
+
+    cell_ids = jnp.array([1.0])
+    r2_res = methodology.get_r2(data_pre, data_val, candidates, cell_ids)
+    expected_r2 = tbr.get_r2(data_pre, data_val, candidates, cell_ids)
+    self.assertEqual(r2_res.shape, (2, 1))
+    np.testing.assert_allclose(
+        r2_res,
+        jnp.array([[-3.0], [0.75]]),
+        rtol=5e-5,
+        atol=5e-5,
+    )
+    np.testing.assert_allclose(r2_res, expected_r2, rtol=5e-5, atol=5e-5)
+
+    mde_res = methodology.get_mde(
+        data_pre, data_val, candidates, z_score_sum=1.96, cell_ids=cell_ids
+    )
+    expected_mde = tbr.get_mde(
+        data_pre, data_val, candidates, z_score_sum=1.96, cell_ids=cell_ids
+    )
+    self.assertEqual(mde_res.mde_abs.shape, (2, 1))
+    self.assertEqual(mde_res.mde_pct.shape, (2, 1))
+    self.assertEqual(mde_res.p_value.shape, (2, 1))
+    self.assertEqual(mde_res.observed_conversions.shape, (2, 1, 6))
+    self.assertEqual(mde_res.counterfactual_conversions.shape, (2, 1, 6))
+    np.testing.assert_allclose(
+        mde_res.mde_abs, jnp.array([[14.7], [14.7]]), rtol=5e-5, atol=5e-5
+    )
+    np.testing.assert_allclose(
+        mde_res.mde_abs, expected_mde.mde_abs, rtol=5e-5, atol=5e-5
+    )
+    np.testing.assert_allclose(
+        mde_res.mde_pct, expected_mde.mde_pct, rtol=5e-5, atol=5e-5
+    )
+    np.testing.assert_allclose(
+        mde_res.p_value, expected_mde.p_value, rtol=5e-5, atol=5e-5
+    )
+    np.testing.assert_allclose(
+        mde_res.observed_conversions,
+        expected_mde.observed_conversions,
+        rtol=5e-5,
+        atol=5e-5,
+    )
+    np.testing.assert_allclose(
+        mde_res.counterfactual_conversions,
+        expected_mde.counterfactual_conversions,
+        rtol=5e-5,
+        atol=5e-5,
+    )
+
+    placebo_masks = jnp.array([[0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]])
+    analysis_res = methodology.analyze(
+        pretest_train_conversions=data_pre[:2],
+        pretest_val_conversions=data_pre[2:],
+        test_conversions=data_val,
+        treatment_mask=candidates[0],
+        placebo_masks=placebo_masks,
+        alpha=0.1,
+        experiment_type=api.ExperimentType.HOLDBACK,
+    )
+    expected_analysis = tbr.analyze(
+        pretest_train_conversions=data_pre[:2],
+        pretest_val_conversions=data_pre[2:],
+        test_conversions=data_val,
+        treatment_mask=candidates[0],
+        placebo_masks=placebo_masks,
+        alpha=0.1,
+        experiment_type=api.ExperimentType.HOLDBACK,
+    )
+    self.assertEqual(analysis_res.cumulative_lift_with_cis.shape, (2, 3))
+    self.assertAlmostEqual(analysis_res.lift.point_estimate, 20.0, places=4)
+    self.assertEqual(analysis_res.lift, expected_analysis.lift)
+    self.assertEqual(analysis_res.percent_lift, expected_analysis.percent_lift)
+    np.testing.assert_allclose(
+        analysis_res.cumulative_lift_with_cis,
+        expected_analysis.cumulative_lift_with_cis,
+        rtol=5e-5,
+        atol=5e-5,
+    )
+
+  def test_fit_and_predict_single(self):
+    # 3 training time points, 2 evaluation time points, 4 geos.
+    data_train = jnp.array([
+        [10.0, 20.0, 12.0, 22.0],
+        [20.0, 30.0, 18.0, 34.0],
+        [30.0, 40.0, 32.0, 42.0],
+    ])
+    data_eval = jnp.array([
+        [40.0, 50.0, 38.0, 54.0],
+        [50.0, 60.0, 52.0, 62.0],
+    ])
+    treatment_group_mask = jnp.array([1.0, 0.0, 1.0, 0.0])
+    control_group_mask = jnp.array([0.0, 1.0, 0.0, 1.0])
+
+    y_train, y_pred_train, y_eval, y_pred_eval = (
+        tbr.TbrMethodology()._fit_and_predict_single(
+            data_train, data_eval, treatment_group_mask, control_group_mask
+        )
+    )
+
+    expected_y_train = jnp.array([11.0, 19.0, 31.0])
+    expected_x_train = jnp.array([21.0, 32.0, 41.0])
+    expected_y_eval = jnp.array([39.0, 51.0])
+    expected_x_eval = jnp.array([52.0, 61.0])
+    alpha, beta = tbr._fit_linear_regression(expected_x_train, expected_y_train)
+
+    np.testing.assert_allclose(y_train, expected_y_train, rtol=1e-6)
+    np.testing.assert_allclose(
+        y_pred_train, alpha + beta * expected_x_train, rtol=1e-6
+    )
+    np.testing.assert_allclose(y_eval, expected_y_eval, rtol=1e-6)
+    np.testing.assert_allclose(
+        y_pred_eval, alpha + beta * expected_x_eval, rtol=1e-6
+    )
+
+  def test_module_entry_points_dispatch_to_registered_methodology(self):
+    methodology = registry.get_methodology(api.Methodology.TBR)
+    data_pre = jnp.array([
+        [10.0, 20.0, 12.0, 22.0, 15.0],
+        [20.0, 30.0, 18.0, 34.0, 25.0],
+        [30.0, 40.0, 32.0, 42.0, 35.0],
+        [40.0, 52.0, 41.0, 50.0, 44.0],
+    ])
+    data_val = jnp.array([
+        [50.0, 60.0, 52.0, 62.0, 55.0],
+        [60.0, 71.0, 58.0, 73.0, 66.0],
+    ])
+    masks = jnp.array(
+        [[1.0, 0.0, 1.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0, 1.0]]
+    )
+    cell_ids = jnp.array([1.0])
+
+    np.testing.assert_array_equal(
+        tbr.get_r2(data_pre, data_val, masks, cell_ids),
+        methodology.get_r2(data_pre, data_val, masks, cell_ids),
+    )
+    module_mde = tbr.get_mde(
+        data_pre, data_val, masks, z_score_sum=2.8, cell_ids=cell_ids
+    )
+    methodology_mde = methodology.get_mde(
+        data_pre, data_val, masks, z_score_sum=2.8, cell_ids=cell_ids
+    )
+    np.testing.assert_array_equal(module_mde.mde_abs, methodology_mde.mde_abs)
+    np.testing.assert_array_equal(module_mde.p_value, methodology_mde.p_value)
 
 
 if __name__ == '__main__':
