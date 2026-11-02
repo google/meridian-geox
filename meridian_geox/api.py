@@ -461,6 +461,13 @@ class DescriptiveMetrics:
   # not include spend from other treatment cells or non-experimental geos,
   # and therefore does not represent the advertiser's total national spend.
   estimated_bau_spend: Optional[float] = None
+  # Fraction of placebos whose pre-test validation fit (log RMSE) is better
+  # than the treatment group's. Roughly uniform on [0, 1] when the treatment
+  # group is exchangeable with its placebos, which the p-value and confidence
+  # intervals assume. Values near 0 mean the treatment group fits unusually
+  # well, as happens when a design is selected for its fit, and the p-value is
+  # then likely too small.
+  pretest_fit_rank: Optional[float] = None
 
 
 @dataclasses.dataclass

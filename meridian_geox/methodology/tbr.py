@@ -111,6 +111,11 @@ class TbrAnalysisResult:
       CIs.
     pointwise_difference_with_cis: (T, 3) Pointwise difference and CIs.
     counterfactual_spend: (T,) Predicted counterfactual spend.
+    pretest_fit_rank: Fraction of placebos whose pre-test validation log RMSE
+      is lower than the treatment group's. Roughly uniform on [0, 1] when the
+      treatment group is exchangeable with its placebos, which the p-value
+      assumes. Values near 0 mean the treatment group fits the pre-test
+      unusually well, as happens when a design is selected for its fit.
   """
 
   lift: api.Estimate
@@ -125,6 +130,7 @@ class TbrAnalysisResult:
       default_factory=lambda: np.array([])
   )
   counterfactual_spend: Optional[np.ndarray] = None
+  pretest_fit_rank: Optional[float] = None
 
 
 @jax.jit
@@ -772,4 +778,5 @@ def analyze(
       counterfactual_conversions_with_cis=counterfactual_conversions_with_cis,
       pointwise_difference_with_cis=pointwise_difference_with_cis,
       counterfactual_spend=counterfactual_spend,
+      pretest_fit_rank=float(jnp.mean(placebo_log_rmses < log_rmse)),
   )
