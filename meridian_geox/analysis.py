@@ -16,6 +16,7 @@
 
 import copy
 import dataclasses
+import logging
 import re
 from typing import Optional, cast
 
@@ -34,6 +35,10 @@ from meridian_geox.methodology import tbr
 import numpy as np
 import pandas as pd
 import seaborn as sns
+
+# Warn when fewer than this fraction of placebos fit the pre-test better than
+# the treatment group.
+_PRETEST_FIT_RANK_WARNING = 0.05
 
 
 @dataclasses.dataclass
@@ -401,6 +406,26 @@ def _get_estimated_bau_spend(
   return None
 
 
+def _warn_if_pretest_fit_rank_low(
+    cell: str, pretest_fit_rank: Optional[float]
+) -> None:
+  """Warns when the treatment group out-fits nearly all of its placebos."""
+  if pretest_fit_rank is None or pretest_fit_rank >= _PRETEST_FIT_RANK_WARNING:
+    return
+  logging.warning(
+      'Only %.1f%% of placebos for %s fit the pre-test period better than the'
+      ' treatment group. The p-value and confidence intervals assume the'
+      ' treatment group is exchangeable with its placebos, so this rank'
+      ' should be roughly uniform. A rank this low is expected in %.0f%% of'
+      ' valid analyses, but is far more common when the design was selected'
+      ' for its pre-test fit, in which case the p-value is likely too small'
+      ' and the confidence interval too narrow.',
+      100 * pretest_fit_rank,
+      cell,
+      100 * _PRETEST_FIT_RANK_WARNING,
+  )
+
+
 def _get_analysis_summary(
     tbr_results: dict[str, tbr.TbrAnalysisResult],
     pretest_dates: pd.Index,
@@ -452,8 +477,10 @@ def _get_analysis_summary(
             conversions=conversions,
             experiment_type=experiment_types[cell],
             result=tbr_result,
-        )
+        ),
+        pretest_fit_rank=tbr_result.pretest_fit_rank,
     )
+    _warn_if_pretest_fit_rank_low(cell, tbr_result.pretest_fit_rank)
 
     results[cell] = api.AnalysisMetrics(
         lift=tbr_result.lift,

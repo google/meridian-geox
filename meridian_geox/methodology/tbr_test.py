@@ -866,6 +866,45 @@ class TbrTest(parameterized.TestCase):
     assert icpd is not None
     self.assertAlmostEqual(icpd.point_estimate, 1.0, delta=0.01)
 
+  @parameterized.named_parameters(
+      ('treatment_fits_best', True, 0.0),
+      ('treatment_fits_worst', False, 1.0),
+  )
+  def test_analyze_pretest_fit_rank(self, treatment_tracks_control, expected):
+    # 6 geos: G0, G1 treated, G2-G5 control. 20 pre-test days, 5 test days.
+    rng = np.random.default_rng(0)
+    n_pre, n_test = 20, 5
+    control = 100.0 + rng.normal(0.0, 5.0, (n_pre + n_test, 4))
+    if treatment_tracks_control:
+      # Treated geos equal the control mean, so the treatment group's
+      # counterfactual fits exactly while placebos (subsets of noisy control
+      # geos) do not.
+      treated = np.repeat(control.mean(axis=1, keepdims=True), 2, axis=1)
+    else:
+      # Control geos are identical, so every placebo fits exactly while the
+      # noisy treated geos do not.
+      control = np.repeat(control[:, :1], 4, axis=1)
+      treated = 100.0 + rng.normal(0.0, 5.0, (n_pre + n_test, 2))
+    conversions = jnp.array(np.concatenate([treated, control], axis=1))
+    placebo_masks = jnp.array([
+        [0, 0, 1, 1, 0, 0],
+        [0, 0, 0, 0, 1, 1],
+        [0, 0, 1, 0, 1, 0],
+        [0, 0, 0, 1, 0, 1],
+    ])
+
+    tbr_result = tbr.analyze(
+        pretest_train_conversions=conversions[: n_pre - n_test],
+        pretest_val_conversions=conversions[n_pre - n_test : n_pre],
+        test_conversions=conversions[n_pre:],
+        treatment_mask=jnp.array([1, 1, 0, 0, 0, 0]),
+        placebo_masks=placebo_masks,
+        alpha=0.1,
+        experiment_type=api.ExperimentType.HOLDBACK,
+    )
+
+    self.assertEqual(tbr_result.pretest_fit_rank, expected)
+
   def test_compute_studentized_p_value(self):
     p_val = methodology_util.compute_studentized_p_value(
         estimate=10.0,

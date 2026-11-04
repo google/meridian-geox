@@ -397,6 +397,9 @@ class AnalysisTest(parameterized.TestCase):
     )
     self.assertLen(metrics.pointwise_difference, 15)
 
+    assert metrics.descriptive_metrics is not None
+    self.assertBetween(metrics.descriptive_metrics.pretest_fit_rank, 0.0, 1.0)
+
   def test_analyze_stratified_sampling(self):
     data = self._create_sample_data(n_days=15, n_geos=10)
 
@@ -1446,6 +1449,20 @@ class AnalysisTest(parameterized.TestCase):
         experiment_type=typing.cast(api.ExperimentType, None),
     )
     self.assertIsNone(result)
+
+  def test_warn_if_pretest_fit_rank_low_warns(self):
+    with self.assertLogs(level='WARNING') as logs:
+      analysis._warn_if_pretest_fit_rank_low('cell_1', 0.01)
+    self.assertIn('Only 1.0% of placebos for cell_1', logs.output[0])
+
+  @parameterized.named_parameters(
+      ('typical_rank', 0.5),
+      ('at_threshold', analysis._PRETEST_FIT_RANK_WARNING),
+      ('not_computed', None),
+  )
+  def test_warn_if_pretest_fit_rank_low_silent(self, pretest_fit_rank):
+    with self.assertNoLogs(level='WARNING'):
+      analysis._warn_if_pretest_fit_rank_low('cell_1', pretest_fit_rank)
 
   @absltest.mock.patch.object(analysis.tbr, 'get_r2')
   @absltest.mock.patch.object(
