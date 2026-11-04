@@ -270,4 +270,23 @@ def validate_analysis_input(
           ' duration pretest dates during analysis phase.'
       )
 
+  # Check alpha for one-sided tests with absolute placebo t-statistics.
+  if analysis_config.use_absolute_placebo_statistics:
+    design_config = analysis_config.design.design_config
+    alpha = analysis_config.alpha
+    if alpha is None and design_config is not None:
+      alpha = design_config.alpha
+    test_type = analysis_config.test_type
+    if test_type is None and design_config is not None:
+      test_type = design_config.test_type
+    if (
+        test_type == api.TestType.ONE_SIDED
+        and alpha is not None
+        and alpha >= 0.5
+    ):
+      errors.append(
+          'Alpha must be less than 0.5 for one-sided tests with'
+          ' use_absolute_placebo_statistics=True.'
+      )
+
   return errors

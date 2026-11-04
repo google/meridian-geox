@@ -14,6 +14,7 @@
 
 """Tests for GeoX validation functions."""
 
+import dataclasses
 import datetime
 import logging
 from absl.testing import absltest
@@ -514,6 +515,55 @@ class ValidationTest(parameterized.TestCase):
         ' phase.',
         errors[0],
     )
+
+  @parameterized.named_parameters(
+      (
+          'from_analysis_config',
+          0.5,
+          api.TestType.ONE_SIDED,
+          0.1,
+          api.TestType.TWO_SIDED,
+      ),
+      ('from_design_config', None, None, 0.6, api.TestType.ONE_SIDED),
+  )
+  def test_validate_analysis_input_one_sided_absolute_alpha_too_large(
+      self, alpha, test_type, design_alpha, design_test_type
+  ):
+    design_config = dataclasses.replace(
+        self.design_config, alpha=design_alpha, test_type=design_test_type
+    )
+    config = dataclasses.replace(
+        self.analysis_config,
+        design=dataclasses.replace(self.design, design_config=design_config),
+        alpha=alpha,
+        test_type=test_type,
+        use_absolute_placebo_statistics=True,
+    )
+    errors = validation.validate_analysis_input(self.data, config)
+    self.assertEqual(
+        errors,
+        [
+            'Alpha must be less than 0.5 for one-sided tests with'
+            ' use_absolute_placebo_statistics=True.'
+        ],
+    )
+
+  @parameterized.named_parameters(
+      ('two_sided', 0.5, api.TestType.TWO_SIDED, True),
+      ('signed', 0.5, api.TestType.ONE_SIDED, False),
+      ('alpha_below_half', 0.4, api.TestType.ONE_SIDED, True),
+  )
+  def test_validate_analysis_input_one_sided_alpha_allowed(
+      self, alpha, test_type, use_absolute_placebo_statistics
+  ):
+    config = dataclasses.replace(
+        self.analysis_config,
+        alpha=alpha,
+        test_type=test_type,
+        use_absolute_placebo_statistics=use_absolute_placebo_statistics,
+    )
+    errors = validation.validate_analysis_input(self.data, config)
+    self.assertEmpty(errors)
 
 
 if __name__ == '__main__':
