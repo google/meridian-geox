@@ -16,6 +16,8 @@
 
 import copy
 import dataclasses
+import logging
+import math
 import re
 from typing import Optional, cast
 
@@ -235,6 +237,28 @@ def _get_placebo_masks(
   indices = jnp.argsort(valid_r2)[::-1]
   selected_subset = valid_placebos[indices[: analysis_config.n_top_placebos]]
 
+  if analysis_config.use_absolute_placebo_statistics:
+    n_placebo = selected_subset.shape[0]
+    alpha = cast(float, analysis_config.alpha)
+    # Finite bounds require ceil((1 - tail) * (J + 1)) <= J, i.e.,
+    # J >= (1 - tail) / tail, with tail = alpha for two-sided and 2 * alpha for
+    # one-sided bounds. The tolerance guards against float rounding.
+    if analysis_config.test_type == api.TestType.TWO_SIDED:
+      tail = alpha
+    else:
+      tail = 2.0 * alpha
+    min_placebo_count = math.ceil((1.0 - tail) / tail - 1e-9)
+    if n_placebo < min_placebo_count:
+      logging.warning(
+          'Number of placebos (%d) is below the minimum (%d) required for'
+          ' finite confidence intervals at alpha=%s with'
+          ' use_absolute_placebo_statistics=True. Confidence intervals are'
+          ' unbounded. Consider a larger alpha or more valid placebos.',
+          n_placebo,
+          min_placebo_count,
+          alpha,
+      )
+
   return jax.vmap(_get_full_mask, in_axes=(None, 0))(
       treatment.mask, selected_subset
   )
@@ -252,7 +276,7 @@ def _prepare_design_config(
       n_candidates=analysis_config.n_placebo_candidates,
   )
 
-  if not analysis_config.alpha:
+  if analysis_config.alpha is None:
     analysis_config.alpha = design_config.alpha
 
   if analysis_config.test_type is None:
@@ -579,6 +603,9 @@ def analyze(
         treatment_cell_id=util.cell_id_from_cell_name(cell),
         pretest_spend=spend[cell].pretest if cell in spend else None,
         test_spend=spend[cell].test if cell in spend else None,
+        use_absolute_placebo_statistics=(
+            analysis_config.use_absolute_placebo_statistics
+        ),
     )
 
   geos = sorted(data[api.LOCATION].unique())
@@ -597,11 +624,35 @@ def analyze(
   )
 
 
+def _fill_ci_band(
+    ax: plt.Axes,
+    index: pd.Index,
+    low: pd.Series,
+    high: pd.Series,
+    y_min: float,
+    y_max: float,
+    buffer: float,
+    color: str,
+    label: str,
+) -> None:
+  """Fills a confidence band, drawing infinite bounds to the plot edges."""
+  capped_low = np.where(low == -np.inf, y_min - buffer, low)
+  capped_high = np.where(high == np.inf, y_max + buffer, high)
+  ax.fill_between(
+      index,
+      capped_low,
+      capped_high,
+      where=(capped_low <= capped_high),
+      alpha=0.25,
+      color=color,
+      label=label,
+  )
+
+
 def plot_analysis(analysis_result: api.AnalysisResult):
   """Visualizes the 4-plot suite with divided timelines."""
   sns.set_style('whitegrid')
   start_dt = analysis_result.analysis_config.analysis_start_date
-  test_type = analysis_result.analysis_config.test_type
   has_icpd = any(
       m.cumulative_icpd is not None for m in analysis_result.results.values()
   )
@@ -714,11 +765,10 @@ def plot_analysis(analysis_result: api.AnalysisResult):
     )
     axes[2, 0].set_ylim(y_min_l_final, y_max_l_final)
 
-    y_min_i_final, y_max_i_final, buffer_i = None, None, None
+    y_min_i_final, y_max_i_final, buffer_i = calculate_ylim(
+        local_min_i, local_max_i
+    )
     if has_icpd:
-      y_min_i_final, y_max_i_final, buffer_i = calculate_ylim(
-          local_min_i, local_max_i
-      )
       axes[3, 0].set_ylim(y_min_i_final, y_max_i_final)
 
     # --- Plot 1: Observed vs. Counterfactual (Full Timeline) ---
@@ -739,37 +789,17 @@ def plot_analysis(analysis_result: api.AnalysisResult):
         linewidth=2.5,
     )
     df_cf_test = df_cf[df_cf.index >= start_dt].copy()
-    low_cf = df_cf_test['lower_bound']
-    high_cf = df_cf_test['upper_bound']
-
-    if test_type == api.TestType.ONE_SIDED:
-      cap_upper_cf = y_max_cf_final + buffer_cf
-      cap_lower_cf = y_min_cf_final - buffer_cf
-      temp_high_cf = np.where(high_cf == np.inf, cap_upper_cf, high_cf)
-      temp_low_cf = np.where(low_cf == -np.inf, cap_lower_cf, low_cf)
-      ax_diag.fill_between(
-          df_cf_test.index,
-          temp_low_cf,
-          temp_high_cf,
-          where=(temp_low_cf <= temp_high_cf),
-          alpha=0.25,
-          color=color_g,
-          label=(
-              f'Confidence interval on counterfactual conversions of {cell_id}'
-          ),
-      )
-    else:
-      ax_diag.fill_between(
-          df_cf_test.index,
-          low_cf,
-          high_cf,
-          where=(low_cf <= high_cf),
-          alpha=0.25,
-          color=color_g,
-          label=(
-              f'Confidence interval on counterfactual conversions of {cell_id}'
-          ),
-      )
+    _fill_ci_band(
+        ax_diag,
+        df_cf_test.index,
+        df_cf_test['lower_bound'],
+        df_cf_test['upper_bound'],
+        y_min_cf_final,
+        y_max_cf_final,
+        buffer_cf,
+        color_g,
+        f'Confidence interval on counterfactual conversions of {cell_id}',
+    )
 
     # --- Plot 2: Pointwise Differences (Full Timeline) ---
     ax_pw = axes[1, 0]
@@ -782,33 +812,17 @@ def plot_analysis(analysis_result: api.AnalysisResult):
         linewidth=2.5,
     )
     df_pw_test = df_pw[df_pw.index >= start_dt].copy()
-    low_pw = df_pw_test['lower_bound']
-    high_pw = df_pw_test['upper_bound']
-
-    if test_type == api.TestType.ONE_SIDED:
-      cap_upper_pw = y_max_pw_final + buffer_pw
-      cap_lower_pw = y_min_pw_final - buffer_pw
-      temp_high_pw = np.where(high_pw == np.inf, cap_upper_pw, high_pw)
-      temp_low_pw = np.where(low_pw == -np.inf, cap_lower_pw, low_pw)
-      ax_pw.fill_between(
-          df_pw_test.index,
-          temp_low_pw,
-          temp_high_pw,
-          where=(temp_low_pw <= temp_high_pw),
-          alpha=0.25,
-          color=color_o,
-          label=f'Confidence interval of {cell_id}',
-      )
-    else:
-      ax_pw.fill_between(
-          df_pw_test.index,
-          low_pw,
-          high_pw,
-          where=(low_pw <= high_pw),
-          alpha=0.25,
-          color=color_o,
-          label=f'Confidence interval of {cell_id}',
-      )
+    _fill_ci_band(
+        ax_pw,
+        df_pw_test.index,
+        df_pw_test['lower_bound'],
+        df_pw_test['upper_bound'],
+        y_min_pw_final,
+        y_max_pw_final,
+        buffer_pw,
+        color_o,
+        f'Confidence interval of {cell_id}',
+    )
 
     # --- Plot 3: Cumulative Lift (Test Period Only) ---
     ax_l = axes[2, 0]
@@ -822,33 +836,17 @@ def plot_analysis(analysis_result: api.AnalysisResult):
         color=color_b,
         linewidth=2.5,
     )
-    low_l = df_l_test['lower_bound']
-    high_l = df_l_test['upper_bound']
-
-    if test_type == api.TestType.ONE_SIDED:
-      cap_upper_l = y_max_l_final + buffer_l
-      cap_lower_l = y_min_l_final - buffer_l
-      temp_low_l = np.where(low_l == -np.inf, cap_lower_l, low_l)
-      temp_high_l = np.where(high_l == np.inf, cap_upper_l, high_l)
-      ax_l.fill_between(
-          df_l_test.index,
-          temp_low_l,
-          temp_high_l,
-          where=(temp_low_l <= temp_high_l),
-          alpha=0.25,
-          color=color_b,
-          label=f'Confidence interval of {cell_id}',
-      )
-    else:  # TWO_SIDED
-      ax_l.fill_between(
-          df_l_test.index,
-          low_l,
-          high_l,
-          where=(low_l <= high_l),
-          alpha=0.25,
-          color=color_b,
-          label=f'Confidence interval of {cell_id}',
-      )
+    _fill_ci_band(
+        ax_l,
+        df_l_test.index,
+        df_l_test['lower_bound'],
+        df_l_test['upper_bound'],
+        y_min_l_final,
+        y_max_l_final,
+        buffer_l,
+        color_b,
+        f'Confidence interval of {cell_id}',
+    )
 
     # --- Plot 4: Cumulative iCPD (Test Period Only) ---
     if has_icpd and metrics.cumulative_icpd is not None:
@@ -863,33 +861,17 @@ def plot_analysis(analysis_result: api.AnalysisResult):
           color=color_b,
           linewidth=2.5,
       )
-      low_i = df_i_test['lower_bound']
-      high_i = df_i_test['upper_bound']
-
-      if test_type == api.TestType.ONE_SIDED:
-        cap_lower_i = y_min_i_final - buffer_i  # pyrefly: ignore[unsupported-operation]
-        cap_upper_i = y_max_i_final + buffer_i  # pyrefly: ignore[unsupported-operation]
-        temp_low_i = np.where(low_i == -np.inf, cap_lower_i, low_i)
-        temp_high_i = np.where(high_i == np.inf, cap_upper_i, high_i)
-        ax_i.fill_between(
-            df_i_test.index,
-            temp_low_i,
-            temp_high_i,
-            where=(temp_low_i <= temp_high_i),
-            alpha=0.25,
-            color=color_b,
-            label=f'Confidence interval of {cell_id}',
-        )
-      else:  # TWO_SIDED
-        ax_i.fill_between(
-            df_i_test.index,
-            low_i,
-            high_i,
-            where=(low_i <= high_i),
-            alpha=0.25,
-            color=color_b,
-            label=f'Confidence interval of {cell_id}',
-        )
+      _fill_ci_band(
+          ax_i,
+          df_i_test.index,
+          df_i_test['lower_bound'],
+          df_i_test['upper_bound'],
+          y_min_i_final,
+          y_max_i_final,
+          buffer_i,
+          color_b,
+          f'Confidence interval of {cell_id}',
+      )
 
     # Final Layout Formatting with Divider
     pretest_end_date = analysis_result.analysis_config.pretest_end_date

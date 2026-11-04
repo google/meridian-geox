@@ -45,6 +45,64 @@ class AnalysisTest(parameterized.TestCase):
         data_rows.append(row)
     return pd.DataFrame(data_rows)
 
+  def _create_noisy_sample_data(self) -> pd.DataFrame:
+    """Creates noisy sample data for the absolute placebo statistics tests.
+
+    Returns:
+      Data for 10 geos from 2024-01-01 to 2024-01-15, in which the treated geos
+      G1 and G2 spend 50% more from 2024-01-11.
+    """
+    data = self._create_sample_data(n_days=15, n_geos=10, include_spend=True)
+    rng = np.random.default_rng(0)
+    data[api.CONVERSIONS] += rng.normal(0.0, 2.0, len(data))
+    data[api.SPEND] += rng.normal(0.0, 1.0, len(data))
+    is_treated_in_test = data[api.LOCATION].isin(['G1', 'G2']) & (
+        data[api.DATE] >= pd.Timestamp('2024-01-11')
+    )
+    data.loc[is_treated_in_test, api.SPEND] *= 1.5
+    return data
+
+  def _create_noisy_data_analysis_config(
+      self,
+      data: pd.DataFrame,
+      experiment_type: api.ExperimentType = api.ExperimentType.HOLDBACK,
+      **kwargs,
+  ) -> api.AnalysisConfig:
+    """Creates an analysis config for `_create_noisy_sample_data` data."""
+    design_config = api.DesignConfig(
+        n_candidates=500,
+        experiment_duration=datetime.timedelta(days=3),
+        experiment_types=experiment_type,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        seed=42,
+    )
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1', 'G2'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos=set(data[api.LOCATION]) - {'G1', 'G2'},
+        excluded_geos=set(),
+        design_config=design_config,
+        constraints=api.Constraints(max_conversions_percent=0.5),
+        data=data,
+    )
+    return api.AnalysisConfig(
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-11'),
+        analysis_end_date=pd.Timestamp('2024-01-15'),
+        alpha=0.1,
+        n_placebo_candidates=200,
+        min_placebo_count_warning=2,
+        min_placebo_count_error=2,
+        **kwargs,
+    )
+
   def test_prepare_data_filtering(self):
     data = self._create_sample_data(n_days=5, n_geos=3)
     # G3 is excluded, and 2024-01-04 (by design) and 2024-01-05 (by config) are
@@ -396,6 +454,193 @@ class AnalysisTest(parameterized.TestCase):
         ['difference', 'lower_bound', 'upper_bound'],
     )
     self.assertLen(metrics.pointwise_difference, 15)
+
+  def test_analyze_use_absolute_placebo_statistics_two_sided(self):
+    data = self._create_noisy_sample_data()
+    metrics = {}
+    for use_absolute_placebo_statistics in (False, True):
+      config = self._create_noisy_data_analysis_config(
+          data,
+          n_top_placebos=10,
+          test_type=api.TestType.TWO_SIDED,
+          use_absolute_placebo_statistics=use_absolute_placebo_statistics,
+      )
+      metrics[use_absolute_placebo_statistics] = analysis.analyze(
+          data, config
+      ).results['cell_1']
+    signed, absolute = metrics[False], metrics[True]
+
+    self.assertEqual(absolute.lift.point_estimate, signed.lift.point_estimate)
+    # The root mean square of the placebo t-statistics is at least their
+    # standard deviation.
+    self.assertGreaterEqual(
+        absolute.lift.standard_deviation, signed.lift.standard_deviation
+    )
+
+    def assert_finite_and_symmetric(estimate, lower, upper):
+      estimate, lower, upper = map(np.asarray, (estimate, lower, upper))
+      self.assertTrue(np.all(np.isfinite(lower)) and np.all(np.isfinite(upper)))
+      self.assertTrue(np.all(lower <= estimate) and np.all(estimate <= upper))
+      np.testing.assert_allclose(upper - estimate, estimate - lower, rtol=1e-4)
+
+    lift = absolute.lift
+    assert_finite_and_symmetric(
+        lift.point_estimate, lift.lower_bound, lift.upper_bound
+    )
+    cumulative_lift = absolute.cumulative_lift
+    assert_finite_and_symmetric(
+        cumulative_lift['lift'],
+        cumulative_lift['lower_bound'],
+        cumulative_lift['upper_bound'],
+    )
+    test_period = absolute.pointwise_difference.index >= pd.Timestamp(
+        '2024-01-11'
+    )
+    pointwise = absolute.pointwise_difference[test_period]
+    assert_finite_and_symmetric(
+        pointwise['difference'],
+        pointwise['lower_bound'],
+        pointwise['upper_bound'],
+    )
+    counterfactual = absolute.counterfactual_conversions[test_period]
+    assert_finite_and_symmetric(
+        counterfactual['counterfactual'],
+        counterfactual['lower_bound'],
+        counterfactual['upper_bound'],
+    )
+    # Percent lift intervals are symmetric on the log-ratio scale.
+    percent_lift = absolute.percent_lift
+    assert_finite_and_symmetric(
+        np.log1p(percent_lift.point_estimate),
+        np.log1p(percent_lift.lower_bound),
+        np.log1p(percent_lift.upper_bound),
+    )
+    icpd = absolute.icpd
+    assert icpd is not None
+    assert_finite_and_symmetric(
+        icpd.point_estimate, icpd.lower_bound, icpd.upper_bound
+    )
+    cumulative_icpd = absolute.cumulative_icpd
+    assert cumulative_icpd is not None
+    assert_finite_and_symmetric(
+        cumulative_icpd['icpd'],
+        cumulative_icpd['lower_bound'],
+        cumulative_icpd['upper_bound'],
+    )
+
+  @parameterized.named_parameters(
+      ('holdback', api.ExperimentType.HOLDBACK),
+      ('go_dark', api.ExperimentType.GO_DARK),
+  )
+  def test_analyze_use_absolute_placebo_statistics_one_sided(
+      self, experiment_type
+  ):
+    data = self._create_noisy_sample_data()
+    config = self._create_noisy_data_analysis_config(
+        data,
+        experiment_type=experiment_type,
+        n_top_placebos=10,
+        test_type=api.TestType.ONE_SIDED,
+        use_absolute_placebo_statistics=True,
+    )
+
+    metrics = analysis.analyze(data, config).results['cell_1']
+
+    for estimate in (metrics.lift, metrics.percent_lift):
+      self.assertTrue(np.isfinite(estimate.lower_bound))
+      self.assertLessEqual(estimate.lower_bound, estimate.point_estimate)
+      self.assertEqual(estimate.upper_bound, np.inf)
+    counterfactual = metrics.counterfactual_conversions[
+        metrics.counterfactual_conversions.index >= pd.Timestamp('2024-01-11')
+    ]
+    point = counterfactual['counterfactual']
+    lower = counterfactual['lower_bound']
+    upper = counterfactual['upper_bound']
+    if experiment_type == api.ExperimentType.GO_DARK:
+      # Go Dark tests for a decrease, so the counterfactual is bounded below.
+      self.assertTrue(np.all(np.isfinite(lower)) and np.all(lower <= point))
+      self.assertTrue(np.all(np.isposinf(upper)))
+    else:
+      self.assertTrue(np.all(np.isneginf(lower)))
+      self.assertTrue(np.all(np.isfinite(upper)) and np.all(upper >= point))
+
+  @parameterized.named_parameters(
+      # With alpha = 0.1, finite two-sided bounds require 9 placebos and finite
+      # one-sided bounds require 4.
+      ('two_sided', api.TestType.TWO_SIDED, 8),
+      ('one_sided', api.TestType.ONE_SIDED, 3),
+  )
+  def test_analyze_warns_when_too_few_placebos_for_finite_cis(
+      self, test_type, n_top_placebos
+  ):
+    data = self._create_noisy_sample_data()
+    config = self._create_noisy_data_analysis_config(
+        data,
+        n_top_placebos=n_top_placebos,
+        test_type=test_type,
+        use_absolute_placebo_statistics=True,
+    )
+
+    with self.assertLogs(level='WARNING') as logs:
+      metrics = analysis.analyze(data, config).results['cell_1']
+
+    self.assertLen(logs.output, 1)
+    self.assertIn('required for finite confidence intervals', logs.output[0])
+    self.assertEqual(metrics.lift.lower_bound, -np.inf)
+    self.assertEqual(metrics.lift.upper_bound, np.inf)
+    self.assertEqual(metrics.percent_lift.lower_bound, -np.inf)
+    self.assertEqual(metrics.percent_lift.upper_bound, np.inf)
+
+  @parameterized.named_parameters(
+      ('two_sided', api.TestType.TWO_SIDED, 9, True),
+      ('one_sided', api.TestType.ONE_SIDED, 4, True),
+      ('signed', api.TestType.TWO_SIDED, 3, False),
+  )
+  def test_analyze_does_not_warn_with_enough_placebos_for_finite_cis(
+      self, test_type, n_top_placebos, use_absolute_placebo_statistics
+  ):
+    data = self._create_noisy_sample_data()
+    config = self._create_noisy_data_analysis_config(
+        data,
+        n_top_placebos=n_top_placebos,
+        test_type=test_type,
+        use_absolute_placebo_statistics=use_absolute_placebo_statistics,
+    )
+
+    with self.assertNoLogs(level='WARNING'):
+      metrics = analysis.analyze(data, config).results['cell_1']
+
+    self.assertTrue(np.isfinite(metrics.lift.lower_bound))
+
+  def test_plot_analysis_with_infinite_two_sided_bounds(self):
+    data = self._create_noisy_sample_data()
+    config = self._create_noisy_data_analysis_config(
+        data,
+        n_top_placebos=2,
+        test_type=api.TestType.TWO_SIDED,
+        use_absolute_placebo_statistics=True,
+    )
+    result = analysis.analyze(data, config)
+    self.assertEqual(result.results['cell_1'].lift.lower_bound, -np.inf)
+    self.assertEqual(result.results['cell_1'].lift.upper_bound, np.inf)
+    self.addCleanup(analysis.plt.close, 'all')
+
+    with absltest.mock.patch.object(analysis.plt, 'show'):
+      analysis.plot_analysis(result)
+
+    axes = analysis.plt.gcf().axes
+    self.assertLen(axes, 4)
+    for ax in axes:
+      bands = [
+          collection
+          for collection in ax.collections
+          if collection.get_label().startswith('Confidence interval')
+      ]
+      self.assertLen(bands, 1)
+      # Infinite bounds are drawn to the plot edges instead of being omitted.
+      self.assertNotEmpty(bands[0].get_paths())
+      for path in bands[0].get_paths():
+        self.assertTrue(np.all(np.isfinite(path.vertices)))
 
   def test_analyze_stratified_sampling(self):
     data = self._create_sample_data(n_days=15, n_geos=10)

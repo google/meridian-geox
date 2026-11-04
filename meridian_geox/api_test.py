@@ -193,6 +193,29 @@ class ApiTest(parameterized.TestCase):
           pretest_end_date='2024-01-20',
       )
 
+  @parameterized.parameters(-0.1, 0.0, 1.0, 1.5)
+  def test_analysis_config_alpha_validation(self, alpha):
+    dummy_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G0', 'G1'},
+                minimum_detectable_effect=0.05,
+                design_implied_cpic=1.0,
+                p_value=0.05,
+                budget=1000.0,
+            )
+        },
+        control_geos={'G2'},
+        excluded_geos=set(),
+    )
+    with self.assertRaisesRegex(ValueError, 'alpha'):
+      api.AnalysisConfig(
+          design=dummy_design,
+          analysis_start_date='2024-01-20',
+          analysis_end_date='2024-01-30',
+          alpha=alpha,
+      )
+
 
 if __name__ == '__main__':
   absltest.main()
