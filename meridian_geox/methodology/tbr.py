@@ -515,6 +515,8 @@ def _compute_icpd(
   cumulative_incremental_spend = jnp.cumsum(incremental_spend)
 
   cumulative_icpd = total_cumul_effect / cumulative_incremental_spend
+  # TODO: Order the bounds when cumulative_incremental_spend is
+  # negative.
   icpd_lower = total_lower_cis / cumulative_incremental_spend
   icpd_upper = total_upper_cis / cumulative_incremental_spend
 
@@ -539,6 +541,7 @@ def analyze(
     treatment_cell_id: float = 1.0,
     pretest_spend: Optional[jnp.ndarray] = None,
     test_spend: Optional[jnp.ndarray] = None,
+    use_absolute_placebo_statistics: bool = False,
 ) -> TbrAnalysisResult:
   """Generates analysis metrics for a GeoX experiment using JAX inputs."""
 
@@ -620,8 +623,15 @@ def analyze(
   signed_t_placebo = sign * t_placebo
 
   geo_averaged_lower_cis, geo_averaged_upper_cis = jax.vmap(
-      methodology_util.compute_cis, in_axes=(0, None, 1, None, None)
-  )(signed_geo_avg_cumul_effect, rmse, signed_t_placebo, alpha, test_type)
+      methodology_util.compute_cis, in_axes=(0, None, 1, None, None, None)
+  )(
+      signed_geo_avg_cumul_effect,
+      rmse,
+      signed_t_placebo,
+      alpha,
+      test_type,
+      use_absolute_placebo_statistics,
+  )
   total_lower_cis = n_treatment_geos * geo_averaged_lower_cis
   total_upper_cis = n_treatment_geos * geo_averaged_upper_cis
 
@@ -630,9 +640,12 @@ def analyze(
       rmse,
       signed_t_placebo[:, -1],
       test_type,
+      use_absolute_placebo_statistics=use_absolute_placebo_statistics,
   )
   lift_standard_deviation = n_treatment_geos * methodology_util.compute_se(
-      rmse, signed_t_placebo[:, -1]  # pyrefly: ignore[bad-argument-type]
+      rmse,
+      signed_t_placebo[:, -1],
+      use_absolute_placebo_statistics=use_absolute_placebo_statistics,
   )
   lift = api.Estimate(
       point_estimate=float(signed_total_cumul_effect[-1]),
@@ -651,6 +664,7 @@ def analyze(
       alpha,
       experiment_type,
       test_type,
+      use_absolute_placebo_statistics=use_absolute_placebo_statistics,
   )
 
   cumulative_lift_with_cis = np.array(
@@ -669,13 +683,14 @@ def analyze(
   signed_t_placebo_pointwise = sign * t_placebo_pointwise
 
   geo_averaged_pointwise_lower_cis, geo_averaged_pointwise_upper_cis = jax.vmap(
-      methodology_util.compute_cis, in_axes=(0, None, 1, None, None)
+      methodology_util.compute_cis, in_axes=(0, None, 1, None, None, None)
   )(
       signed_total_pointwise_effect / n_treatment_geos,
       rmse,
       signed_t_placebo_pointwise,
       alpha,
       test_type,
+      use_absolute_placebo_statistics,
   )
   total_pointwise_lower_cis = (
       n_treatment_geos * geo_averaged_pointwise_lower_cis

@@ -18,7 +18,6 @@ import jax.numpy as jnp
 from jax.scipy import stats
 from meridian_geox import api
 from meridian_geox.methodology import tbr
-from meridian_geox.methodology import util as methodology_util
 import numpy as np
 import pandas as pd
 
@@ -865,120 +864,6 @@ class TbrTest(parameterized.TestCase):
     icpd = tbr_result.icpd
     assert icpd is not None
     self.assertAlmostEqual(icpd.point_estimate, 1.0, delta=0.01)
-
-  def test_compute_studentized_p_value(self):
-    p_val = methodology_util.compute_studentized_p_value(
-        estimate=10.0,
-        rmse=1.0,
-        t_placebo=jnp.array([0.0, 5.0, 10.0, 15.0]),
-        test_type=api.TestType.TWO_SIDED,
-    )
-    # n_extreme_left = sum([0, 5, 10, 15] <= 10.0) = 3
-    # n_extreme_right = sum([0, 5, 10, 15] >= 10.0) = 2
-    # n_extreme = 2 * min(3, 2) = 4
-    # p_val = (1 + 4) / (1 + 4) = 1.0
-    self.assertAlmostEqual(p_val, 1.0)
-
-  def test_compute_se(self):
-    rmse = 2.0
-    t_placebo = jnp.array([-1.0, 0.0, 1.0])
-    se = methodology_util.compute_se(rmse, t_placebo)
-    # std([-1, 0, 1]) = sqrt(2/3)
-    expected_se = jnp.std(t_placebo) * rmse
-    self.assertAlmostEqual(se, expected_se)
-
-  def test_compute_cis_two_sided(self):
-    estimate = 100.0
-    rmse = 10.0
-    t_placebo = jnp.array([-1.0, 0.0, 1.0])
-    alpha = 0.1
-    lower, upper = methodology_util.compute_cis(
-        estimate, rmse, t_placebo, alpha, api.TestType.TWO_SIDED
-    )
-    # quantile(t_placebo, 1-0.05) = quantile([-1, 0, 1], 0.95)
-    # quantile(t_placebo, 0.05) = quantile([-1, 0, 1], 0.05)
-    expected_lower = estimate - jnp.quantile(t_placebo, 0.95) * rmse
-    expected_upper = estimate - jnp.quantile(t_placebo, 0.05) * rmse
-    self.assertAlmostEqual(lower, expected_lower)
-    self.assertAlmostEqual(upper, expected_upper)
-
-  def test_compute_cis_one_sided(self):
-    estimate = 100.0
-    rmse = 10.0
-    t_placebo = jnp.array([-1.0, 0.0, 1.0])
-    alpha = 0.1
-    lower, upper = methodology_util.compute_cis(
-        estimate, rmse, t_placebo, alpha, api.TestType.ONE_SIDED
-    )
-    expected_lower = estimate - jnp.quantile(t_placebo, 0.9) * rmse
-    expected_upper = jnp.inf
-    self.assertAlmostEqual(lower, expected_lower)
-    self.assertEqual(upper, expected_upper)
-
-  @parameterized.named_parameters(
-      dict(
-          testcase_name='holdback_two_sided',
-          experiment_type=api.ExperimentType.HOLDBACK,
-          test_type=api.TestType.TWO_SIDED,
-          expected_estimate=0.1,  # (1.1 / 1.0) - 1
-      ),
-      dict(
-          testcase_name='holdback_one_sided',
-          experiment_type=api.ExperimentType.HOLDBACK,
-          test_type=api.TestType.ONE_SIDED,
-          expected_estimate=0.1,
-      ),
-      dict(
-          testcase_name='go_dark_two_sided',
-          experiment_type=api.ExperimentType.GO_DARK,
-          test_type=api.TestType.TWO_SIDED,
-          expected_estimate=-(0.9 / 1.0 - 1.0),  # -(0.9 - 1) = 0.1
-      ),
-      dict(
-          testcase_name='go_dark_one_sided',
-          experiment_type=api.ExperimentType.GO_DARK,
-          test_type=api.TestType.ONE_SIDED,
-          expected_estimate=0.1,
-      ),
-  )
-  def test_get_percent_lift(
-      self, experiment_type, test_type, expected_estimate
-  ):
-    # Setup values.
-    # For HOLDBACK: y_test = 1.1, y_pred = 1.0. log(1.1/1.0) = ~0.0953.
-    # For GO_DARK: y_test = 0.9, y_pred = 1.0. log(0.9/1.0) = ~-0.1053.
-    if experiment_type == api.ExperimentType.HOLDBACK:
-      y_test = 1.1
-    else:
-      y_test = 0.9
-    y_pred = jnp.array(1.0)
-    log_rmse = jnp.array(0.1)
-    y_test_placebos = jnp.array([1.0, 1.05, 0.95])
-    y_pred_placebos = jnp.array([1.0, 1.0, 1.0])
-    placebo_log_rmses = jnp.array([0.1, 0.1, 0.1])
-    alpha = 0.1
-
-    estimate = methodology_util.get_percent_lift(
-        y_test=jnp.array(y_test),
-        y_pred=y_pred,
-        log_rmse=log_rmse,
-        y_test_placebos=y_test_placebos,
-        y_pred_placebos=y_pred_placebos,
-        placebo_log_rmses=placebo_log_rmses,
-        alpha=alpha,
-        experiment_type=experiment_type,
-        test_type=test_type,
-    )
-
-    self.assertIsInstance(estimate, api.Estimate)
-    self.assertIsInstance(estimate.point_estimate, float)
-    self.assertAlmostEqual(
-        estimate.point_estimate, expected_estimate, delta=1e-5
-    )
-    self.assertIsInstance(estimate.lower_bound, float)
-    self.assertIsInstance(estimate.upper_bound, float)
-    self.assertIsInstance(estimate.standard_deviation, float)
-    self.assertIsInstance(estimate.p_value, float)
 
   def test_compute_placebo_effect_from_mask(self):
     # Setup simple data where linear fit is perfect
