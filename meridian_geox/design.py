@@ -605,6 +605,13 @@ def run_design(
         f'Unsupported geo assignment rule: {design_config.geo_assignment_rule}'
     )
 
+  if len(candidates) < 2:
+    raise ValueError(
+        'At least 2 distinct valid candidates are needed to estimate the'
+        f' minimum detectable effect, but found {len(candidates)}. Consider'
+        ' relaxing constraints.'
+    )
+
   # 3. Fast score based on out of sample R2 and select top X candidates for full
   # scoring.
   cell_ids = jnp.arange(1, design_config.cell_count + 1).astype(jnp.float32)

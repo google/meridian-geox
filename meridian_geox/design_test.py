@@ -135,6 +135,66 @@ class DesignTest(parameterized.TestCase):
           constraints,
       )
 
+  def test_random_design_returns_distinct_designs(self):
+    dates = pd.date_range(start='2023-01-01', periods=30)
+    locations = [f'geo_{i}' for i in range(8)]
+    data = pd.DataFrame([
+        {
+            api.DATE: date,
+            api.LOCATION: loc,
+            api.CONVERSIONS: 100.0 + (date.day % 7) * 5.0,
+        }
+        for date, loc in itertools.product(dates, locations)
+    ])
+    # 8 geos with the default max_conversions_percent give C(8, 2) = 28
+    # candidate designs, far fewer than n_candidates.
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=5),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        n_candidates=1000,
+        design_output_count=10,
+        seed=42,
+    )
+
+    result = design.run_design(data, design_config, api.Constraints())
+
+    treatment_sets = [
+        frozenset(design_obj.designs['cell_1'].treatment_geos)
+        for design_obj in result.designs.values()
+    ]
+    self.assertLen(treatment_sets, 10)
+    self.assertLen(set(treatment_sets), 10)
+
+  def test_random_design_raises_with_single_candidate(self):
+    dates = pd.date_range(start='2023-01-01', periods=30)
+    locations = [f'geo_{i}' for i in range(6)]
+    data = pd.DataFrame([
+        {
+            api.DATE: date,
+            api.LOCATION: loc,
+            api.CONVERSIONS: 100.0 + (date.day % 7) * 5.0,
+        }
+        for date, loc in itertools.product(dates, locations)
+    ])
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=5),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        seed=42,
+    )
+    # 6 geos with max_conversions_percent=0.4 give 2 treated geos, and forcing
+    # 4 geos to control leaves a single candidate.
+    constraints = api.Constraints(
+        max_conversions_percent=0.4,
+        included_control_geos={'geo_2', 'geo_3', 'geo_4', 'geo_5'},
+    )
+
+    with self.assertRaisesRegex(
+        ValueError, 'At least 2 distinct valid candidates'
+    ):
+      design.run_design(data, design_config, constraints)
+
   def test_design_small_n_geos(self):
     # 6 geos.
     dates = pd.date_range(start='2023-01-01', periods=10)

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import datetime
+import itertools
 from absl.testing import absltest
 from absl.testing import parameterized
 import jax
@@ -54,6 +55,23 @@ def _reference_mask_maximizing_conversions(
         conversions += added_conversions
         geo_cluster_index += 1
   return mask
+
+
+def _conversions_data(geo_conversions):
+  """Returns one day of data with the given conversions per geo."""
+  return pd.DataFrame([
+      {
+          'date': pd.Timestamp('2024-01-01'),
+          'location': f'G{i:02d}',
+          'conversions': conversions,
+      }
+      for i, conversions in enumerate(geo_conversions)
+  ])
+
+
+def _equal_conversions_data(n_geos):
+  """Returns one day of data in which every geo has 10 conversions."""
+  return _conversions_data([10.0] * n_geos)
 
 
 class GenerateCandidatesTest(parameterized.TestCase):
@@ -255,11 +273,14 @@ class GenerateCandidatesTest(parameterized.TestCase):
         geo_stratum_labels=geo_stratum_labels,
         key=key,
     )
-    self.assertEqual(candidates.shape, (10, 6))
+    self.assertEqual(candidates.shape[1], 6)
+    self.assertGreater(len(candidates), 1)
+    self.assertLessEqual(len(candidates), design_config.n_candidates)
+    self.assertLen(np.unique(candidates, axis=0), len(candidates))
     # total conversions = 200. Max conversions = 0.4 * 200 = 80.
     geo_conversions = np.array([10.0, 20.0, 5.0, 15.0, 50.0, 100.0])
-    for i in range(design_config.n_candidates):
-      self.assertLessEqual(np.sum(geo_conversions[candidates[i, :] == 1]), 80.0)
+    for candidate in np.asarray(candidates):
+      self.assertLessEqual(np.sum(geo_conversions[candidate == 1]), 80.0)
 
   def test_get_stratified_sampling_candidates_min_geos_filter(self):
     design_config = api.DesignConfig(
@@ -363,6 +384,291 @@ class GenerateCandidatesTest(parameterized.TestCase):
     for i in range(design_config.n_candidates):
       treated_mask = candidates[i, :] > 0
       self.assertLessEqual(np.sum(geo_conversions[treated_mask]), 50.0)
+
+  def test_distinct_rows_keeps_first_occurrences(self):
+    masks = jnp.array([[0, 1], [1, 0], [0, 1], [1, 1], [1, 0]])
+    np.testing.assert_array_equal(
+        generate_candidates._distinct_rows(masks), [[0, 1], [1, 0], [1, 1]]
+    )
+
+  def test_combine_valid_batches_removes_copies_before_trimming(self):
+    batches = [
+        jnp.array([[0, 1], [0, 1], [1, 0]]),
+        jnp.array([[1, 1], [0, 0]]),
+    ]
+    np.testing.assert_array_equal(
+        generate_candidates._combine_valid_batches(batches, 3),
+        [[0, 1], [1, 0], [1, 1]],
+    )
+
+  def test_combine_valid_batches_warns_if_too_few_distinct(self):
+    with self.assertLogs(level='WARNING') as logs:
+      candidates = generate_candidates._combine_valid_batches(
+          [jnp.array([[0, 1], [0, 1]])], 2
+      )
+    np.testing.assert_array_equal(candidates, [[0, 1]])
+    self.assertIn('Found 1 distinct valid candidates', logs.output[0])
+
+  @parameterized.parameters(
+      (10, 5, 2), (10, 7, 3), (12, 6, 3), (9, 4, 1), (16, 13, 6), (14, 10, 7)
+  )
+  def test_get_random_cell_sizes_matches_sampler(
+      self, n_geos, n_treated, n_cells
+  ):
+    masks = generate_candidates._generate_random_masks(
+        5,
+        n_geos,
+        n_treated,
+        n_cells,
+        jnp.zeros(n_geos, dtype=bool),
+        jax.random.key(0),
+    )
+    cell_sizes = generate_candidates._get_random_cell_sizes(n_treated, n_cells)
+    self.assertEqual(sum(cell_sizes), n_treated)
+    for mask in np.asarray(masks):
+      self.assertEqual(
+          [int(np.sum(mask == cell)) for cell in range(1, n_cells + 1)],
+          cell_sizes,
+      )
+
+  def test_get_random_candidates_enumerates_small_space(self):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        n_candidates=100,
+    )
+    # 6 geos with max_conversions_percent=0.5 give 3 treated geos, and all
+    # C(6, 3) = 20 masks satisfy the volume constraint.
+    constraints = api.Constraints(max_conversions_percent=0.5)
+    candidates = [
+        np.asarray(
+            generate_candidates.get_random_candidates(
+                filtered_data=_equal_conversions_data(6),
+                design_config=design_config,
+                constraints=constraints,
+                key=jax.random.key(seed),
+                selection_train=jnp.zeros((1, 6)),
+            )
+        )
+        for seed in (0, 1)
+    ]
+
+    expected = set()
+    for treated_geos in itertools.combinations(range(6), 3):
+      mask = np.zeros(6, dtype=int)
+      mask[list(treated_geos)] = 1
+      expected.add(tuple(mask))
+    self.assertLen(candidates[0], 20)
+    self.assertEqual(
+        {tuple(row.astype(int)) for row in candidates[0]}, expected
+    )
+    np.testing.assert_array_equal(candidates[0], candidates[1])
+
+  def test_get_random_candidates_enumeration_excludes_forced_controls(self):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        n_candidates=100,
+    )
+    constraints = api.Constraints(
+        max_conversions_percent=0.5, included_control_geos={'G00'}
+    )
+    candidates = np.asarray(
+        generate_candidates.get_random_candidates(
+            filtered_data=_equal_conversions_data(6),
+            design_config=design_config,
+            constraints=constraints,
+            key=jax.random.key(0),
+            selection_train=jnp.zeros((1, 6)),
+        )
+    )
+    # 3 treated geos out of the 5 geos that are not forced to control.
+    self.assertLen(candidates, 10)
+    self.assertLen(np.unique(candidates, axis=0), 10)
+    np.testing.assert_array_equal(candidates[:, 0], 0.0)
+
+  def test_get_random_candidates_enumerates_multicell_space(self):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1),
+        cell_count=2,
+        experiment_types={
+            'cell_1': api.ExperimentType.HOLDBACK,
+            'cell_2': api.ExperimentType.HOLDBACK,
+        },
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        n_candidates=1000,
+    )
+    # 8 geos with max_conversions_percent=0.5 give 2 treated geos per cell, so
+    # there are C(8, 2) * C(6, 2) = 420 masks.
+    constraints = api.Constraints(max_conversions_percent=0.5)
+    candidates = np.asarray(
+        generate_candidates.get_random_candidates(
+            filtered_data=_equal_conversions_data(8),
+            design_config=design_config,
+            constraints=constraints,
+            key=jax.random.key(0),
+            selection_train=jnp.zeros((1, 8)),
+        )
+    )
+    self.assertLen(candidates, 420)
+    self.assertLen(np.unique(candidates, axis=0), 420)
+    np.testing.assert_array_equal(np.sum(candidates == 1, axis=1), 2)
+    np.testing.assert_array_equal(np.sum(candidates == 2, axis=1), 2)
+
+  @parameterized.named_parameters(
+      # 6 geos give 3 treated geos. Geo 0 has half of all conversions, so only
+      # the C(5, 3) = 10 masks that keep it in control are valid.
+      ('one_cell', 1, [50.0] + [10.0] * 5, 10),
+      # 8 geos give 2 treated geos per cell. Treating geo 0 in either cell
+      # gives 60% of conversions, so only the C(7, 2) * C(5, 2) = 210 masks
+      # that keep it in control are valid.
+      ('two_cells', 2, [30.0] + [10.0] * 7, 210),
+  )
+  def test_get_random_candidates_enumeration_applies_volume_constraint(
+      self, cell_count, geo_conversions, expected_count
+  ):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1),
+        cell_count=cell_count,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        n_candidates=1000,
+    )
+    candidates = np.asarray(
+        generate_candidates.get_random_candidates(
+            filtered_data=_conversions_data(geo_conversions),
+            design_config=design_config,
+            constraints=api.Constraints(max_conversions_percent=0.5),
+            key=jax.random.key(0),
+            selection_train=jnp.zeros((1, len(geo_conversions))),
+        )
+    )
+    self.assertLen(candidates, expected_count)
+    self.assertLen(np.unique(candidates, axis=0), expected_count)
+    np.testing.assert_array_equal(candidates[:, 0], 0.0)
+
+  def test_get_random_candidates_enumeration_raises_if_all_rejected(self):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        n_candidates=100,
+    )
+    # The 2 forced control geos have almost no conversions, so treating 3 of
+    # the other 4 geos always exceeds 50% of conversions.
+    constraints = api.Constraints(
+        max_conversions_percent=0.5, included_control_geos={'G00', 'G01'}
+    )
+    with self.assertRaisesRegex(
+        ValueError, 'Could not find enough valid candidates'
+    ):
+      generate_candidates.get_random_candidates(
+          filtered_data=_conversions_data([1.0, 1.0] + [10.0] * 4),
+          design_config=design_config,
+          constraints=constraints,
+          key=jax.random.key(0),
+          selection_train=jnp.zeros((1, 6)),
+      )
+
+  def test_get_random_candidates_enumeration_applies_slope_similarity(self):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1),
+        experiment_types=api.ExperimentType.GO_DARK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        n_candidates=100,
+        slope_tolerance=0.45,
+    )
+    # 7 geos give 3 treated geos. All geos have the same conversions, and geo 0
+    # has 3 times the spend of the others. The spend slope then differs from
+    # the conversion slope by 0.5 when geo 0 is treated and by 0.4 when it is a
+    # control geo.
+    conversions = np.tile(np.arange(1.0, 5.0)[:, None], (1, 7))
+    spend = conversions.copy()
+    spend[:, 0] *= 3.0
+    candidates = np.asarray(
+        generate_candidates.get_random_candidates(
+            filtered_data=_equal_conversions_data(7),
+            design_config=design_config,
+            constraints=api.Constraints(max_conversions_percent=0.5),
+            key=jax.random.key(0),
+            selection_train=jnp.asarray(conversions),
+            selection_train_spend={api.CELL_1: jnp.asarray(spend)},
+        )
+    )
+    # Only the C(6, 3) = 20 masks that keep geo 0 in control pass.
+    self.assertLen(candidates, 20)
+    self.assertLen(np.unique(candidates, axis=0), 20)
+    np.testing.assert_array_equal(candidates[:, 0], 0.0)
+
+  def test_get_random_candidates_removes_duplicate_draws(self):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        n_candidates=100,
+    )
+    # 10 geos with max_conversions_percent=0.35 give 3 treated geos. All
+    # C(10, 3) = 120 masks are valid and exceed n_candidates, so masks are
+    # sampled, and 100 draws from 120 masks contain duplicates.
+    constraints = api.Constraints(max_conversions_percent=0.35)
+
+    def _generate(key):
+      return np.asarray(
+          generate_candidates.get_random_candidates(
+              filtered_data=_equal_conversions_data(10),
+              design_config=design_config,
+              constraints=constraints,
+              key=key,
+              selection_train=jnp.zeros((1, 10)),
+          )
+      )
+
+    candidates = _generate(jax.random.key(0))
+    self.assertEqual(candidates.shape[1], 10)
+    self.assertGreater(len(candidates), 1)
+    self.assertLess(len(candidates), design_config.n_candidates)
+    self.assertLen(np.unique(candidates, axis=0), len(candidates))
+    np.testing.assert_array_equal(_generate(jax.random.key(0)), candidates)
+
+  def test_get_stratified_sampling_candidates_removes_duplicate_draws(self):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        n_candidates=200,
+        seed=42,
+    )
+    constraints = api.Constraints(max_conversions_percent=0.4)
+    geo_conversions = [10.0, 20.0, 5.0, 15.0, 50.0, 100.0]
+    conversions_data = pd.DataFrame([
+        {
+            'date': pd.Timestamp('2024-01-01'),
+            'location': f'G{i}',
+            'conversions': conversions,
+        }
+        for i, conversions in enumerate(geo_conversions)
+    ])
+
+    def _generate(key):
+      return np.asarray(
+          generate_candidates.get_stratified_sampling_candidates(
+              selection_train=jnp.array([geo_conversions]),
+              filtered_data=conversions_data,
+              design_config=design_config,
+              constraints=constraints,
+              geo_stratum_labels=jnp.array([0, 0, 1, 1, 2, 2]),
+              key=key,
+          )
+      )
+
+    candidates = _generate(jax.random.key(0))
+    self.assertEqual(candidates.shape[1], 6)
+    self.assertGreater(len(candidates), 1)
+    # 6 geos admit far fewer than n_candidates distinct stratified masks.
+    self.assertLess(len(candidates), design_config.n_candidates)
+    self.assertLen(np.unique(candidates, axis=0), len(candidates))
+    np.testing.assert_array_equal(_generate(jax.random.key(0)), candidates)
 
   @parameterized.parameters(0, 1, 2)
   def test_get_stratified_geo_sequence_matches_reference(self, seed):

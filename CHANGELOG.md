@@ -23,6 +23,13 @@ To release a new version (e.g. from `1.0.0` -> `2.0.0`):
 
 ## [Unreleased]
 
+* Remove duplicate treatment masks from design and placebo candidates, so
+  fewer than `n_candidates` (or `n_placebo_candidates`) candidates may be
+  used, with a warning. With RANDOM geo assignment, all masks are enumerated
+  when there are at most that many. `min_placebo_count_error` and
+  `min_placebo_count_warning` now count distinct placebos, and `run_design`
+  raises an error when fewer than 2 distinct candidates remain.
+
 ## [1.0.1] - 2026-09-02
 
 ## [1.0.0] - 2026-09-01
