@@ -407,7 +407,7 @@ class AnalysisConfig:
   # The dates to be excluded from the analysis.
   excluded_dates: SortedSet[Timestamp] = dataclasses.field(default_factory=set)
   # If not provided, will be inferred from the design config.
-  alpha: Optional[float] = None
+  alpha: Optional[Annotated[float, pydantic.Field(gt=0, lt=1)]] = None
   # If not provided, will be inferred from the design config.
   test_type: Optional[TestType] = None
 
@@ -442,6 +442,11 @@ class AnalysisConfig:
   min_placebo_count_warning: Annotated[int, pydantic.Field(ge=0)] = 100
   # Number of valid placebo candidates below which an error will be raised.
   min_placebo_count_error: Annotated[int, pydantic.Field(ge=0)] = 10
+  # If True, inference uses absolute placebo t-statistics, so confidence
+  # intervals always contain the point estimate. Finite bounds need at least
+  # ceil(1 / alpha) - 1 placebos, or ceil(1 / (2 * alpha)) - 1 if one-sided.
+  # One-sided tests assume a null distribution symmetric around zero.
+  use_absolute_placebo_statistics: bool = False
 
 
 @dataclasses.dataclass
