@@ -1,0 +1,7 @@
+{% from "macros.html.jinja" import scope, doc_link %}
+<div {{ scope(audience, candidate) }}>
+  <div class="geox-banner{% if warn %} geox-banner-warn{% endif %}">
+    <p class="geox-option-banner"><strong>{{ name }}</strong></p>
+    <p class="geox-narrative">{{ narrative }} {{ doc_link('Learn more', learn_more_url) }}</p>
+  </div>
+</div>

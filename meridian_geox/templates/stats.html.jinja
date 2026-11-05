@@ -1,0 +1,16 @@
+{# Branched from meridian/templates/stats.html.jinja. #}
+<stats class="geox-tone-{{ tone }}">
+  <stats-title>{{ title }}</stats-title>
+  <stat>{{ stat }}</stat>
+  {% if delta %}
+    <delta class='{{"red-text" if "-" in delta else "green-text"}}'>
+      {{ delta }}
+    </delta>
+  {% endif %}
+  {% if ci %}
+    <stats-ci>{{ ci }}</stats-ci>
+  {% endif %}
+  {% if detail %}
+    <stats-detail>{{ detail }}</stats-detail>
+  {% endif %}
+</stats>

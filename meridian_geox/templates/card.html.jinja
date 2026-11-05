@@ -1,0 +1,19 @@
+{# Branched from meridian/templates/card.html.jinja. #}
+<card id="{{ id }}" data-audience="{{ audience }}">
+  <card-title>
+    {{ title }}
+  </card-title>
+  {% if subtitle %}
+    <card-subtitle>{{ subtitle }}</card-subtitle>
+  {% endif %}
+  {% if cue %}
+    <card-cue>{{ cue }}</card-cue>
+  {% endif %}
+  {% if blocks %}
+    <card-blocks>
+      {% for item in blocks %} {# Each `item` is a pre-rendered HTML snippet. #}
+        {{ item|safe }}
+      {% endfor %}
+    </card-blocks>
+  {% endif %}
+</card>

@@ -1,0 +1,8 @@
+{# Branched from meridian/templates/chips.html.jinja. #}
+<chips>
+  {% for chip in chips %}
+  <chip>
+    <span>{{ chip.label }}:</span> {{ chip.value }}
+  </chip>
+  {% endfor %}
+</chips>
