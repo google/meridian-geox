@@ -105,6 +105,41 @@ $ pip install --upgrade git+https://github.com/google/meridian-geox.git
     library's core components, statistical methodology (Time-based Regression,
     etc).
 
+### Interactive HTML reports
+
+`DesignSummarizer` and `AnalysisSummarizer` turn the outputs of `run_design`
+and `analyze` into self-contained HTML reports that open on an Executive
+summary (append `?view=full` for the Full report):
+
+```python
+import meridian_geox as geox
+
+# Optional: fill each geo on a map from your own boundary file.
+us_map = geox.byo_dma_map_config(polygon_url='nielsentopo.json')
+
+geox.DesignSummarizer(
+    design_set,
+    goals=geox.DesignGoals(target_mde=0.05, target_cpic=6.5),
+    map_config=us_map,
+    currency_symbol='$',
+    test_start='2026-04-01',
+    cooldown_days=7,
+).output_design_summary('design_summary.html', '.')
+
+geox.AnalysisSummarizer(
+    analysis_result,
+    map_config=us_map,
+    data=analysis_data,  # Optional; enables spend execution checks.
+    currency_symbol='$',
+).output_analysis_summary('analysis_summary.html', '.')
+```
+
+Maps use only boundary polygons that you provide (TopoJSON via
+`byo_dma_map_config`, or a GeoJSON FeatureCollection via
+`byo_city_map_config`); without them, map panels show a short setup note and
+the rest of the report is unchanged. Pass `geo_metadata` (a table with
+`location` and `geo_name`) to show readable geo names.
+
 ## Meridian GeoX Documentation & Tutorials
 
 For full technical documentation, mathematical formulations, and step-by-step
