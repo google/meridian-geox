@@ -1,0 +1,236 @@
+/*
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+:root {
+  --geox-text: #202124;
+  --geox-muted: #5f6368;
+  --geox-border: #dadce0;
+  --geox-surface: #ffffff;
+  --geox-background: #f8f9fa;
+  --geox-blue: #1a73e8;
+  --geox-blue-light: #e8f0fe;
+  --geox-green: #188038;
+  --geox-green-light: #e6f4ea;
+  --geox-yellow: #b06000;
+  --geox-yellow-light: #fef7e0;
+  --geox-red: #d93025;
+  --geox-red-light: #fce8e6;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0;
+  font-family: Roboto, 'Google Sans', Arial, sans-serif;
+  color: #3c4043;
+  background: #fafbfb;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  padding: 26px 32px 8px;
+}
+.geox-eyebrow { color: var(--geox-muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+.header h1 { margin: 4px 0; color: var(--geox-text); font-family: 'Google Sans Display', 'Google Sans', sans-serif; font-size: 36px; line-height: 44px; font-weight: 400; }
+.geox-subtitle { margin: 0; color: var(--geox-muted); }
+chips { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; padding: 0 32px; margin: 16px 0 8px; }
+chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 12px;
+  border-radius: 100px;
+  background: var(--geox-blue-light);
+  color: #1967d2;
+  font-family: 'Google Sans', sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  letter-spacing: .25px;
+  gap: 4px;
+}
+chip:first-child { background: #f1f3f4; color: var(--geox-text); }
+.geox-header-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; }
+.geox-view-toggle {
+  display: inline-flex; padding: 3px; border: 1px solid #dadce0; border-radius: 100px; background: #f1f3f4;
+}
+.geox-view-toggle button {
+  padding: 5px 14px; border: 0; border-radius: 100px; background: transparent; color: #5f6368;
+  font: 500 13px/20px 'Google Sans', sans-serif; cursor: pointer;
+}
+.geox-view-toggle button[aria-pressed="true"] { background: #fff; color: #1967d2; box-shadow: 0 1px 2px rgba(60, 64, 67, .2); }
+.geox-export-button {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border: 1px solid #dadce0;
+  border-radius: 100px; background: #fff; color: #1967d2; font: 500 13px/20px 'Google Sans', sans-serif; cursor: pointer;
+}
+.geox-export-button:hover { background: #f1f3f4; }
+cards { display: flex; flex-direction: column; gap: 32px; padding: 16px 32px 32px; max-width: 1360px; margin: 0 auto; }
+card {
+  display: block;
+  background: var(--geox-surface);
+  border: 1px solid var(--geox-border);
+  border-radius: 8px;
+  padding: 16px 32px 28px;
+}
+card-title { display: block; margin: 0; color: var(--geox-text); font-family: 'Google Sans Display', 'Google Sans', sans-serif; font-size: 28px; line-height: 50px; font-weight: 400; }
+card h3 { margin: 16px 0 8px; color: var(--geox-text); font-family: 'Google Sans', sans-serif; font-size: 20px; font-weight: 400; }
+card-subtitle { display: block; margin: 4px 0 0; color: var(--geox-muted); }
+card-cue {
+  display: inline-block;
+  margin: 8px 0 0;
+  padding: 2px 10px;
+  border-radius: 12px;
+  background: var(--geox-blue-light);
+  color: var(--geox-blue);
+  font-size: 12px;
+}
+.geox-row { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+.geox-col { flex: 1 1 360px; min-width: 0; }
+/* A column whose only block is hidden (another candidate) takes no space. */
+.geox-col:has(> [hidden]) { display: none; }
+stats-section { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 28px 40px; margin: 20px 0; }
+stats { display: block; min-width: 0; max-width: 280px; overflow-wrap: anywhere; }
+stats.geox-tone-success, stats.geox-tone-warning, stats.geox-tone-error, stats.geox-tone-info { border: 0; background: none; }
+stats-title { display: block; color: var(--geox-text); font-size: 14px; font-weight: 500; line-height: 20px; letter-spacing: .25px; }
+stat { display: block; color: #3c4043; font-size: 32px; line-height: 40px; font-weight: 400; margin-top: 4px; }
+stats-ci, delta { display: block; color: var(--geox-muted); font-size: 12px; line-height: 16px; }
+stats-detail { display: block; color: var(--geox-muted); font-size: 15px; line-height: 20px; margin-top: 2px; }
+stats.geox-tone-success stat, stats.geox-tone-success stats-detail { color: var(--geox-green); }
+stats.geox-tone-warning stat, stats.geox-tone-warning stats-detail { color: var(--geox-yellow); }
+stats.geox-tone-error stat, stats.geox-tone-error stats-detail { color: var(--geox-red); }
+stats.geox-tone-success stats-detail, stats.geox-tone-warning stats-detail, stats.geox-tone-error stats-detail { font-size: 17px; font-weight: 500; }
+stats.geox-tone-info stat { color: #1967d2; }
+.geox-tone-success { border-color: var(--geox-green); background: var(--geox-green-light); }
+.geox-tone-warning { border-color: var(--geox-yellow); background: var(--geox-yellow-light); }
+.geox-tone-error { border-color: var(--geox-red); background: var(--geox-red-light); }
+.geox-tone-info { border-color: var(--geox-blue); background: var(--geox-blue-light); }
+.geox-callout { border: 0; border-left: 4px solid var(--geox-muted); border-radius: 4px; background: #f8f9fa; padding: 12px 18px; margin: 16px 0; }
+.geox-callout.geox-tone-neutral { border-left: 0; border-radius: 0; background: #eee; padding: 22px 24px; font-size: 16px; line-height: 24px; }
+.geox-callout.geox-tone-info { border-left-color: #1967d2; background: #f8f9fa; }
+.geox-callout.geox-tone-success { border-left-color: var(--geox-green); background: var(--geox-green-light); }
+.geox-callout.geox-tone-warning { border-left-color: #f9ab00; background: var(--geox-yellow-light); }
+.geox-callout.geox-tone-error { border-left-color: var(--geox-red); background: var(--geox-red-light); }
+.geox-callout-title { color: var(--geox-text); font-weight: 500; margin-bottom: 2px; }
+chart-table { display: block; margin: 12px 0; }
+.chart-table-content { overflow-x: auto; }
+.chart-table-title { color: var(--geox-text); font-weight: 500; padding-bottom: 6px; }
+.chart-table-details summary { cursor: pointer; color: #1967d2; font: 500 13px/20px 'Google Sans', sans-serif; padding: 4px 0; }
+.chart-table-details[open] summary { margin-bottom: 6px; }
+.chart-table-description { color: var(--geox-muted); font-size: 13px; padding-top: 6px; }
+chart-table table { border-collapse: collapse; width: 100%; font-size: 13px; }
+chart-table th { text-align: left; font-weight: 500; color: var(--geox-muted); border-bottom: 1px solid var(--geox-border); padding: 6px 8px; }
+chart-table td { border-bottom: 1px solid #f1f3f4; padding: 6px 8px; }
+.geox-selectable tr[data-design-id] { cursor: pointer; }
+.geox-selectable tr[data-design-id]:hover { background: #f1f3f4; }
+chart-table tr.geox-selected { background: var(--geox-blue-light); box-shadow: inset 3px 0 0 var(--geox-blue); }
+.geox-row-success td:last-child { color: var(--geox-green); }
+.geox-row-warning td:last-child { color: var(--geox-yellow); }
+.geox-row-error td:last-child { color: var(--geox-red); }
+chart { display: block; position: relative; margin: 12px 0; }
+card-blocks { display: block; }
+chart-tools { display: flex; margin-top: 4px; justify-content: flex-end; gap: 12px; font-size: 12px; }
+.geox-guide-toggle { border: 0; background: none; padding: 0; color: #1967d2; font: 500 13px/20px 'Google Sans', sans-serif; cursor: pointer; }
+.geox-guide-toggle:hover, .geox-guide-toggle[aria-expanded="true"] { text-decoration: underline; }
+/* Full report: "How to read" is a popover next to the chart (no layout shift).
+   Executive view and print: the guide is shown in full under each chart. */
+.geox-guide-tip { position: relative; display: inline-block; }
+.geox-guide-pop {
+  display: none; position: absolute; right: 0; bottom: 24px; z-index: 20;
+  width: min(420px, 80vw); padding: 12px 16px; text-align: left;
+  background: #fff; color: #3c4043; border: 1px solid var(--geox-border);
+  border-left: 4px solid #1967d2; border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(60, 64, 67, .2);
+  font: 13px/20px Roboto, sans-serif;
+}
+.geox-guide-tip:hover .geox-guide-pop, .geox-guide-tip:focus-within .geox-guide-pop,
+.geox-guide-tip.geox-open .geox-guide-pop { display: block; }
+body[data-geox-view="executive"] .geox-guide-inline { display: block; }
+body[data-geox-view="executive"] .geox-guide-tip { display: none; }
+.geox-guide-inline { display: none; margin-top: 16px; font-size: 13px; line-height: 20px; color: #3c4043; border-left: 4px solid #1967d2; border-radius: 4px; background: #f8f9fa; padding: 10px 16px; }
+.geox-guide-inline strong { color: #1967d2; font-weight: 500; }
+chart-embed { display: block !important; max-width: 100%; overflow: hidden; }
+chart-embed svg, chart-embed canvas { max-width: 100%; height: auto; }
+/* Simulator controls sit above the numbers and charts they change. */
+.geox-simulator chart-embed { display: flex !important; flex-direction: column; }
+.geox-simulator .vega-bindings { order: -1; }
+.geox-simulator .vega-bindings {
+  display: flex; flex-wrap: wrap; gap: 8px 20px; padding: 10px 12px; margin-bottom: 8px;
+  background: var(--geox-background); border-radius: 8px;
+}
+.geox-simulator .vega-bind { display: flex; align-items: center; gap: 6px; }
+.geox-simulator .vega-bind-name { color: var(--geox-muted); font-size: 12px; }
+.geox-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.geox-button {
+  display: inline-block; border: 1px solid var(--geox-border); background: var(--geox-surface); color: var(--geox-blue);
+  border-radius: 18px; padding: 6px 14px; font: inherit; font-weight: 500; text-decoration: none; cursor: pointer;
+}
+.geox-button:hover { background: var(--geox-blue-light); }
+.geox-link-button { border: 0; background: none; color: var(--geox-blue); cursor: pointer; font: inherit; padding: 0; }
+.geox-takeaway { display: block; margin: 6px 0 0; font-size: 14px; color: var(--geox-text); }
+.geox-narrative { font-size: 15px; line-height: 22px; margin: 8px 0; }
+.geox-checks { list-style: none; padding: 0; margin: 8px 0; }
+.geox-checks li { display: flex; gap: 8px; padding: 3px 0; font-size: 13px; }
+.geox-checks .geox-icon { width: 18px; flex: none; text-align: center; font-weight: 700; }
+.geox-check-pass .geox-icon { color: var(--geox-green); }
+.geox-check-warn .geox-icon { color: var(--geox-yellow); }
+.geox-check-fail .geox-icon { color: var(--geox-red); }
+.geox-check-info .geox-icon { color: var(--geox-blue); }
+.geox-detail { color: var(--geox-muted); }
+.geox-equation { font-size: 15px; margin: 8px 0; padding: 8px 12px; background: var(--geox-background); border-radius: 8px; }
+.geox-roster-group { margin: 8px 0; }
+.geox-roster-group summary { cursor: pointer; font-weight: 500; }
+.geox-roster-group p { margin: 4px 0 0; font-size: 12px; color: var(--geox-muted); }
+.geox-snippet { font-family: 'Roboto Mono', monospace; font-size: 12px; background: #f1f3f4; border-radius: 6px; padding: 6px 10px; display: block; margin: 6px 0; white-space: pre-wrap; }
+.geox-banner { background: var(--geox-blue-light); border-left: 6px solid #1967d2; border-radius: 8px; padding: 18px 22px; margin: 8px 0 16px; font-size: 15px; line-height: 22px; }
+.geox-banner .geox-option-banner { margin-top: 4px; }
+.geox-banner-warn { background: var(--geox-yellow-light); border-left-color: var(--geox-yellow); }
+.geox-legend { list-style: none; padding: 8px 12px; margin: 8px 0; border: 1px solid var(--geox-border); border-radius: 8px; font-size: 13px; }
+.geox-legend li { display: flex; gap: 8px; margin: 4px 0; }
+.geox-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; margin-top: 4px; }
+.geox-option-banner { color: var(--geox-text); font-family: 'Google Sans Display', 'Google Sans', sans-serif; font-size: 22px; line-height: 30px; margin: 0 0 6px; }
+.geox-steps { margin: 8px 0; padding-left: 20px; }
+.geox-steps li { margin: 4px 0; }
+.geox-calendar-legend { color: var(--geox-muted); font-size: 12px; }
+
+body[data-geox-view="executive"] [data-report-view="full"] { display: none !important; }
+
+@media print {
+  @page { size: landscape; margin: 12mm; }
+  body { background: #fff; }
+  body[data-geox-view="executive"] [data-report-view="full"],
+  .geox-header-actions, chart-tools, .geox-buttons, .vega-embed details, .vega-bindings {
+    display: none !important;
+  }
+  .geox-guide-inline { display: block; }
+  .geox-button.geox-copy, a.geox-button { display: none !important; }
+  .header { padding-top: 0; }
+  cards { gap: 20px; }
+  chart, stats-section, .geox-callout, .geox-banner, .geox-row { break-inside: avoid; }
+  .geox-legend { break-inside: avoid; padding: 4px 8px; margin: 4px 0; font-size: 12px; }
+  .geox-legend li { margin: 2px 0; }
+  cards { padding: 0; max-width: none; }
+}
+
+/* Findings (warnings and infos), as in the Meridian reports. */
+errors, warnings, infos { display: flex; align-items: flex-start; gap: 8px; margin: 8px 0; padding: 8px 12px; border-radius: 4px; }
+warnings { background: var(--geox-yellow-light); }
+infos { background: #f8f9fa; }
+errors { background: var(--geox-red-light); }
+errors-icon img, warnings-icon img, infos-icon img { width: 20px; height: 20px; display: block; }
+.error-text, .warning-text, .info-text { margin: 0; }
