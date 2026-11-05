@@ -1,0 +1,115 @@
+{#
+ Copyright 2026 The Meridian GeoX Authors.
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+#}
+{#- Card and block macros for the GeoX reports. Autoescaping is on. -#}
+{% macro attrs(block) -%}
+data-audience="{{ block.audience }}"{% if block.candidate %} class="geox-cand" data-cand="{{ block.candidate }}"{% endif %}
+{%- endmacro %}
+
+{% macro render_tile(tile) -%}
+<div class="geox-tile geox-tone-{{ tile.tone }}">
+  <div class="geox-tile-label">{{ tile.label }}</div>
+  <div class="geox-tile-value">{{ tile.value }}</div>
+  {% if tile.ci %}<div class="geox-tile-ci">{{ tile.ci }}</div>{% endif %}
+  {% if tile.detail %}<div class="geox-tile-detail">{{ tile.detail }}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro render_block(block) -%}
+{% if block.kind == 'text' %}
+<p {{ attrs(block) }}{% if block.emphasis %} data-emphasis="true"{% endif %}>{{ block.text }}</p>
+{% elif block.kind == 'callout' %}
+<div {{ attrs(block) }}>
+  <div class="geox-callout geox-tone-{{ block.tone }}" role="note">
+    {% if block.title %}<div class="geox-callout-title">{{ block.title }}</div>{% endif %}
+    <div>{{ block.text }}{% for label, url in block.links %}{% if loop.first %} {% else %} · {% endif %}<a href="{{ url }}" target="_blank" rel="noopener">{{ label }}</a>{% endfor %}</div>
+  </div>
+</div>
+{% elif block.kind == 'tiles' %}
+<div {{ attrs(block) }}>
+  <div class="geox-tiles">
+    {% for tile in block.tiles %}{{ render_tile(tile) }}{% endfor %}
+  </div>
+</div>
+{% elif block.kind == 'table' %}
+<div {{ attrs(block) }}>
+  <div class="geox-table-wrap">
+    <table class="geox-table{% if block.selectable %} geox-selectable{% endif %}">
+      {% if block.caption %}<caption>{{ block.caption }}</caption>{% endif %}
+      <thead><tr>{% for col in block.columns %}<th scope="col">{{ col }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for row in block.rows %}
+        {% set row_id = block.row_ids[loop.index0] if block.row_ids else '' %}
+        {% set tone = block.row_tones[loop.index0] if block.row_tones else 'neutral' %}
+        <tr{% if row_id %} data-design-id="{{ row_id }}"{% endif %}{% if block.selectable %} tabindex="0" role="button" aria-pressed="false"{% endif %} class="geox-row-{{ tone }}">
+          {% for cell in row %}<td>{{ cell }}</td>{% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% elif block.kind == 'chart' %}
+{% set chart_id = register_chart(block) %}
+<figure {{ attrs(block) }}>
+  <div class="geox-chart-frame {{ block.css_class }}">
+    <div class="geox-chart-tools">
+      {% if block.framing and block.framing.reading_guide %}
+      <span class="geox-guide-badge" tabindex="0" title="{{ block.framing.reading_guide }}">How to read</span>
+      {% endif %}
+      <button type="button" class="geox-link-button" data-source-for="{{ chart_id }}">View source</button>
+    </div>
+    <div class="geox-chart" id="{{ chart_id }}"></div>
+    {% if block.framing and block.framing.takeaway %}
+    <p class="geox-takeaway">→ {{ block.framing.takeaway }}</p>
+    {% endif %}
+    {% if block.framing and block.framing.reading_guide %}
+    <div class="geox-guide-inline"><strong>How to read:</strong> {{ block.framing.reading_guide }}</div>
+    {% endif %}
+  </div>
+</figure>
+{% elif block.kind == 'buttons' %}
+<div {{ attrs(block) }}>
+  <div class="geox-buttons">
+    {% for button in block.buttons %}
+    {% if button.action == 'download' %}
+    <a class="geox-button" href="{{ button.href }}" download="{{ button.filename }}">{{ button.label }}</a>
+    {% else %}
+    <button type="button" class="geox-button geox-copy" data-copy="{{ button.payload }}">{{ button.label }}</button>
+    {% endif %}
+    {% endfor %}
+  </div>
+</div>
+{% elif block.kind == 'html' %}
+<div {{ attrs(block) }}>{{ block.html|safe }}</div>
+{% elif block.kind == 'row' %}
+<div {{ attrs(block) }}>
+  <div class="geox-row">
+    {% for child in block.blocks %}<div class="geox-col">{{ render_block(child) }}</div>{% endfor %}
+  </div>
+</div>
+{% endif %}
+{%- endmacro %}
+
+<section class="geox-card" id="{{ card.card_id }}" data-audience="{{ card.audience }}">
+  <header class="geox-card-header">
+    <h2>{{ card.title }}</h2>
+    {% if card.subtitle %}<p class="geox-card-subtitle">{{ card.subtitle }}</p>{% endif %}
+    {% if card.cue %}<p class="geox-cue">{{ card.cue }}</p>{% endif %}
+  </header>
+  {% for block in blocks %}
+  {{ render_block(block) }}
+  {% endfor %}
+</section>
