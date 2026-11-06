@@ -1,0 +1,178 @@
+/*
+ * Copyright 2026 The Meridian GeoX Authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+:root {
+  --geox-text: #202124;
+  --geox-muted: #5f6368;
+  --geox-border: #dadce0;
+  --geox-surface: #ffffff;
+  --geox-background: #f8f9fa;
+  --geox-blue: #1a73e8;
+  --geox-blue-light: #e8f0fe;
+  --geox-green: #188038;
+  --geox-green-light: #e6f4ea;
+  --geox-yellow: #b06000;
+  --geox-yellow-light: #fef7e0;
+  --geox-red: #d93025;
+  --geox-red-light: #fce8e6;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0;
+  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+  color: var(--geox-text);
+  background: var(--geox-background);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.geox-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  padding: 24px 32px 16px;
+  background: var(--geox-surface);
+  border-bottom: 1px solid var(--geox-border);
+}
+.geox-eyebrow { color: var(--geox-muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+.geox-header h1 { margin: 4px 0; font-size: 26px; font-weight: 500; }
+.geox-subtitle { margin: 0; color: var(--geox-muted); }
+.geox-chips { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; padding: 0; margin: 12px 0 0; }
+.geox-chips li {
+  border: 1px solid var(--geox-border);
+  border-radius: 16px;
+  padding: 2px 12px;
+  font-size: 12px;
+  background: var(--geox-background);
+}
+.geox-chips li span { color: var(--geox-muted); }
+.geox-header-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.geox-view-toggle { display: inline-flex; border: 1px solid var(--geox-border); border-radius: 18px; overflow: hidden; }
+.geox-view-toggle button {
+  border: 0; background: transparent; padding: 6px 14px; cursor: pointer; font: inherit; color: var(--geox-muted);
+}
+.geox-view-toggle button[aria-pressed="true"] { background: var(--geox-blue-light); color: var(--geox-blue); font-weight: 500; }
+.geox-cards { display: flex; flex-direction: column; gap: 16px; padding: 16px 32px 32px; max-width: 1280px; margin: 0 auto; }
+.geox-card {
+  background: var(--geox-surface);
+  border: 1px solid var(--geox-border);
+  border-radius: 12px;
+  padding: 20px 24px;
+}
+.geox-card-header h2 { margin: 0; font-size: 18px; font-weight: 500; }
+.geox-card-subtitle { margin: 4px 0 0; color: var(--geox-muted); }
+.geox-cue {
+  display: inline-block;
+  margin: 8px 0 0;
+  padding: 2px 10px;
+  border-radius: 12px;
+  background: var(--geox-blue-light);
+  color: var(--geox-blue);
+  font-size: 12px;
+}
+.geox-card p[data-emphasis="true"] { font-size: 16px; font-weight: 500; }
+.geox-row { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+.geox-col { flex: 1 1 360px; min-width: 0; }
+.geox-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 12px 0; }
+.geox-tile { border: 1px solid var(--geox-border); border-radius: 10px; padding: 12px 14px; }
+.geox-tile-label { color: var(--geox-muted); font-size: 12px; }
+.geox-tile-value { font-size: 22px; font-weight: 500; }
+.geox-tile-ci { color: var(--geox-muted); font-size: 12px; }
+.geox-tile-detail { font-size: 12px; margin-top: 4px; }
+.geox-tone-success { border-color: var(--geox-green); background: var(--geox-green-light); }
+.geox-tone-warning { border-color: var(--geox-yellow); background: var(--geox-yellow-light); }
+.geox-tone-error { border-color: var(--geox-red); background: var(--geox-red-light); }
+.geox-tone-info { border-color: var(--geox-blue); background: var(--geox-blue-light); }
+.geox-callout { border: 1px solid; border-left-width: 4px; border-radius: 8px; padding: 10px 14px; margin: 12px 0; }
+.geox-callout-title { font-weight: 500; margin-bottom: 2px; }
+.geox-table-wrap { overflow-x: auto; margin: 12px 0; }
+.geox-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.geox-table caption { text-align: left; color: var(--geox-muted); padding-bottom: 6px; }
+.geox-table th { text-align: left; font-weight: 500; color: var(--geox-muted); border-bottom: 1px solid var(--geox-border); padding: 6px 8px; }
+.geox-table td { border-bottom: 1px solid #f1f3f4; padding: 6px 8px; }
+.geox-selectable tbody tr { cursor: pointer; }
+.geox-selectable tbody tr:hover { background: #f1f3f4; }
+.geox-table tr.geox-selected { background: var(--geox-blue-light); box-shadow: inset 3px 0 0 var(--geox-blue); }
+.geox-row-success td:last-child { color: var(--geox-green); }
+.geox-row-warning td:last-child { color: var(--geox-yellow); }
+.geox-row-error td:last-child { color: var(--geox-red); }
+figure { margin: 12px 0; }
+.geox-chart-frame { position: relative; }
+.geox-chart-tools { display: flex; justify-content: flex-end; gap: 12px; font-size: 12px; }
+.geox-guide-badge { color: var(--geox-blue); cursor: help; border-bottom: 1px dotted var(--geox-blue); }
+.geox-guide-inline { display: none; font-size: 12px; color: var(--geox-muted); border: 1px solid var(--geox-border); border-radius: 6px; padding: 6px 10px; }
+.geox-chart { overflow-x: auto; }
+.geox-simulator .vega-embed { display: flex; flex-direction: column-reverse; }
+.geox-simulator .vega-bindings {
+  display: flex; flex-wrap: wrap; gap: 8px 20px; padding: 10px 12px; margin-bottom: 8px;
+  background: var(--geox-background); border-radius: 8px;
+}
+.geox-simulator .vega-bind { display: flex; align-items: center; gap: 6px; }
+.geox-simulator .vega-bind-name { color: var(--geox-muted); font-size: 12px; }
+.geox-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.geox-button {
+  display: inline-block; border: 1px solid var(--geox-border); background: var(--geox-surface); color: var(--geox-blue);
+  border-radius: 18px; padding: 6px 14px; font: inherit; font-weight: 500; text-decoration: none; cursor: pointer;
+}
+.geox-button:hover { background: var(--geox-blue-light); }
+.geox-link-button { border: 0; background: none; color: var(--geox-blue); cursor: pointer; font: inherit; padding: 0; }
+.geox-id-chip { font-family: 'Roboto Mono', monospace; font-size: 12px; background: #f1f3f4; border-radius: 4px; padding: 1px 6px; }
+.geox-takeaway { margin: 4px 0 0; font-size: 13px; color: var(--geox-text); }
+.geox-narrative { font-size: 14px; line-height: 1.6; margin: 8px 0; }
+.geox-checks { list-style: none; padding: 0; margin: 8px 0; }
+.geox-checks li { display: flex; gap: 8px; padding: 3px 0; font-size: 13px; }
+.geox-checks .geox-icon { width: 18px; flex: none; text-align: center; font-weight: 700; }
+.geox-check-pass .geox-icon { color: var(--geox-green); }
+.geox-check-warn .geox-icon { color: var(--geox-yellow); }
+.geox-check-fail .geox-icon { color: var(--geox-red); }
+.geox-check-info .geox-icon { color: var(--geox-blue); }
+.geox-detail { color: var(--geox-muted); }
+.geox-equation { font-size: 15px; margin: 8px 0; padding: 8px 12px; background: var(--geox-background); border-radius: 8px; }
+.geox-roster-group { margin: 8px 0; }
+.geox-roster-group summary { cursor: pointer; font-weight: 500; }
+.geox-roster-group p { margin: 4px 0 0; font-size: 12px; color: var(--geox-muted); }
+.geox-snippet { font-family: 'Roboto Mono', monospace; font-size: 12px; background: #f1f3f4; border-radius: 6px; padding: 6px 10px; display: block; margin: 6px 0; white-space: pre-wrap; }
+.geox-banner { background: var(--geox-blue-light); border-left: 4px solid var(--geox-blue); border-radius: 8px; padding: 10px 16px; margin: 8px 0; }
+.geox-banner .geox-option-banner { margin-top: 4px; }
+.geox-banner-warn { background: var(--geox-yellow-light); border-left-color: var(--geox-yellow); }
+.geox-legend { list-style: none; padding: 8px 12px; margin: 8px 0; border: 1px solid var(--geox-border); border-radius: 8px; font-size: 13px; }
+.geox-legend li { display: flex; gap: 8px; margin: 4px 0; }
+.geox-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; margin-top: 4px; }
+.geox-option-banner { font-size: 16px; margin: 12px 0 4px; }
+.geox-steps { margin: 8px 0; padding-left: 20px; }
+.geox-steps li { margin: 4px 0; }
+.geox-calendar-legend { color: var(--geox-muted); font-size: 12px; }
+.geox-footer { text-align: center; color: var(--geox-muted); font-size: 12px; padding: 0 0 24px; }
+dialog#geox-source-dialog { width: min(900px, 90vw); border: 1px solid var(--geox-border); border-radius: 12px; padding: 0; }
+.geox-dialog-header { display: flex; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--geox-border); margin: 0; }
+#geox-source-body { margin: 0; padding: 12px 16px; max-height: 70vh; overflow: auto; font-size: 12px; }
+
+body[data-geox-view="executive"] [data-audience="technical"] { display: none !important; }
+body[data-geox-view="full"] [data-audience="executive"] { display: none !important; }
+
+@media print {
+  @page { size: landscape; margin: 12mm; }
+  body { background: #fff; }
+  [data-audience="technical"], .geox-header-actions, .geox-chart-tools, .geox-buttons, .geox-footer, .vega-embed details {
+    display: none !important;
+  }
+  .geox-guide-inline { display: block; }
+  .geox-copy, a.geox-button { display: none !important; }
+  .geox-card { break-inside: avoid; border: 0; padding: 8px 0; }
+  .geox-legend { break-inside: avoid; padding: 4px 8px; margin: 4px 0; font-size: 12px; }
+  .geox-legend li { margin: 2px 0; }
+  .geox-cards { padding: 0; }
+}
