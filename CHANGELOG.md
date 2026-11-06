@@ -23,6 +23,14 @@ To release a new version (e.g. from `1.0.0` -> `2.0.0`):
 
 ## [Unreleased]
 
+* Add interactive, self-contained HTML reports: `DesignSummarizer` (compare
+  candidate designs against `DesignGoals`, geo maps, launch plan, power
+  simulator) and `AnalysisSummarizer` (marketer-first readout with iCPA or
+  iROAS, execution checks, counterfactual and cumulative charts). Reports open
+  on an Executive summary with a Full report toggle and a printable Executive
+  PDF. Maps fill user-provided boundary polygons configured with
+  `byo_dma_map_config` or `byo_city_map_config`. Adds `altair`, `jinja2` and
+  `markupsafe` dependencies.
 * Remove duplicate treatment masks from design and placebo candidates, so
   fewer than `n_candidates` (or `n_placebo_candidates`) candidates may be
   used, with a warning. With RANDOM geo assignment, all masks are enumerated
