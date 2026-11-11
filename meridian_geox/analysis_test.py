@@ -1111,6 +1111,22 @@ class AnalysisTest(parameterized.TestCase):
       self.assertLen(metrics.cumulative_lift, 5)
       self.assertIsNotNone(metrics.icpd)
 
+    covariance = result.pointwise_difference_covariance
+    assert covariance is not None
+    self.assertEqual(covariance.shape, (10, 10))
+    self.assertEqual(covariance.index.names, ['cell', api.DATE])
+    pd.testing.assert_index_equal(covariance.index, covariance.columns)
+    np.testing.assert_allclose(covariance.values, covariance.values.T)
+    for cell in cell_names:
+      # The variance of the final cumulative lift is the sum of the cell's
+      # block.
+      block = covariance.loc[cell, cell].values
+      self.assertAlmostEqual(
+          block.sum(),
+          result.results[cell].lift.standard_deviation ** 2,
+          places=2,
+      )
+
   def test_analyze_estimated_bau_spend_holdback(self):
     data = self._create_sample_data(n_days=20, n_geos=10, include_spend=True)
 
@@ -1184,6 +1200,69 @@ class AnalysisTest(parameterized.TestCase):
         expected_bau_spend,
         places=2,
     )
+
+  def test_analyze_geo_spend(self):
+    data = self._create_sample_data(n_days=20, n_geos=10, include_spend=True)
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=5),
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        seed=42,
+        n_candidates=3,
+    )
+    study_design = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G2', 'G1'},
+                minimum_detectable_effect=0.1,
+                design_implied_cpic=0.0,
+                p_value=0.5,
+                budget=1000.0,
+            )
+        },
+        control_geos={f'G{i}' for i in range(3, 11)},
+        excluded_geos=set(),
+        design_config=design_config,
+        constraints=api.Constraints(),
+        data=data,
+    )
+    config = api.AnalysisConfig(
+        n_placebo_candidates=10,
+        n_top_placebos=2,
+        min_placebo_count_error=2,
+        design=study_design,
+        analysis_start_date=pd.Timestamp('2024-01-16'),
+        analysis_end_date=pd.Timestamp('2024-01-20'),
+        alpha=0.1,
+        test_type=api.TestType.TWO_SIDED,
+    )
+
+    metrics = analysis.analyze(data, config).results['cell_1']
+
+    observed = metrics.observed_spend
+    counterfactual = metrics.counterfactual_spend
+    assert observed is not None and counterfactual is not None
+    self.assertEqual(observed.shape, (20, 2))
+    self.assertEqual(counterfactual.shape, (20, 2))
+    self.assertEqual(list(observed.columns), ['G1', 'G2'])
+    self.assertEqual(list(counterfactual.columns), ['G1', 'G2'])
+    pd.testing.assert_index_equal(
+        observed.index, metrics.counterfactual_conversions.index
+    )
+    pretest = observed.index < pd.Timestamp('2024-01-16')
+    np.testing.assert_allclose(
+        counterfactual.values[pretest], observed.values[pretest]
+    )
+    self.assertFalse(np.isnan(counterfactual.values).any())
+
+  def test_analyze_geo_spend_without_spend_data(self):
+    data = self._create_sample_data(n_days=15, n_geos=10)
+    config = self._create_noisy_data_analysis_config(data)
+
+    metrics = analysis.analyze(data, config).results['cell_1']
+
+    self.assertIsNone(metrics.observed_spend)
+    self.assertIsNone(metrics.counterfactual_spend)
 
   @parameterized.named_parameters(
       ('go_dark', api.ExperimentType.GO_DARK),

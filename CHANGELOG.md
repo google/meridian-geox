@@ -23,6 +23,13 @@ To release a new version (e.g. from `1.0.0` -> `2.0.0`):
 
 ## [Unreleased]
 
+* Add `pointwise_difference_covariance` to `AnalysisResult`: the placebo
+  covariance of test-period pointwise differences across all cells and dates,
+  capturing within-cell autocorrelation and shared-control cross-cell
+  correlation.
+* Add `observed_spend` and `counterfactual_spend` to `AnalysisMetrics`: daily
+  spend per treatment geo over the pre-test and test periods, with the
+  test-period counterfactual predicted by a geo-level TBR on control spend.
 * Remove duplicate treatment masks from design and placebo candidates, so
   fewer than `n_candidates` (or `n_placebo_candidates`) candidates may be
   used, with a warning. With RANDOM geo assignment, all masks are enumerated
