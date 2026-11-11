@@ -425,6 +425,49 @@ def _get_estimated_bau_spend(
   return None
 
 
+def _get_geo_spend(
+    analysis_config: api.AnalysisConfig,
+    cell: str,
+    geos: list[str],
+    spend: dict[str, TimeSeries],
+    treatment_mask: jnp.ndarray,
+    full_dates: pd.Index,
+) -> tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+  """Returns observed and counterfactual daily spend per treatment geo.
+
+  Args:
+    analysis_config: The analysis config, for the cell's treatment geos.
+    cell: Cell name.
+    geos: All geos in the order of the spend columns.
+    spend: Per cell, the pre-test and test spend time series over all geos.
+    treatment_mask: (N,) Group of each geo in the order of `geos`: 0.0 for
+      control geos, the cell id for treatment geos. Passed to
+      `tbr.compute_geo_counterfactual_spend` to identify the control geos whose
+      mean spend predicts each treatment geo's counterfactual spend.
+    full_dates: Pre-test and test dates, the index of the returned frames.
+
+  Returns:
+    `(observed, counterfactual)` date x treatment-geo DataFrames, or
+    `(None, None)` if the cell has no spend data.
+  """
+  if cell not in spend:
+    return None, None
+  cell_spend = spend[cell]
+  treatment_geos = sorted(analysis_config.design.designs[cell].treatment_geos)
+  geo_idx = [geos.index(geo) for geo in treatment_geos]
+  counterfactual_test = tbr.compute_geo_counterfactual_spend(
+      cell_spend.pretest, cell_spend.test, treatment_mask
+  )
+  observed = np.concatenate([cell_spend.pretest, cell_spend.test])[:, geo_idx]
+  counterfactual = np.concatenate([cell_spend.pretest, counterfactual_test])[
+      :, geo_idx
+  ]
+  return (
+      pd.DataFrame(observed, index=full_dates, columns=treatment_geos),
+      pd.DataFrame(counterfactual, index=full_dates, columns=treatment_geos),
+  )
+
+
 def _get_analysis_summary(
     tbr_results: dict[str, tbr.TbrAnalysisResult],
     pretest_dates: pd.Index,
@@ -434,6 +477,7 @@ def _get_analysis_summary(
     spend: dict[str, TimeSeries],
     conversions: TimeSeries,
     experiment_types: dict[str, api.ExperimentType],
+    treatment_mask: jnp.ndarray,
     quality_check_result: Optional[api.QualityCheckResult] = None,
 ) -> api.AnalysisResult:
   """Converts raw analysis results into an AnalysisResult object."""
@@ -479,6 +523,15 @@ def _get_analysis_summary(
         )
     )
 
+    observed_spend, counterfactual_spend = _get_geo_spend(
+        analysis_config=analysis_config,
+        cell=cell,
+        geos=geos,
+        spend=spend,
+        treatment_mask=treatment_mask,
+        full_dates=full_dates,
+    )
+
     results[cell] = api.AnalysisMetrics(
         lift=tbr_result.lift,
         percent_lift=tbr_result.percent_lift,
@@ -487,6 +540,8 @@ def _get_analysis_summary(
         pointwise_difference=pointwise_difference,
         icpd=tbr_result.icpd,
         cumulative_icpd=cumulative_icpd,
+        observed_spend=observed_spend,
+        counterfactual_spend=counterfactual_spend,
         descriptive_metrics=descriptive_metrics,
     )
 
@@ -620,6 +675,7 @@ def analyze(
       spend=spend,
       conversions=conversions,
       experiment_types=experiment_types,
+      treatment_mask=treatment.mask,
       quality_check_result=quality_result,
   )
 

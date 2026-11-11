@@ -60,6 +60,96 @@ class TbrTest(parameterized.TestCase):
     np.testing.assert_allclose(y_mean, expected_y_mean, rtol=5e-5, atol=5e-5)
     np.testing.assert_allclose(x_mean, expected_x_mean, rtol=5e-5, atol=5e-5)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='two_treatment_geos',
+          # Control mean x = [1, 2, 3, 4] (columns x - 1 and x + 1);
+          # geo 0: 2 + 3x, geo 1: 1 + 0.5x.
+          pretest_spend=[
+              [5.0, 1.5, 0.0, 2.0], [8.0, 2.0, 1.0, 3.0],
+              [11.0, 2.5, 2.0, 4.0], [14.0, 3.0, 3.0, 5.0],
+          ],
+          test_spend=[[0.0, 0.0, 5.0, 7.0], [0.0, 0.0, 6.0, 8.0]],  # x = [6, 7].
+          treatment_mask=[1.0, 1.0, 0.0, 0.0],
+          # Control columns are fits of their own spend: x - 1 and x + 1.
+          expected=[[20.0, 4.0, 5.0, 7.0], [23.0, 4.5, 6.0, 8.0]],
+      ),
+      dict(
+          testcase_name='two_cells_share_the_control_mean',
+          # Same geos as above, but geo 1 is in cell 2: the cell ids do not
+          # matter, only which geos are control.
+          pretest_spend=[
+              [5.0, 1.5, 0.0, 2.0], [8.0, 2.0, 1.0, 3.0],
+              [11.0, 2.5, 2.0, 4.0], [14.0, 3.0, 3.0, 5.0],
+          ],
+          test_spend=[[0.0, 0.0, 5.0, 7.0], [0.0, 0.0, 6.0, 8.0]],
+          treatment_mask=[1.0, 2.0, 0.0, 0.0],
+          expected=[[20.0, 4.0, 5.0, 7.0], [23.0, 4.5, 6.0, 8.0]],
+      ),
+      dict(
+          testcase_name='negative_slope_is_clipped_to_the_pretest_mean',
+          # Control mean x = [2, 3, 4, 5]; geo 0: 10 - x. Like the arm-level
+          # TBR, a negative slope is clipped to 0, so the counterfactual is the
+          # geo's mean pre-test spend, 6.5.
+          pretest_spend=[
+              [8.0, 0.0, 2.0, 4.0], [7.0, 1.0, 3.0, 5.0],
+              [6.0, 2.0, 4.0, 6.0], [5.0, 3.0, 5.0, 7.0],
+          ],
+          test_spend=[[0.0, 4.0, 6.0, 8.0], [0.0, 5.0, 7.0, 9.0]],  # x = [6, 7].
+          treatment_mask=[1.0, 0.0, 0.0, 0.0],
+          expected=[[6.5, 4.0, 6.0, 8.0], [6.5, 5.0, 7.0, 9.0]],
+      ),
+      dict(
+          testcase_name='constant_control_mean_predicts_the_pretest_mean',
+          # A constant regressor gives slope 0 and intercept mean(y), so the
+          # counterfactual is the geo's mean pre-test spend whatever the test
+          # control spend.
+          pretest_spend=[[1.0, 5.0, 5.0], [2.0, 5.0, 5.0], [3.0, 5.0, 5.0]],
+          test_spend=[[0.0, 5.0, 5.0], [0.0, 9.0, 9.0]],
+          treatment_mask=[1.0, 0.0, 0.0],
+          expected=[[2.0, 5.0, 5.0], [2.0, 5.0, 5.0]],
+      ),
+  )
+  def test_compute_geo_counterfactual_spend(
+      self, pretest_spend, test_spend, treatment_mask, expected
+  ):
+    counterfactual = tbr.compute_geo_counterfactual_spend(
+        jnp.array(pretest_spend), jnp.array(test_spend), jnp.array(treatment_mask)
+    )
+
+    self.assertEqual(counterfactual.shape, np.shape(expected))
+    np.testing.assert_allclose(counterfactual, expected, rtol=5e-5, atol=5e-5)
+
+  def test_compute_geo_counterfactual_spend_matches_least_squares(self):
+    # Noisy data: each geo's prediction is its own OLS fit on the control mean,
+    # with negative slopes clipped to 0.
+    key_pre, key_test = jax.random.split(jax.random.PRNGKey(1))
+    pretest_spend = jax.random.uniform(key_pre, (30, 6), minval=1.0, maxval=10.0)
+    test_spend = jax.random.uniform(key_test, (7, 6), minval=1.0, maxval=10.0)
+    mask = jnp.array([1.0, 2.0, 1.0, 0.0, 0.0, 0.0])
+
+    counterfactual = tbr.compute_geo_counterfactual_spend(
+        pretest_spend, test_spend, mask
+    )
+
+    control = np.asarray(mask) == 0.0
+    x_pre = np.asarray(pretest_spend)[:, control].mean(axis=1)
+    x_test = np.asarray(test_spend)[:, control].mean(axis=1)
+    expected = []
+    for g in range(6):
+      y_pre = np.asarray(pretest_spend)[:, g]
+      slope = max(0.0, np.polyfit(x_pre, y_pre, 1)[0])
+      expected.append(y_pre.mean() + slope * (x_test - x_pre.mean()))
+    expected = np.stack(expected, axis=1)
+    np.testing.assert_allclose(counterfactual, expected, rtol=1e-4, atol=1e-4)
+    # The test-period spend of treatment geos never enters the prediction.
+    altered = test_spend.at[:, 0].set(1e6)
+    np.testing.assert_allclose(
+        tbr.compute_geo_counterfactual_spend(pretest_spend, altered, mask),
+        counterfactual,
+        rtol=1e-6,
+    )
+
   def test_get_r2_perfect_correlation(self):
     # Create data where treated is exactly 2 * control + 1.
     t = 10
