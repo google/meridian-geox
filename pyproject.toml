@@ -16,8 +16,11 @@ keywords = []
 # pip dependencies of the project
 # Installed locally with `pip install -e .`
 dependencies = [
+    "altair>=5",
     "jax",
     "jaxkd",
+    "jinja2",
+    "markupsafe",
     "matplotlib",
     "numpy",
     "pandas",
