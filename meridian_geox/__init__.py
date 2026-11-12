@@ -43,3 +43,13 @@ from .design import compare_designs
 from .design import concat_design_reports
 from .design import plot_design
 from .design import run_design
+from .maps import boundary_coverage
+from .maps import byo_city_map_config
+from .maps import byo_dma_map_config
+from .maps import MapConfig
+from .maps import normalize_geo_id
+from .maps import US_STATES_TOPOJSON_URL
+from .maps import WORLD_COUNTRIES_50M_TOPOJSON_URL
+from .summarizer import AnalysisSummarizer
+from .summarizer import DesignGoals
+from .summarizer import DesignSummarizer
