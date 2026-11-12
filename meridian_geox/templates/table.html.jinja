@@ -1,0 +1,52 @@
+{#
+Copyright 2026 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+#}
+
+{% from "macros.html.jinja" import scope %}
+<chart-table {% if id %}id="{{ id }}" {% endif %}{{ scope(audience, candidate) }}>
+  {% include "findings.html.jinja" %}
+  {% if title %}
+    <div class="chart-table-title">{{ title }}</div>
+  {% endif %}
+  {% if collapsed_summary %}
+  <details class="chart-table-details">
+    <summary>{{ collapsed_summary }}</summary>
+  {% endif %}
+  <div class="chart-table-content">
+    <table{% if selectable %} class="geox-selectable"{% endif %}>
+      <tr class="chart-table-column-headers">
+      {% for column_header in column_headers %}
+        <th scope="col">{{ column_header }}</th>
+      {% endfor %}
+      </tr>
+
+      {% for row in row_values %}
+      {% set row_id = row_ids[loop.index0] if row_ids else '' %}
+      {% set tone = row_tones[loop.index0] if row_tones else 'neutral' %}
+      <tr class="chart-table-row-values geox-row-{{ tone }}"{% if row_id %} data-design-id="{{ row_id }}"{% endif %}{% if selectable %} tabindex="0" role="button" aria-pressed="false"{% endif %}>
+        {% for value in row %}
+          <td>{{ value }}</td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% if collapsed_summary %}
+  </details>
+  {% endif %}
+  {% if description %}
+    <div class="chart-table-description">{{ description }}</div>
+  {% endif %}
+</chart-table>
