@@ -1,0 +1,22 @@
+{#
+Copyright 2026 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+#}
+
+{% from "macros.html.jinja" import scope %}
+<div {{ scope(report_view, candidate) }}>
+  <h3>How this geo test isolates true ad impact</h3>
+  <p>This study divides your market into matched <strong>treatment</strong> ({{ n_treatment }} regions, {{ share }} of baseline volume) and <strong>control</strong> ({{ n_control }} regions) groups whose historical conversion trends move together.</p>
+  <p>{{ validation }}, so comparing the two groups over the {{ days }}-day test window isolates true incremental lift from seasonality and market-wide shifts.</p>
+</div>
