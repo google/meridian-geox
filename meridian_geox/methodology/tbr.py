@@ -16,7 +16,7 @@
 
 import dataclasses
 import functools
-from typing import Optional
+from typing import Optional, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -111,6 +111,10 @@ class TbrAnalysisResult:
       CIs.
     pointwise_difference_with_cis: (T, 3) Pointwise difference and CIs.
     counterfactual_spend: (T,) Predicted counterfactual spend.
+    signed_t_placebo_pointwise: (J, T_test) Studentized placebo pointwise
+      effects, signed like the reported lift.
+    t_placebo_scale: Multiplier (n_treatment_geos * rmse) converting
+      studentized placebo effects to total conversion units.
   """
 
   lift: api.Estimate
@@ -125,6 +129,10 @@ class TbrAnalysisResult:
       default_factory=lambda: np.array([])
   )
   counterfactual_spend: Optional[np.ndarray] = None
+  signed_t_placebo_pointwise: np.ndarray = dataclasses.field(
+      default_factory=lambda: np.array([])
+  )
+  t_placebo_scale: float = 0.0
 
 
 @jax.jit
@@ -529,6 +537,42 @@ def _compute_icpd(
   )
 
 
+@jax.jit
+def compute_geo_counterfactual_spend(
+    pretest_spend: jnp.ndarray,
+    test_spend: jnp.ndarray,
+    treatment_mask: jnp.ndarray,
+) -> jnp.ndarray:
+  """Predicts each geo's test-period spend with a geo-level TBR.
+
+  Each geo's pre-test spend is regressed on the control-geo mean spend, and the
+  fit is used to predict the geo's spend in the test period. As in the
+  arm-level TBR, a negative slope is clipped to zero, in which case the
+  prediction is the geo's mean pre-test spend. The regression is fit and
+  predictions are returned for every geo, but only the columns of treatment
+  geos are meaningful counterfactuals: a control geo's prediction is just a fit
+  of its own (untreated) spend.
+
+  Args:
+    pretest_spend: (T_pre, N) Pre-test spend.
+    test_spend: (T_test, N) Test-period spend.
+    treatment_mask: (N,) Group of each geo, as in `analyze`: 0.0 for control
+      geos and the positive cell id for treatment geos. Only used to identify
+      the control geos whose mean spend is the regressor; the cell ids
+      themselves do not matter here, so one call serves all cells of a
+      multi-cell experiment.
+
+  Returns:
+    (T_test, N) Predicted test-period spend for each geo.
+  """
+  x_pre = _compute_group_mean(pretest_spend, treatment_mask, 0.0)
+  x_test = _compute_group_mean(test_spend, treatment_mask, 0.0)
+  intercepts, slopes = jax.vmap(_fit_linear_regression, in_axes=(None, 1))(
+      x_pre, pretest_spend
+  )
+  return intercepts[None, :] + slopes[None, :] * x_test[:, None]
+
+
 def analyze(
     pretest_train_conversions: jnp.ndarray,
     pretest_val_conversions: jnp.ndarray,
@@ -787,4 +831,37 @@ def analyze(
       counterfactual_conversions_with_cis=counterfactual_conversions_with_cis,
       pointwise_difference_with_cis=pointwise_difference_with_cis,
       counterfactual_spend=counterfactual_spend,
+      signed_t_placebo_pointwise=np.array(signed_t_placebo_pointwise),
+      t_placebo_scale=float(n_treatment_geos * rmse),
   )
+
+
+def compute_pointwise_covariance(
+    t_placebos: Sequence[jnp.ndarray | np.ndarray],
+    scales: Sequence[float],
+    use_absolute_placebo_statistics: bool = False,
+) -> jnp.ndarray:
+  """Computes the covariance of daily effects across cells and days.
+
+  The studentized placebo pointwise effects of all cells, which share placebo
+  assignments and control geos, are scaled to total conversion units and stacked
+  so that their placebo covariance captures both autocorrelation within a cell
+  and the shared-control correlation across cells. The diagonal equals the
+  squared pointwise standard errors. The matrix is rank-deficient when there are
+  fewer placebos than cells times days.
+
+  Args:
+    t_placebos: Per cell, (J, T) studentized placebo pointwise effects.
+    scales: Per cell, the multiplier to total conversion units.
+    use_absolute_placebo_statistics: If True, placebo effects are not centered,
+      consistent with `compute_se`.
+
+  Returns:
+    (K * T, K * T) Covariance matrix, indexed by cell-major (cell, day) pairs.
+  """
+  effects = jnp.concatenate(
+      [scale * t for t, scale in zip(t_placebos, scales)], axis=1
+  )
+  if not use_absolute_placebo_statistics:
+    effects = effects - jnp.mean(effects, axis=0, keepdims=True)
+  return effects.T @ effects / effects.shape[0]
