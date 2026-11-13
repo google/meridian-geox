@@ -529,6 +529,42 @@ def _compute_icpd(
   )
 
 
+@jax.jit
+def compute_geo_counterfactual_spend(
+    pretest_spend: jnp.ndarray,
+    test_spend: jnp.ndarray,
+    treatment_mask: jnp.ndarray,
+) -> jnp.ndarray:
+  """Predicts each geo's test-period spend with a geo-level TBR.
+
+  Each geo's pre-test spend is regressed on the control-geo mean spend, and the
+  fit is used to predict the geo's spend in the test period. As in the
+  arm-level TBR, a negative slope is clipped to zero, in which case the
+  prediction is the geo's mean pre-test spend. The regression is fit and
+  predictions are returned for every geo, but only the columns of treatment
+  geos are meaningful counterfactuals: a control geo's prediction is just a fit
+  of its own (untreated) spend.
+
+  Args:
+    pretest_spend: (T_pre, N) Pre-test spend.
+    test_spend: (T_test, N) Test-period spend.
+    treatment_mask: (N,) Group of each geo, as in `analyze`: 0.0 for control
+      geos and the positive cell id for treatment geos. Only used to identify
+      the control geos whose mean spend is the regressor; the cell ids
+      themselves do not matter here, so one call serves all cells of a
+      multi-cell experiment.
+
+  Returns:
+    (T_test, N) Predicted test-period spend for each geo.
+  """
+  x_pre = _compute_group_mean(pretest_spend, treatment_mask, 0.0)
+  x_test = _compute_group_mean(test_spend, treatment_mask, 0.0)
+  intercepts, slopes = jax.vmap(_fit_linear_regression, in_axes=(None, 1))(
+      x_pre, pretest_spend
+  )
+  return intercepts[None, :] + slopes[None, :] * x_test[:, None]
+
+
 def analyze(
     pretest_train_conversions: jnp.ndarray,
     pretest_val_conversions: jnp.ndarray,

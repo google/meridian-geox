@@ -504,6 +504,17 @@ class AnalysisMetrics:
   cumulative_icpd: Optional[DataFrame] = dataclasses.field(
       default=None, repr=False
   )
+  # Daily spend of each of the cell's treatment geos (one column per geo) over
+  # the pre-test and test periods. Only populated if spend data is available.
+  observed_spend: Optional[pd.DataFrame] = dataclasses.field(
+      default=None, repr=False
+  )
+  # Daily counterfactual spend of each treatment geo, predicted by a geo-level
+  # TBR on the control-geo mean spend. Equals the observed spend in the pre-test
+  # period. Only populated if spend data is available.
+  counterfactual_spend: Optional[pd.DataFrame] = dataclasses.field(
+      default=None, repr=False
+  )
   descriptive_metrics: Optional[DescriptiveMetrics] = None
 
 
