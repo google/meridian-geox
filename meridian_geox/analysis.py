@@ -164,6 +164,7 @@ def _get_placebo_masks(
       data=placebo_data,
       experiment_duration=design_config.experiment_duration,
       constraints=analysis_constraints,  # pyrefly: ignore[bad-argument-type]
+      time_granularity=design_config.time_granularity,
   )
 
   if design_config.geo_assignment_rule == api.GeoAssignmentRule.RANDOM:
@@ -604,9 +605,10 @@ def analyze(
 
   # 5. Run methodology analysis.
   methodology_results = {}
-  experiment_duration_days = design_config.experiment_duration.days
-  pretest_train = conversions.pretest[:-experiment_duration_days]
-  pretest_val = conversions.pretest[-experiment_duration_days:]
+  spec = api.GRANULARITY_SPECS[design_config.time_granularity]
+  n_experiment_periods = spec.to_periods(design_config.experiment_duration)
+  pretest_train = conversions.pretest[:-n_experiment_periods]
+  pretest_val = conversions.pretest[-n_experiment_periods:]
 
   for cell, experiment_type in experiment_types.items():
     methodology_results[cell] = methodology.analyze(

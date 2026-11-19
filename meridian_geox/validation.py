@@ -30,7 +30,10 @@ def validate_schema(data: pd.DataFrame) -> list[str]:
   return []
 
 
-def validate_general_checks(data: pd.DataFrame) -> list[str]:
+def validate_general_checks(
+    data: pd.DataFrame,
+    time_granularity: api.TimeGranularity = api.TimeGranularity.DAILY,
+) -> list[str]:
   """Ensures the general data validation checks pass."""
   errors = validate_schema(data)
 
@@ -44,12 +47,71 @@ def validate_general_checks(data: pd.DataFrame) -> list[str]:
     try:
       unique_dates = pd.Series(data[api.DATE].unique()).sort_values()
       if len(unique_dates) > 1:
+        spec = api.GRANULARITY_SPECS[time_granularity]
         date_diffs = unique_dates.diff().dt.days.dropna()
-        if (date_diffs == 7).all():
-          errors.append('Weekly patterns are not supported.')
+        if not date_diffs.empty:
+          modal_diff = int(date_diffs.mode().iloc[0])
+          if modal_diff != spec.interval_days:
+            modal_unit = 'day' if modal_diff == 1 else 'days'
+            errors.append(
+                f'Configured time_granularity is {time_granularity.name}'
+                f' ({spec.interval_days}d), but data has a modal date interval'
+                f' of {modal_diff} {modal_unit}.'
+            )
+          elif not (
+              (date_diffs > 0) & (date_diffs % spec.interval_days == 0)
+          ).all():
+            interval_unit = 'day' if spec.interval_days == 1 else 'days'
+            errors.append(
+                'Irregular date intervals detected for'
+                f' {time_granularity.name} data: all date gaps must be'
+                f' positive multiples of {spec.interval_days} {interval_unit}.'
+            )
     except (ValueError, TypeError, AttributeError):
       pass
 
+  return errors
+
+
+def _validate_period_counts(
+    design_config: api.DesignConfig,
+    n_available_dates: int,
+    is_design: bool,
+) -> list[str]:
+  """Validates experiment period count and required pretest date count."""
+  spec = api.GRANULARITY_SPECS[design_config.time_granularity]
+  try:
+    n_experiment_periods = spec.to_periods(design_config.experiment_duration)
+  except ValueError as err:
+    return [str(err)]
+
+  errors = []
+  if n_experiment_periods < spec.min_experiment_periods:
+    errors.append(
+        f'experiment_duration has {n_experiment_periods}'
+        f' {spec.granularity.name} period(s), which is less than the'
+        f' minimum required {spec.min_experiment_periods} periods.'
+    )
+  required_periods = spec.required_pretest_periods(
+      design_config.experiment_duration
+  )
+  if n_available_dates < required_periods:
+    if is_design:
+      errors.append(
+          f'Data has {n_available_dates} dates, but experiment duration is'
+          f' {n_experiment_periods} periods'
+          f' ({design_config.experiment_duration.days} days). Need at least'
+          f' {spec.pretest_multiplier} * experiment duration dates during'
+          f' design phase. Required: {required_periods} dates.'
+      )
+    else:
+      errors.append(
+          f'Pretest data has {n_available_dates} dates, but experiment'
+          f' duration is {n_experiment_periods} periods'
+          f' ({design_config.experiment_duration.days} days). Need at least'
+          f' {spec.pretest_multiplier} * experiment duration pretest dates'
+          f' during analysis phase. Required: {required_periods} pretest dates.'
+      )
   return errors
 
 
@@ -59,16 +121,15 @@ def validate_design_input(
     constraints: api.Constraints,
 ) -> list[str]:
   """Validates the design input data and config using the schema and constraints."""
-  errors = validate_general_checks(data)
+  errors = validate_general_checks(data, design_config.time_granularity)
 
   # Check data length.
   if api.DATE in data.columns:
-    if data[api.DATE].nunique() < 3 * design_config.experiment_duration.days:
-      errors.append(
-          f'Data has {data[api.DATE].nunique()} dates, but experiment duration'
-          f' is {design_config.experiment_duration.days}. Need at least 3 *'
-          ' experiment duration dates during design phase.'
-      )
+    errors.extend(
+        _validate_period_counts(
+            design_config, data[api.DATE].nunique(), is_design=True
+        )
+    )
 
   # Check number of geos remaining after excluding excluded geos.
   if api.LOCATION in data.columns:
@@ -222,7 +283,14 @@ def validate_analysis_input(
     analysis_config: api.AnalysisConfig,
 ) -> list[str]:
   """Validates the analysis input data and config."""
-  errors = validate_general_checks(data)
+  if (
+      analysis_config.design is not None
+      and analysis_config.design.design_config is not None
+  ):
+    time_granularity = analysis_config.design.design_config.time_granularity
+  else:
+    time_granularity = api.TimeGranularity.DAILY
+  errors = validate_general_checks(data, time_granularity)
   # Check geo set consistency with Design.
   if api.LOCATION in data.columns and analysis_config.design is not None:
     design = analysis_config.design
@@ -259,16 +327,13 @@ def validate_analysis_input(
           unique_dates < analysis_config.analysis_start_date
       ]
 
-    pretest_duration = len(pretest_dates)
-    experiment_duration_days = (
-        analysis_config.design.design_config.experiment_duration.days
+    errors.extend(
+        _validate_period_counts(
+            analysis_config.design.design_config,
+            len(pretest_dates),
+            is_design=False,
+        )
     )
-    if pretest_duration < 3 * experiment_duration_days:
-      errors.append(
-          f'Pretest data has {pretest_duration} dates, but experiment duration'
-          f' is {experiment_duration_days}. Need at least 3 * experiment'
-          ' duration pretest dates during analysis phase.'
-      )
 
   # Check alpha for one-sided tests with absolute placebo t-statistics.
   if analysis_config.use_absolute_placebo_statistics:

@@ -127,6 +127,7 @@ def prepare_data(
     data: pd.DataFrame,
     experiment_duration: datetime.timedelta,
     constraints: api.Constraints,
+    time_granularity: api.TimeGranularity = api.TimeGranularity.DAILY,
 ) -> ProcessedData:
   """Processes data for experiment design."""
   data = _filter_by_constraints(data, constraints)
@@ -140,9 +141,10 @@ def prepare_data(
 
   n_dates = len(pivoted_data)
 
-  experiment_duration_days = experiment_duration.days
-  t2_start_idx = n_dates - experiment_duration_days
-  t1_start_idx = t2_start_idx - experiment_duration_days
+  spec = api.GRANULARITY_SPECS[time_granularity]
+  n_experiment_periods = spec.to_periods(experiment_duration)
+  t2_start_idx = n_dates - n_experiment_periods
+  t1_start_idx = t2_start_idx - n_experiment_periods
 
   t0_data = pivoted_data.iloc[:t1_start_idx]
   t1_data = pivoted_data.iloc[t1_start_idx:t2_start_idx]
@@ -568,7 +570,10 @@ def run_design(
   )
 
   processed_data: ProcessedData = prepare_data(
-      data, design_config.experiment_duration, augmented_constraints
+      data,
+      design_config.experiment_duration,
+      augmented_constraints,
+      time_granularity=design_config.time_granularity,
   )
 
   key = jax.random.PRNGKey(design_config.seed)
