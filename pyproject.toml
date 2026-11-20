@@ -18,6 +18,8 @@ keywords = []
 dependencies = [
     "jax",
     "jaxkd",
+    "jinja2",
+    "markupsafe",
     "matplotlib",
     "numpy",
     "pandas",
