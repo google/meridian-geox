@@ -1,0 +1,7 @@
+{% from "macros.html.jinja" import scope %}
+<div {{ scope(audience, candidate) }}>
+  <div class="geox-callout geox-tone-{{ tone }}" role="note">
+    {% if title %}<div class="geox-callout-title">{{ title }}</div>{% endif %}
+    <div>{{ text }}{% for label, url in links %}{% if loop.first %} {% else %} · {% endif %}<a href="{{ url }}" target="_blank" rel="noopener">{{ label }}</a>{% endfor %}</div>
+  </div>
+</div>

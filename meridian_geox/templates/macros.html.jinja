@@ -1,0 +1,7 @@
+{# Shared macros for the GeoX templates. #}
+{% macro scope(audience, candidate) -%}
+data-audience="{{ audience }}"{% if candidate %} class="geox-cand" data-cand="{{ candidate }}"{% endif %}
+{%- endmacro %}
+{% macro doc_link(label, url) -%}
+{% if url is string and url.startswith(('https://', 'http://')) %}<a href="{{ url }}" target="_blank" rel="noopener">{{ label }}</a>{% else %}{{ label }}{% endif %}
+{%- endmacro %}

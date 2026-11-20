@@ -1,0 +1,6 @@
+{% from "macros.html.jinja" import scope %}
+<stats-section {{ scope(audience, candidate) }}>
+  {% for item in stats %} {# Each `item` is a pre-rendered HTML snippet. #}
+    {{ item|safe }}
+  {% endfor %}
+</stats-section>
