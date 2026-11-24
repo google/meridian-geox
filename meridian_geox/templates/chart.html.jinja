@@ -1,0 +1,36 @@
+{#
+Copyright 2026 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+#}
+
+{# The page script embeds
+   the chart (see summary.html.jinja), so it can share data across charts and
+   follow the candidate selection. #}
+<chart data-audience="{{ audience }}"{% if candidate %} data-cand="{{ candidate }}"{% endif %} class="geox-chart-frame{% if css_class %} {{ css_class }}{% endif %}{% if candidate %} geox-cand{% endif %}">
+  <chart-embed id="{{ id }}"></chart-embed>
+  {% if description %}
+    <chart-description class="geox-takeaway">
+      → {{ description }}
+    </chart-description>
+  {% endif %}
+  {% if reading_guide %}
+    <chart-tools>
+      <span class="geox-guide-tip">
+        <button type="button" class="geox-guide-toggle" aria-expanded="false" aria-controls="{{ id }}-tip">ⓘ How to read</button>
+        <span class="geox-guide-pop" id="{{ id }}-tip" role="tooltip">{{ reading_guide }}</span>
+      </span>
+    </chart-tools>
+    <div class="geox-guide-inline"><strong>How to read:</strong> {{ reading_guide }}</div>
+  {% endif %}
+</chart>
