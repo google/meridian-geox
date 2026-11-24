@@ -16,11 +16,17 @@
 
 import abc
 import dataclasses
+import functools
 
 import jax
 import jax.numpy as jnp
+from jax.scipy import stats
 from meridian_geox import api
 import numpy as np
+
+_VAR_EPS = 1e-10
+_SE_EPS = 1e-10
+_BASELINE_EPS = 1e-9
 
 
 @dataclasses.dataclass
@@ -124,6 +130,7 @@ class MethodologyAnalysisResult:
   counterfactual_spend: np.ndarray | None = None
 
 
+@jax.jit
 def compute_binary_group_mean(
     data: jnp.ndarray,
     binary_mask: jnp.ndarray,
@@ -138,9 +145,12 @@ def compute_binary_group_mean(
   Returns:
     mean_ts: (T,) Average time series for the masked group.
   """
-  raise NotImplementedError()
+  binary_mask = binary_mask.astype(jnp.float32)
+  n_geos = jnp.sum(binary_mask)
+  return jnp.dot(data, binary_mask) / jnp.maximum(n_geos, 1.0)
 
 
+@jax.jit
 def compute_group_mean(
     data: jnp.ndarray,
     mask: jnp.ndarray,
@@ -157,7 +167,8 @@ def compute_group_mean(
   Returns:
     mean_ts: (T,) Average time series for the cell.
   """
-  raise NotImplementedError()
+  binary_mask = (mask == cell_id).astype(jnp.float32)
+  return compute_binary_group_mean(data, binary_mask)
 
 
 class CounterfactualMethodology(abc.ABC):
@@ -215,8 +226,10 @@ class CounterfactualMethodology(abc.ABC):
     Returns:
       mask: (N_designs,) Boolean mask where True indicates the design passed.
     """
-    raise NotImplementedError()
+    del conversion_data, spend_data, design_config, cell_id
+    return jnp.ones(candidates.shape[0], dtype=bool)
 
+  @functools.partial(jax.jit, static_argnames=('self',))
   def get_r2(
       self,
       data_pre: jnp.ndarray,
@@ -236,7 +249,99 @@ class CounterfactualMethodology(abc.ABC):
       r2_vals: (N_designs, k_cells) Out-of-sample R-squared on validation
         period.
     """
-    raise NotImplementedError()
+
+    def _get_one_r2(mask: jnp.ndarray) -> jnp.ndarray:
+      control_mask = (mask == 0.0).astype(jnp.float32)
+      treat_masks = (mask == cell_ids[:, None]).astype(jnp.float32)
+
+      def _get_cell_eval(treat_mask: jnp.ndarray):
+        _, _, y_val, y_pred_val = self._fit_and_predict_single(
+            data_pre, data_val, treat_mask, control_mask
+        )
+        return y_val, y_pred_val
+
+      y_val_by_cell, y_pred_by_cell = jax.vmap(_get_cell_eval)(treat_masks)
+
+      mse_by_cell = jnp.mean(jnp.square(y_val_by_cell - y_pred_by_cell), axis=1)
+      var_y_by_cell = jnp.var(y_val_by_cell, axis=1)
+      safe_var_y = jnp.where(var_y_by_cell > _VAR_EPS, var_y_by_cell, 1.0)
+      r2_by_cell = jnp.where(
+          var_y_by_cell > _VAR_EPS, 1.0 - (mse_by_cell / safe_var_y), 0.0
+      )
+
+      n_control = jnp.sum(control_mask)
+      n_treated_by_cell = jnp.sum(treat_masks, axis=1)
+      is_valid = (n_control > 0) & jnp.all(n_treated_by_cell > 0)
+      return jnp.where(is_valid, r2_by_cell, jnp.nan)
+
+    return jax.vmap(_get_one_r2)(treatment_masks)
+
+  @functools.partial(jax.jit, static_argnames=('self', 'test_type'))
+  def _get_mde(
+      self,
+      data_pre: jnp.ndarray,
+      data_val: jnp.ndarray,
+      treatment_masks: jnp.ndarray,
+      z_score_sum: float,
+      cell_ids: jnp.ndarray,
+      test_type: api.TestType = api.TestType.TWO_SIDED,
+  ) -> MdeResults:
+    """Calculates MDE using simplified design-aware placebo method."""
+
+    def _get_effect(mask: jnp.ndarray, treatment_cell_id: jnp.ndarray):
+      treat_mask = (mask == treatment_cell_id).astype(jnp.float32)
+      control_mask = (mask == 0.0).astype(jnp.float32)
+      y_pre, y_pred_pre, y_val, y_pred = self._fit_and_predict_single(
+          data_pre, data_val, treat_mask, control_mask
+      )
+
+      n_treated = jnp.sum(treat_mask)
+      real_effect = jnp.mean(y_val - y_pred)
+      baseline = jnp.mean(y_val)
+
+      y_full = jnp.concatenate([y_pre, y_val])
+      y_pred_full = jnp.concatenate([y_pred_pre, y_pred])
+
+      return real_effect, baseline, n_treated * y_full, n_treated * y_pred_full
+
+    def _get_mde_and_p_value(effects: jnp.ndarray, baselines: jnp.ndarray):
+      se = jnp.std(effects)
+      mde_abs_val = se * z_score_sum
+
+      mde_abs = jnp.full_like(effects, mde_abs_val)
+      safe_baselines = jnp.where(baselines > _BASELINE_EPS, baselines, 1.0)
+      mde_pct = jnp.where(
+          baselines > _BASELINE_EPS, mde_abs / safe_baselines, jnp.nan
+      )
+
+      z_scores = effects / jnp.maximum(se, _SE_EPS)
+      if test_type == api.TestType.TWO_SIDED:
+        p_value = 2.0 * (1.0 - stats.norm.cdf(jnp.abs(z_scores)))
+      else:
+        p_value = 1.0 - stats.norm.cdf(z_scores)
+      p_value = jnp.where(se > _SE_EPS, p_value, 1.0)
+
+      return mde_abs, mde_pct, p_value
+
+    _get_effect_over_masks = jax.vmap(_get_effect, in_axes=(0, None))
+    effects, baselines, observed, counterfactual = jax.vmap(
+        _get_effect_over_masks,
+        in_axes=(None, 0),
+    )(treatment_masks, cell_ids)
+
+    mde_abs, mde_pct, p_values = jax.vmap(_get_mde_and_p_value, in_axes=(0, 0))(
+        effects, baselines
+    )
+
+    return MdeResults(
+        mde_abs=jnp.transpose(mde_abs),
+        mde_pct=jnp.transpose(mde_pct),
+        p_value=jnp.transpose(p_values),
+        observed_conversions=jnp.transpose(observed, axes=(1, 0, 2)),
+        counterfactual_conversions=jnp.transpose(
+            counterfactual, axes=(1, 0, 2)
+        ),
+    )
 
   def get_mde(
       self,
@@ -260,7 +365,17 @@ class CounterfactualMethodology(abc.ABC):
     Returns:
       MdeResults containing absolute/relative MDE, AA p-values, and time series.
     """
-    raise NotImplementedError()
+    if cell_ids is None:
+      cell_ids = jnp.array([1.0])
+
+    return self._get_mde(
+        data_pre,
+        data_val,
+        treatment_masks,
+        z_score_sum,
+        cell_ids,
+        test_type,
+    )
 
   def _compute_placebo_effect_from_mask(
       self,
