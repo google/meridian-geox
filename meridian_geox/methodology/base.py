@@ -22,11 +22,14 @@ import jax
 import jax.numpy as jnp
 from jax.scipy import stats
 from meridian_geox import api
+from meridian_geox.methodology import util as methodology_util
 import numpy as np
 
 _VAR_EPS = 1e-10
 _SE_EPS = 1e-10
 _BASELINE_EPS = 1e-9
+_RMSE_EPS = 1e-9
+_SPEND_EPS = 1e-9
 
 
 @dataclasses.dataclass
@@ -130,7 +133,6 @@ class MethodologyAnalysisResult:
   counterfactual_spend: np.ndarray | None = None
 
 
-@jax.jit
 def compute_binary_group_mean(
     data: jnp.ndarray,
     binary_mask: jnp.ndarray,
@@ -169,6 +171,65 @@ def compute_group_mean(
   """
   binary_mask = (mask == cell_id).astype(jnp.float32)
   return compute_binary_group_mean(data, binary_mask)
+
+
+def _compute_validation_rmses(
+    y_val: jnp.ndarray,
+    y_pred_val: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+  """Computes validation RMSE and regularized log-RMSE.
+
+  Args:
+    y_val: (T_val,) Observed validation time series.
+    y_pred_val: (T_val,) Predicted validation time series.
+
+  Returns:
+    Tuple of (rmse, log_rmse).
+  """
+  rmse = jnp.sqrt(jnp.mean((y_val - y_pred_val) ** 2))
+  scale_val = jnp.mean(jnp.abs(y_val))
+  log_errors = methodology_util.compute_regularized_log_ratio(
+      y_val, y_pred_val, scale=scale_val
+  )
+  log_rmse = jnp.sqrt(jnp.mean(log_errors**2))
+  return rmse, log_rmse
+
+
+def _compute_studentized_total_cis(
+    geo_avg_effect: jnp.ndarray,
+    rmse: jnp.ndarray,
+    placebo_effects: jnp.ndarray,
+    placebo_rmses: jnp.ndarray,
+    n_treatment_geos: jnp.ndarray,
+    sign: float,
+    alpha: float,
+    test_type: api.TestType,
+    use_absolute_placebo_statistics: bool,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+  """Computes signed cell-total effects, CIs, and placebo t-statistics."""
+  signed_geo_avg_effect = sign * geo_avg_effect
+  signed_total_effect = n_treatment_geos * signed_geo_avg_effect
+  signed_t_placebo = sign * (
+      placebo_effects / jnp.maximum(placebo_rmses[:, None], _RMSE_EPS)
+  )
+  geo_avg_lower_cis, geo_avg_upper_cis = jax.vmap(
+      methodology_util.compute_cis, in_axes=(0, None, 1, None, None, None)
+  )(
+      signed_geo_avg_effect,
+      rmse,
+      signed_t_placebo,
+      alpha,
+      test_type,
+      use_absolute_placebo_statistics,
+  )
+  total_lower_cis = n_treatment_geos * geo_avg_lower_cis
+  total_upper_cis = n_treatment_geos * geo_avg_upper_cis
+  return (
+      signed_total_effect,
+      total_lower_cis,
+      total_upper_cis,
+      signed_t_placebo,
+  )
 
 
 class CounterfactualMethodology(abc.ABC):
@@ -404,8 +465,53 @@ class CounterfactualMethodology(abc.ABC):
       Placebo treatment response, Placebo predicted response, Placebo RMSE
       (out-of-sample), Placebo log RMSE (out-of-sample).
     """
-    raise NotImplementedError()
+    valid_control_mask = ((mask == 0.0) & (p_mask == 0.0)).astype(jnp.float32)
+    p_treatment_mask = (p_mask == treatment_cell_id).astype(jnp.float32)
 
+    # Part 1: Fit on training split to calculate out-of-sample validation RMSE.
+    _, _, py_val, py_pred_val = self._fit_and_predict_single(
+        data_pretest_train,
+        data_pretest_val,
+        p_treatment_mask,
+        valid_control_mask,
+    )
+    p_rmse, p_log_rmse = _compute_validation_rmses(py_val, py_pred_val)
+
+    # Part 2: Fit on combined pretest for the actual test prediction.
+    _, _, py_test, py_pred = self._fit_and_predict_single(
+        data_pretest,
+        data_test,
+        p_treatment_mask,
+        valid_control_mask,
+    )
+
+    return py_test, py_pred, p_rmse, p_log_rmse
+
+  def _compute_placebo_effects(
+      self,
+      data_pretest: jnp.ndarray,
+      data_pretest_train: jnp.ndarray,
+      data_pretest_val: jnp.ndarray,
+      data_test: jnp.ndarray,
+      mask: jnp.ndarray,
+      placebo_masks: jnp.ndarray,
+      treatment_cell_id: float,
+  ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Computes test effects and validation RMSEs across a batch of placebos."""
+    return jax.vmap(
+        self._compute_placebo_effect_from_mask,
+        in_axes=(None, None, None, None, None, 0, None),
+    )(
+        data_pretest,
+        data_pretest_train,
+        data_pretest_val,
+        data_test,
+        mask,
+        placebo_masks,
+        treatment_cell_id,
+    )
+
+  @functools.partial(jax.jit, static_argnames=('self',))
   def _compute_icpd(
       self,
       pretest_spend: jnp.ndarray,
@@ -417,8 +523,57 @@ class CounterfactualMethodology(abc.ABC):
       incremental_spend_sign: float,
       treatment_cell_id: float = 1.0,
   ) -> IcpdResults:
-    """Computes ICPD metrics using JAX arrays."""
-    raise NotImplementedError()
+    """Computes ICPD metrics using JAX arrays.
+
+    Args:
+      pretest_spend: (T_pre, N_geos) Pre-period spend data.
+      test_spend: (T_test, N_geos) Test-period spend data.
+      treatment_mask: (N_geos,) Treatment assignment mask.
+      total_cumul_effect: (T_test,) Sign-adjusted cell-total cumulative lift.
+      total_lower_cis: (T_test,) Sign-adjusted cell-total cumulative lower CIs.
+      total_upper_cis: (T_test,) Sign-adjusted cell-total cumulative upper CIs.
+      incremental_spend_sign: -1.0 for GO_DARK experiments, 1.0 otherwise.
+      treatment_cell_id: Target treatment cell ID.
+
+    Returns:
+      IcpdResults containing cumulative ICPD, CIs, incremental spend, and
+      predicted counterfactual spend.
+    """
+    treat_mask = (treatment_mask == treatment_cell_id).astype(jnp.float32)
+    control_mask = (treatment_mask == 0.0).astype(jnp.float32)
+    _, _, y_spend_test, y_spend_pred = self._fit_and_predict_single(
+        pretest_spend, test_spend, treat_mask, control_mask
+    )
+    n_treatment_geos = jnp.sum(treat_mask)
+
+    incremental_spend = (
+        incremental_spend_sign
+        * n_treatment_geos
+        * (y_spend_test - y_spend_pred)
+    )
+    cumulative_incremental_spend = jnp.cumsum(incremental_spend)
+
+    is_positive_spend = cumulative_incremental_spend > _SPEND_EPS
+    safe_spend = jnp.where(
+        is_positive_spend, cumulative_incremental_spend, 1.0
+    )
+    cumulative_icpd = jnp.where(
+        is_positive_spend, total_cumul_effect / safe_spend, jnp.nan
+    )
+    icpd_lower = jnp.where(
+        is_positive_spend, total_lower_cis / safe_spend, jnp.nan
+    )
+    icpd_upper = jnp.where(
+        is_positive_spend, total_upper_cis / safe_spend, jnp.nan
+    )
+
+    return IcpdResults(
+        cumulative_icpd=cumulative_icpd,
+        lower_bound=icpd_lower,
+        upper_bound=icpd_upper,
+        cumulative_incremental_spend=cumulative_incremental_spend,
+        counterfactual_spend=y_spend_pred * n_treatment_geos,
+    )
 
   def analyze(
       self,
@@ -455,4 +610,216 @@ class CounterfactualMethodology(abc.ABC):
     Returns:
       MethodologyAnalysisResult with lift, percent_lift, CIs, and optional iCPD.
     """
-    raise NotImplementedError()
+    treat_mask = (treatment_mask == treatment_cell_id).astype(jnp.float32)
+    control_mask = (treatment_mask == 0.0).astype(jnp.float32)
+
+    # Fit model on the training split and compute out-of-sample validation RMSE.
+    _, _, py_val, py_pred_val = self._fit_and_predict_single(
+        pretest_train_conversions,
+        pretest_val_conversions,
+        treat_mask,
+        control_mask,
+    )
+    rmse, log_rmse = _compute_validation_rmses(py_val, py_pred_val)
+
+    # Fit model on full pretest period for predicting on post-experiment data.
+    pretest_conversions = jnp.concatenate(
+        [pretest_train_conversions, pretest_val_conversions], axis=0
+    )
+    y_pretest, y_pred_pre, y_test, y_pred = self._fit_and_predict_single(
+        pretest_conversions, test_conversions, treat_mask, control_mask
+    )
+    y_pred_cumul = jnp.cumsum(y_pred)
+    y_test_cumul = jnp.cumsum(y_test)
+
+    geo_avg_cumul_effect = y_test_cumul - y_pred_cumul
+    n_treatment_geos = jnp.sum(treat_mask)
+    total_y_test_cumul = n_treatment_geos * y_test_cumul
+    total_y_pred_cumul = n_treatment_geos * y_pred_cumul
+
+    (
+        placebo_y_test,
+        placebo_y_pred,
+        placebo_rmses,
+        placebo_log_rmses,
+    ) = self._compute_placebo_effects(
+        pretest_conversions,
+        pretest_train_conversions,
+        pretest_val_conversions,
+        test_conversions,
+        treatment_mask,
+        placebo_masks,
+        treatment_cell_id,
+    )
+
+    placebo_y_test_cumul = jnp.cumsum(placebo_y_test, axis=1)
+    placebo_y_pred_cumul = jnp.cumsum(placebo_y_pred, axis=1)
+
+    sign = -1.0 if experiment_type == api.ExperimentType.GO_DARK else 1.0
+    (
+        signed_total_cumul_effect,
+        total_lower_cis,
+        total_upper_cis,
+        signed_t_placebo,
+    ) = _compute_studentized_total_cis(
+        geo_avg_effect=geo_avg_cumul_effect,
+        rmse=rmse,
+        placebo_effects=placebo_y_test_cumul - placebo_y_pred_cumul,
+        placebo_rmses=placebo_rmses,
+        n_treatment_geos=n_treatment_geos,
+        sign=sign,
+        alpha=alpha,
+        test_type=test_type,
+        use_absolute_placebo_statistics=use_absolute_placebo_statistics,
+    )
+
+    p_value = methodology_util.compute_studentized_p_value(
+        sign * geo_avg_cumul_effect[-1],
+        rmse,
+        signed_t_placebo[:, -1],
+        test_type,
+        use_absolute_placebo_statistics=use_absolute_placebo_statistics,
+    )
+    lift_standard_deviation = n_treatment_geos * methodology_util.compute_se(
+        rmse,
+        signed_t_placebo[:, -1],
+        use_absolute_placebo_statistics=use_absolute_placebo_statistics,
+    )
+    cumulative_lift_jax = jnp.stack(
+        [signed_total_cumul_effect, total_lower_cis, total_upper_cis]
+    ).T
+
+    # Pointwise metrics.
+    (
+        signed_total_pointwise_effect,
+        total_pointwise_lower_cis,
+        total_pointwise_upper_cis,
+        _,
+    ) = _compute_studentized_total_cis(
+        geo_avg_effect=y_test - y_pred,
+        rmse=rmse,
+        placebo_effects=placebo_y_test - placebo_y_pred,
+        placebo_rmses=placebo_rmses,
+        n_treatment_geos=n_treatment_geos,
+        sign=sign,
+        alpha=alpha,
+        test_type=test_type,
+        use_absolute_placebo_statistics=use_absolute_placebo_statistics,
+    )
+
+    total_y_test = n_treatment_geos * y_test
+    total_y_pred = n_treatment_geos * y_pred
+    if experiment_type != api.ExperimentType.GO_DARK:
+      cf_lower = total_y_test - total_pointwise_upper_cis
+      cf_upper = total_y_test - total_pointwise_lower_cis
+    else:
+      cf_lower = total_y_test + total_pointwise_lower_cis
+      cf_upper = total_y_test + total_pointwise_upper_cis
+
+    total_y_pretest = n_treatment_geos * y_pretest
+    total_y_pred_pre = n_treatment_geos * y_pred_pre
+    total_pretest_pointwise_effect = sign * (total_y_pretest - total_y_pred_pre)
+
+    n_pre = y_pretest.shape[0]
+    nan_cis_pre = jnp.full((n_pre,), jnp.nan)
+
+    pointwise_difference_jax = jnp.concatenate([
+        jnp.stack([
+            total_pretest_pointwise_effect,
+            nan_cis_pre,
+            nan_cis_pre,
+        ]).T,
+        jnp.stack([
+            signed_total_pointwise_effect,
+            total_pointwise_lower_cis,
+            total_pointwise_upper_cis,
+        ]).T,
+    ])
+    counterfactual_conversions_jax = jnp.concatenate([
+        jnp.stack([
+            total_y_pretest,
+            total_y_pred_pre,
+            nan_cis_pre,
+            nan_cis_pre,
+        ]).T,
+        jnp.stack([total_y_test, total_y_pred, cf_lower, cf_upper]).T,
+    ])
+
+    icpd_results = None
+    icpd_standard_deviation = None
+    cumulative_icpd_jax = None
+    if pretest_spend is not None and test_spend is not None:
+      icpd_results = self._compute_icpd(
+          pretest_spend,
+          test_spend,
+          treatment_mask,
+          signed_total_cumul_effect,
+          total_lower_cis,
+          total_upper_cis,
+          sign,
+          treatment_cell_id,
+      )
+      final_spend = icpd_results.cumulative_incremental_spend[-1]
+      is_positive_final_spend = final_spend > _SPEND_EPS
+      safe_final_spend = jnp.where(is_positive_final_spend, final_spend, 1.0)
+      icpd_standard_deviation = jnp.where(
+          is_positive_final_spend,
+          lift_standard_deviation / safe_final_spend,
+          jnp.nan,
+      )
+      cumulative_icpd_jax = jnp.stack([
+          icpd_results.cumulative_icpd,
+          icpd_results.lower_bound,
+          icpd_results.upper_bound,
+      ]).T
+
+    # Materialize host scalars and NumPy arrays after all JAX ops are enqueued.
+    percent_lift = methodology_util.get_percent_lift(
+        total_y_test_cumul[-1],
+        total_y_pred_cumul[-1],
+        log_rmse,
+        placebo_y_test_cumul[:, -1],
+        placebo_y_pred_cumul[:, -1],
+        placebo_log_rmses,
+        alpha,
+        experiment_type,
+        test_type,
+        use_absolute_placebo_statistics=use_absolute_placebo_statistics,
+    )
+    lift = api.Estimate(
+        point_estimate=float(signed_total_cumul_effect[-1]),
+        lower_bound=float(total_lower_cis[-1]),
+        upper_bound=float(total_upper_cis[-1]),
+        standard_deviation=float(lift_standard_deviation),
+        p_value=float(p_value),
+    )
+    icpd = None
+    cumulative_icpd_with_cis = None
+    counterfactual_spend = None
+    if (
+        icpd_results is not None
+        and icpd_standard_deviation is not None
+        and cumulative_icpd_jax is not None
+    ):
+      icpd = api.Estimate(
+          point_estimate=float(icpd_results.cumulative_icpd[-1]),
+          lower_bound=float(icpd_results.lower_bound[-1]),
+          upper_bound=float(icpd_results.upper_bound[-1]),
+          standard_deviation=float(icpd_standard_deviation),
+          p_value=float(p_value),
+      )
+      cumulative_icpd_with_cis = np.array(cumulative_icpd_jax)
+      counterfactual_spend = np.array(icpd_results.counterfactual_spend)
+
+    return MethodologyAnalysisResult(
+        lift=lift,
+        cumulative_lift_with_cis=np.array(cumulative_lift_jax),
+        percent_lift=percent_lift,
+        icpd=icpd,
+        cumulative_icpd_with_cis=cumulative_icpd_with_cis,
+        counterfactual_conversions_with_cis=np.array(
+            counterfactual_conversions_jax
+        ),
+        pointwise_difference_with_cis=np.array(pointwise_difference_jax),
+        counterfactual_spend=counterfactual_spend,
+    )
