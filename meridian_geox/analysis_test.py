@@ -2111,6 +2111,67 @@ class AnalysisTest(parameterized.TestCase):
     self.assertLen(placebo_masks, 35)
     self.assertLen(np.unique(placebo_masks, axis=0), 35)
 
+  def test_analyze_weekly_data(self):
+    dates = pd.date_range('2024-01-07', periods=15, freq='7D')
+    geos = [f'G{i}' for i in range(1, 11)]
+    rows = []
+    for t_idx, d in enumerate(dates):
+      for g_idx, g in enumerate(geos):
+        baseline = (1.0 + 0.1 * g_idx) * (100.0 + 5.0 * t_idx)
+        is_test = d >= dates[12]
+        is_treated = g in {'G1', 'G2'}
+        conv = baseline + (25.0 if (is_test and is_treated) else 0.0)
+        spend = 0.0 if (is_test and is_treated) else 20.0 + float(g_idx)
+        rows.append({
+            api.DATE: d,
+            api.LOCATION: g,
+            api.CONVERSIONS: conv,
+            api.SPEND: spend,
+        })
+    all_data = pd.DataFrame(rows)
+    pretest_data = all_data[all_data[api.DATE] < dates[12]].copy()
+
+    design_config = api.DesignConfig(
+        n_candidates=20,
+        experiment_duration=datetime.timedelta(weeks=3),
+        time_granularity=api.TimeGranularity.WEEKLY,
+        experiment_types=api.ExperimentType.HOLDBACK,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        seed=42,
+    )
+    study_design = api.Design(
+        designs={
+            api.CELL_1: api.PerCellDesign(
+                treatment_geos={'G1', 'G2'},
+                minimum_detectable_effect=0.0,
+                design_implied_cpic=0.0,
+                p_value=0.0,
+                budget=120.0,
+            )
+        },
+        control_geos={f'G{i}' for i in range(3, 11)},
+        excluded_geos=set(),
+        design_config=design_config,
+        data=pretest_data,
+        constraints=api.Constraints(max_conversions_percent=0.5),
+    )
+    analysis_config = api.AnalysisConfig(
+        design=study_design,
+        analysis_start_date=dates[12],
+        analysis_end_date=dates[14],
+        n_placebo_candidates=20,
+        n_top_placebos=5,
+        min_placebo_r2=0.0,
+        min_placebo_count_warning=1,
+        min_placebo_count_error=1,
+    )
+
+    result = analysis.analyze(all_data, analysis_config)
+    self.assertIn(api.CELL_1, result.results)
+    metrics = result.results[api.CELL_1]
+    self.assertGreater(metrics.lift.point_estimate, 0.0)
+    self.assertLen(metrics.counterfactual_conversions, 15)
+
 
 if __name__ == '__main__':
   absltest.main()
