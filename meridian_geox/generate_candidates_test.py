@@ -14,15 +14,42 @@
 
 import datetime
 import itertools
+from unittest import mock
+
 from absl.testing import absltest
 from absl.testing import parameterized
 import jax
 import jax.numpy as jnp
 from meridian_geox import api
 from meridian_geox import generate_candidates
+from meridian_geox.methodology import base
+from meridian_geox.methodology import registry
 import numpy as np
 import pandas as pd
 from scipy import stats
+
+
+class _GeoZeroIncompatibleMethodology(base.CounterfactualMethodology):
+  """Fake methodology that rejects any candidate treating geo 0."""
+
+  def _fit_and_predict_single(
+      self,
+      data_train: jnp.ndarray,
+      data_eval: jnp.ndarray,
+      treatment_group_mask: jnp.ndarray,
+      control_group_mask: jnp.ndarray,
+  ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    raise NotImplementedError()
+
+  def check_candidate_compatibility(
+      self,
+      candidates: jnp.ndarray,
+      conversion_data: jnp.ndarray,
+      spend_data: jnp.ndarray,
+      design_config: api.DesignConfig,
+      cell_id: float,
+  ) -> jnp.ndarray:
+    return candidates[:, 0] != cell_id
 
 
 def _reference_stratified_geo_sequence(stratum_seq, geos, geo_stratum_labels):
@@ -716,6 +743,262 @@ class GenerateCandidatesTest(parameterized.TestCase):
             num_cells,
         ),
     )
+
+  def _get_random_candidates_inputs(self, experiment_type):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1),
+        experiment_types=experiment_type,
+        n_candidates=10,
+        seed=42,
+    )
+    constraints = api.Constraints(max_conversions_percent=0.5)
+    conversions_data = pd.DataFrame([
+        {
+            'date': pd.Timestamp('2024-01-01'),
+            'location': f'G{i}',
+            'conversions': 10.0,
+        }
+        for i in range(10)
+    ])
+    # Identical, time-varying conversions and spend so that every candidate has
+    # matching (non-degenerate) TBR conversion and spend slopes.
+    selection_train = jnp.tile(jnp.arange(1.0, 4.0)[:, None], (1, 10))
+    selection_train_spend = {api.CELL_1: selection_train}
+    return (
+        design_config,
+        constraints,
+        conversions_data,
+        selection_train,
+        selection_train_spend,
+    )
+
+  def test_get_random_candidates_filters_by_methodology_compatibility(self):
+    design_config, constraints, conversions_data, selection_train, spend = (
+        self._get_random_candidates_inputs(api.ExperimentType.GO_DARK)
+    )
+    methodology = _GeoZeroIncompatibleMethodology()
+
+    candidates = generate_candidates.get_random_candidates(
+        filtered_data=conversions_data,
+        design_config=design_config,
+        constraints=constraints,
+        key=jax.random.PRNGKey(0),
+        selection_train=selection_train,
+        selection_train_spend=spend,
+        methodology=methodology,
+    )
+
+    self.assertNotEmpty(candidates)
+    np.testing.assert_array_equal(candidates[:, 0], 0)
+
+  def test_get_random_candidates_skips_compatibility_for_holdback(self):
+    design_config, constraints, conversions_data, selection_train, spend = (
+        self._get_random_candidates_inputs(api.ExperimentType.HOLDBACK)
+    )
+    methodology = _GeoZeroIncompatibleMethodology()
+
+    with mock.patch.object(
+        methodology,
+        'check_candidate_compatibility',
+        autospec=True,
+    ) as mock_check:
+      generate_candidates.get_random_candidates(
+          filtered_data=conversions_data,
+          design_config=design_config,
+          constraints=constraints,
+          key=jax.random.PRNGKey(0),
+          selection_train=selection_train,
+          selection_train_spend=spend,
+          methodology=methodology,
+      )
+
+    mock_check.assert_not_called()
+
+  def test_get_random_candidates_defaults_to_registered_methodology(self):
+    design_config, constraints, conversions_data, selection_train, spend = (
+        self._get_random_candidates_inputs(api.ExperimentType.GO_DARK)
+    )
+    tbr_methodology = registry.get_methodology(api.Methodology.TBR)
+
+    with mock.patch.object(
+        tbr_methodology,
+        'check_candidate_compatibility',
+        wraps=tbr_methodology.check_candidate_compatibility,
+    ) as mock_check:
+      generate_candidates.get_random_candidates(
+          filtered_data=conversions_data,
+          design_config=design_config,
+          constraints=constraints,
+          key=jax.random.PRNGKey(0),
+          selection_train=selection_train,
+          selection_train_spend=spend,
+      )
+
+    mock_check.assert_called()
+    self.assertIs(
+        mock_check.call_args.kwargs['design_config'], design_config
+    )
+
+  def test_get_stratified_sampling_candidates_filters_by_compatibility(self):
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1),
+        experiment_types=api.ExperimentType.HEAVY_UP,
+        n_candidates=10,
+        seed=42,
+    )
+    constraints = api.Constraints(max_conversions_percent=0.5)
+    conversions_data = pd.DataFrame([
+        {
+            'date': pd.Timestamp('2024-01-01'),
+            'location': f'G{i}',
+            'conversions': 10.0,
+        }
+        for i in range(8)
+    ])
+    geo_stratum_labels = jnp.array([0, 0, 1, 1, 2, 2, 3, 3])
+    selection_train = jnp.ones((3, 8))
+    spend = {api.CELL_1: jnp.ones((3, 8))}
+
+    candidates = generate_candidates.get_stratified_sampling_candidates(
+        selection_train=selection_train,
+        filtered_data=conversions_data,
+        design_config=design_config,
+        constraints=constraints,
+        geo_stratum_labels=geo_stratum_labels,
+        key=jax.random.PRNGKey(0),
+        selection_train_spend=spend,
+        methodology=_GeoZeroIncompatibleMethodology(),
+    )
+
+    self.assertNotEmpty(candidates)
+    np.testing.assert_array_equal(candidates[:, 0], 0)
+
+  def _get_multicell_compatibility_inputs(self):
+    candidates = jnp.array([
+        [1.0, 2.0, 0.0, 0.0],
+        [2.0, 1.0, 0.0, 0.0],
+        [1.0, 0.0, 2.0, 0.0],
+        [0.0, 1.0, 0.0, 2.0],
+    ])
+    selection_train = jnp.ones((3, 4))
+    selection_train_spend = {
+        'cell_1': jnp.full((3, 4), 2.0),
+        'cell_2': jnp.full((3, 4), 3.0),
+    }
+    return candidates, selection_train, selection_train_spend
+
+  def test_get_compatibility_mask_skips_holdback_cells(self):
+    candidates, selection_train, spend = (
+        self._get_multicell_compatibility_inputs()
+    )
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1),
+        cell_count=2,
+        experiment_types={
+            'cell_1': api.ExperimentType.HOLDBACK,
+            'cell_2': api.ExperimentType.GO_DARK,
+        },
+    )
+    methodology = _GeoZeroIncompatibleMethodology()
+    cell_2_mask = jnp.array([True, False, True, False])
+
+    with mock.patch.object(
+        methodology,
+        'check_candidate_compatibility',
+        autospec=True,
+        return_value=cell_2_mask,
+    ) as mock_check:
+      mask = generate_candidates._get_compatibility_mask(
+          candidates, selection_train, spend, design_config, methodology
+      )
+
+    # Only the GO_DARK cell is checked; the HOLDBACK cell is skipped.
+    mock_check.assert_called_once()
+    call_kwargs = mock_check.call_args.kwargs
+    self.assertEqual(call_kwargs['cell_id'], 2.0)
+    np.testing.assert_array_equal(call_kwargs['spend_data'], spend['cell_2'])
+    np.testing.assert_array_equal(
+        call_kwargs['conversion_data'], selection_train
+    )
+    self.assertIs(call_kwargs['design_config'], design_config)
+    np.testing.assert_array_equal(mask, cell_2_mask)
+
+  def test_get_compatibility_mask_combines_cells_with_logical_and(self):
+    candidates, selection_train, spend = (
+        self._get_multicell_compatibility_inputs()
+    )
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1),
+        cell_count=2,
+        experiment_types={
+            'cell_1': api.ExperimentType.GO_DARK,
+            'cell_2': api.ExperimentType.HEAVY_UP,
+        },
+    )
+    methodology = _GeoZeroIncompatibleMethodology()
+    per_cell_masks = {
+        1.0: jnp.array([True, True, False, False]),
+        2.0: jnp.array([True, False, True, False]),
+    }
+
+    def _fake_check(candidates, conversion_data, spend_data, design_config,
+                    cell_id):
+      del candidates, conversion_data, spend_data, design_config
+      return per_cell_masks[cell_id]
+
+    with mock.patch.object(
+        methodology,
+        'check_candidate_compatibility',
+        autospec=True,
+        side_effect=_fake_check,
+    ) as mock_check:
+      mask = generate_candidates._get_compatibility_mask(
+          candidates, selection_train, spend, design_config, methodology
+      )
+
+    self.assertEqual(mock_check.call_count, 2)
+    self.assertCountEqual(
+        [c.kwargs['cell_id'] for c in mock_check.call_args_list], [1.0, 2.0]
+    )
+    np.testing.assert_array_equal(mask, jnp.array([True, False, False, False]))
+
+  def test_get_compatibility_mask_handles_scalar_experiment_types(self):
+    candidates, selection_train, spend = (
+        self._get_multicell_compatibility_inputs()
+    )
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1),
+        experiment_types=api.ExperimentType.HOLDBACK,
+    )
+    # Assigning after construction bypasses DesignConfig normalization.
+    design_config.experiment_types = api.ExperimentType.GO_DARK
+    methodology = _GeoZeroIncompatibleMethodology()
+
+    mask = generate_candidates._get_compatibility_mask(
+        candidates, selection_train, spend, design_config, methodology
+    )
+
+    # The scalar is treated as cell_1, so candidates treating geo 0 in cell 1
+    # are rejected by the fake methodology.
+    np.testing.assert_array_equal(mask, jnp.array([False, True, False, True]))
+
+  def test_get_compatibility_mask_without_spend_passes_all(self):
+    candidates, selection_train, _ = self._get_multicell_compatibility_inputs()
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=1),
+        experiment_types=api.ExperimentType.GO_DARK,
+    )
+    methodology = _GeoZeroIncompatibleMethodology()
+
+    with mock.patch.object(
+        methodology, 'check_candidate_compatibility', autospec=True
+    ) as mock_check:
+      mask = generate_candidates._get_compatibility_mask(
+          candidates, selection_train, None, design_config, methodology
+      )
+
+    mock_check.assert_not_called()
+    np.testing.assert_array_equal(mask, jnp.ones(4, dtype=bool))
 
 
 if __name__ == '__main__':
