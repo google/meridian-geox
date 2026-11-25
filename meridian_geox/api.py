@@ -14,9 +14,11 @@
 
 """API types and enums for the GeoX library."""
 
+from collections.abc import Mapping
 import dataclasses
 import datetime
 import enum
+import types
 from typing import Annotated, Any, Optional, TypeVar, Union
 
 import jax.numpy as jnp
@@ -202,18 +204,75 @@ class GeoGroup(enum.Enum):
   EXCLUDED = 3
 
 
+@enum.unique
+class TimeGranularity(enum.Enum):
+  """Supported time granularities for GeoX input data."""
+
+  DAILY = 1
+  WEEKLY = 2
+
+
+@dataclasses.dataclass(frozen=True)
+class GranularitySpec:
+  """Specification and period conversion helpers for a time granularity.
+
+  Attributes:
+    granularity: The time granularity enum member.
+    interval_days: Number of calendar days per period.
+    min_experiment_periods: Minimum number of periods required in an experiment.
+    pretest_multiplier: Multiplier on experiment periods for required pretest
+      length.
+  """
+
+  granularity: TimeGranularity
+  interval_days: int
+  min_experiment_periods: int = 2
+  pretest_multiplier: int = 3
+
+  def to_periods(self, duration: datetime.timedelta) -> int:
+    """Converts a timedelta duration into a number of granularity periods."""
+    if duration.days <= 0 or duration.days % self.interval_days != 0:
+      raise ValueError(
+          f"experiment_duration ({duration.days} days) must be a positive"
+          f" multiple of {self.interval_days} days for"
+          f" {self.granularity.name} data."
+      )
+    return duration.days // self.interval_days
+
+  def required_pretest_periods(self, duration: datetime.timedelta) -> int:
+    """Returns the minimum number of pretest periods required."""
+    return self.pretest_multiplier * self.to_periods(duration)
+
+
+GRANULARITY_SPECS: Mapping[TimeGranularity, GranularitySpec] = (
+    types.MappingProxyType({
+        TimeGranularity.DAILY: GranularitySpec(
+            granularity=TimeGranularity.DAILY,
+            interval_days=1,
+        ),
+        TimeGranularity.WEEKLY: GranularitySpec(
+            granularity=TimeGranularity.WEEKLY,
+            interval_days=7,
+        ),
+    })
+)
+
+
 @pydantic.dataclasses.dataclass
 class DesignConfig:
   """Parameters for designing a GeoX study."""
 
   __pydantic_config__ = pydantic.ConfigDict(arbitrary_types_allowed=True)
 
-  # TODO: Figure out if need to support weekly granularity.
   experiment_duration: Annotated[
       datetime.timedelta,
       pydantic.BeforeValidator(_validate_duration),
       pydantic.Field(gt=datetime.timedelta(0)),
   ]
+  # Time granularity of the input data. Defaults to DAILY.
+  time_granularity: TimeGranularity = dataclasses.field(
+      default=TimeGranularity.DAILY, kw_only=True
+  )
   # For multi-cell experiments, different types can be assigned per cell using
   # a dictionary; otherwise, a single provided type is applied to all cells.
   experiment_types: Union[
