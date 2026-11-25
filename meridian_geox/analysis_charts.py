@@ -1,0 +1,540 @@
+# Copyright 2026 The Meridian GeoX Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Charts for the GeoX analysis report."""
+
+import math
+from typing import Callable, Optional, Sequence
+
+import altair as alt
+from meridian_geox import api
+from meridian_geox import charts
+from meridian_geox import report_data
+import numpy as np
+import pandas as pd
+from scipy import stats
+
+_WIDTH = charts.DEFAULT_WIDTH
+_HEIGHT = charts.DEFAULT_HEIGHT
+
+
+def _phase_layers(window: report_data.AnalysisWindow) -> list[alt.Chart]:
+  """Shaded test and cooldown periods."""
+  rows = [{
+      'start': window.start,
+      'end': window.test_end + pd.Timedelta(hours=23),
+      'phase': 'Test',
+  }]
+  if window.cooldown_days > 0:
+    rows.append({
+        'start': window.cooldown_start,
+        'end': window.end + pd.Timedelta(hours=23),
+        'phase': 'Cooldown',
+    })
+  frame = pd.DataFrame(rows)
+  return [
+      alt.Chart(frame)
+      .mark_rect(opacity=0.6)
+      .encode(
+          x='start:T',
+          x2='end:T',
+          color=alt.Color(
+              'phase:N',
+              title=None,
+              scale=alt.Scale(
+                  domain=['Test', 'Cooldown'],
+                  range=[charts.TEST_COLOR, charts.COOLDOWN_COLOR],
+              ),
+          ),
+          tooltip=[alt.Tooltip('phase:N', title='Period')],
+      )
+  ]
+
+
+def _test_start_layers(window: report_data.AnalysisWindow) -> list[alt.Chart]:
+  """Dashed 'Test start' marker."""
+  frame = pd.DataFrame({'date': [window.start], 'label': ['Test start']})
+  rule = charts.rule(frame, charts.GREY_700, [4, 3], x='date:T')
+  text = alt.Chart(frame).mark_text(
+      align='center', baseline='top', dy=2, fontSize=10, color=charts.GREY_700
+  ).encode(x='date:T', y=alt.value(0), text='label:N')
+  return [rule, text]
+
+
+def _frame_with_dates(df: pd.DataFrame) -> pd.DataFrame:
+  frame = df.copy()
+  frame.index = pd.to_datetime(frame.index)
+  frame = frame.rename_axis('date').reset_index()
+  return frame
+
+
+def observed_counterfactual_chart(
+    metrics: api.AnalysisMetrics,
+    window: report_data.AnalysisWindow,
+    group_label: str = 'Treatment',
+) -> alt.LayerChart:
+  """Plots treatment conversions against the modelled counterfactual."""
+  frame = _frame_with_dates(metrics.counterfactual_conversions)
+  # The weeks just before the test show whether the fit holds; older pretest
+  # days only compress the test window.
+  frame = frame[frame['date'] >= window.start - pd.Timedelta(days=28)]
+  long = frame.melt(
+      id_vars=['date'],
+      value_vars=['observed', 'counterfactual'],
+      var_name='series',
+      value_name='conversions',
+  )
+  long['series'] = long['series'].map({
+      'observed': f'{group_label} (observed)',
+      'counterfactual': 'Counterfactual (no ads change)',
+  })
+  band = (
+      alt.Chart(frame.dropna(subset=['lower_bound', 'upper_bound']))
+      .mark_area(color=charts.GREEN, opacity=0.15)
+      .encode(
+          x='date:T',
+          y='lower_bound:Q',
+          y2='upper_bound:Q',
+          tooltip=[
+              charts.DATE_TOOLTIP,
+              alt.Tooltip('lower_bound:Q', title='CI lower', format=',.0f'),
+              alt.Tooltip('upper_bound:Q', title='CI upper', format=',.0f'),
+          ],
+      )
+  )
+  lines = (
+      alt.Chart(long)
+      .mark_line(strokeWidth=1.8)
+      .encode(
+          x=charts.DATE_X,
+          y=alt.Y('conversions:Q', title='Daily conversions',
+                  scale=alt.Scale(zero=False)),
+          color=alt.Color(
+              'series:N',
+              title=None,
+              scale=alt.Scale(
+                  domain=['Counterfactual (no ads change)',
+                          f'{group_label} (observed)'],
+                  range=[charts.GREEN, charts.OBSERVED_COLOR],
+              ),
+          ),
+          strokeDash=alt.StrokeDash(
+              'series:N', legend=None,
+              scale=alt.Scale(
+                  domain=['Counterfactual (no ads change)',
+                          f'{group_label} (observed)'],
+                  range=[[5, 3], [1, 0]],
+              ),
+          ),
+          tooltip=[
+              charts.DATE_TOOLTIP,
+              alt.Tooltip('series:N'),
+              alt.Tooltip('conversions:Q', format=',.0f'),
+          ],
+      )
+  )
+  return (
+      alt.layer(
+          *_phase_layers(window), band, lines, *_test_start_layers(window)
+      )
+      .resolve_scale(color='independent')
+      .properties(width=_WIDTH, height=_HEIGHT)
+  )
+
+
+def pointwise_chart(
+    metrics: api.AnalysisMetrics, window: report_data.AnalysisWindow
+) -> alt.LayerChart:
+  """Plots the daily gap between observed and counterfactual."""
+  frame = _frame_with_dates(metrics.pointwise_difference)
+  frame = frame[frame['date'] >= window.start - pd.Timedelta(days=28)]
+  band = (
+      alt.Chart(frame.dropna(subset=['lower_bound', 'upper_bound']))
+      .mark_area(color=charts.PURPLE, opacity=0.15)
+      .encode(x='date:T', y='lower_bound:Q', y2='upper_bound:Q')
+  )
+  line = (
+      alt.Chart(frame)
+      .mark_line(color=charts.PURPLE, strokeWidth=1.8)
+      .encode(
+          x=charts.DATE_X,
+          y=alt.Y('difference:Q', title='Daily extra conversions'),
+          tooltip=[
+              charts.DATE_TOOLTIP,
+              alt.Tooltip('difference:Q', title='Gap', format=',.1f'),
+          ],
+      )
+  )
+  zero = charts.rule(pd.DataFrame({'y': [0]}), charts.GREY_500, y='y:Q')
+  return (
+      alt.layer(*_phase_layers(window), band, zero, line,
+                *_test_start_layers(window))
+      .resolve_scale(color='independent')
+      .properties(width=_WIDTH, height=_HEIGHT)
+  )
+
+
+def _cumulative_chart(
+    frame: pd.DataFrame,
+    value_column: str,
+    title: str,
+    value_format: str,
+    window: report_data.AnalysisWindow,
+) -> alt.LayerChart:
+  frame = _frame_with_dates(frame).replace([np.inf, -np.inf], np.nan)
+  band = (
+      alt.Chart(frame.dropna(subset=['lower_bound', 'upper_bound']))
+      .mark_area(color=charts.CI_COLOR, opacity=0.5)
+      .encode(x='date:T', y='lower_bound:Q', y2='upper_bound:Q')
+  )
+  line = (
+      alt.Chart(frame)
+      .mark_line(color=charts.OBSERVED_COLOR, strokeWidth=2)
+      .encode(
+          x=charts.DATE_X,
+          y=alt.Y(f'{value_column}:Q', title=title),
+          tooltip=[
+              charts.DATE_TOOLTIP,
+              alt.Tooltip(f'{value_column}:Q', title=title,
+                          format=value_format),
+              alt.Tooltip('lower_bound:Q', title='CI lower',
+                          format=value_format),
+              alt.Tooltip('upper_bound:Q', title='CI upper',
+                          format=value_format),
+          ],
+      )
+  )
+  zero = charts.rule(pd.DataFrame({'y': [0]}), charts.GREY_500, y='y:Q')
+  return (
+      alt.layer(*_phase_layers(window), band, zero, line)
+      .resolve_scale(color='independent')
+      .properties(width=_WIDTH, height=_HEIGHT)
+  )
+
+
+def cumulative_chart(
+    metrics: api.AnalysisMetrics, window: report_data.AnalysisWindow
+) -> alt.LayerChart:
+  """Plots cumulative incremental conversions with their CI."""
+  return _cumulative_chart(
+      metrics.cumulative_lift,
+      'lift',
+      'Cumulative extra conversions',
+      ',.0f',
+      window,
+  )
+
+
+def cumulative_icpd_chart(
+    metrics: api.AnalysisMetrics, window: report_data.AnalysisWindow
+) -> Optional[alt.LayerChart]:
+  """Plots cumulative iCPD (the statistical estimand) with its CI."""
+  if metrics.cumulative_icpd is None or metrics.cumulative_icpd.empty:
+    return None
+  return _cumulative_chart(
+      metrics.cumulative_icpd,
+      'icpd',
+      'Cumulative iCPD (conversions per unit spend)',
+      ',.3f',
+      window,
+  )
+
+
+def effect_totals_chart(
+    result: api.AnalysisResult,
+    labels: dict[str, str],
+    cell: Optional[str] = None,
+) -> alt.HConcatChart:
+  """Plots counterfactual vs. observed totals next to the incremental effect.
+
+  Left: total conversions in treatment geos over the analysis window, as
+  expected without the change (counterfactual) and as observed. Right: the
+  incremental effect with its confidence interval.
+
+  Args:
+    result: The analysis result.
+    labels: Display label per cell.
+    cell: Plot only this cell (default: all cells, one row each).
+
+  Returns:
+    The two-panel chart.
+  """
+  window = report_data.analysis_window(result)
+  level = report_data.confidence_level(result)
+  cells = [cell] if cell is not None else sorted(result.results)
+  multi = len(cells) > 1
+  totals, effects = [], []
+  for name in cells:
+    metrics = result.results[name]
+    frame = _frame_with_dates(metrics.counterfactual_conversions)
+    in_window = frame[(frame['date'] >= window.start) & (
+        frame['date'] <= window.end)]
+    group = labels.get(name, name)
+    for series, column in (
+        ('Counterfactual', 'counterfactual'),
+        ('Observed', 'observed'),
+    ):
+      totals.append({
+          'row': f'{group} · {series}' if multi else series,
+          'series': series,
+          'total': float(in_window[column].sum()),
+      })
+    lift = metrics.lift
+    effects.append({
+        'row': group if multi else 'Incremental',
+        'point': float(lift.point_estimate),
+        'lower': float(lift.lower_bound),
+        'upper': float(lift.upper_bound),
+    })
+  bar_height = 26
+  total_frame = pd.DataFrame(totals)
+  bars = alt.Chart(total_frame).encode(
+      y=alt.Y('row:N', title=None, sort=None),
+      x=alt.X(
+          'total:Q',
+          title=f'Conversions in treatment geos, {window.observed_days} days',
+          axis=alt.Axis(format='~s'),
+      ),
+  )
+  left = alt.layer(
+      bars.mark_bar(cornerRadiusEnd=3).encode(
+          color=alt.Color(
+              'series:N',
+              legend=None,
+              scale=alt.Scale(
+                  domain=['Counterfactual', 'Observed'],
+                  range=[charts.GREEN, charts.OBSERVED_COLOR],
+              ),
+          ),
+          tooltip=[
+              alt.Tooltip('row:N', title='Series'),
+              alt.Tooltip('total:Q', title='Total', format=',.0f'),
+          ],
+      ),
+      bars.mark_text(align='left', dx=4, fontSize=10).encode(
+          text=alt.Text('total:Q', format='.4~s')
+      ),
+  ).properties(
+      title='Counterfactual vs. observed',
+      width=_WIDTH // 2,
+      height=bar_height * len(totals),
+  )
+  effect_frame = pd.DataFrame(effects)
+  base = alt.Chart(effect_frame).encode(
+      y=alt.Y('row:N', title=None, sort=None)
+  )
+  right = alt.layer(
+      base.mark_bar(color=charts.ORANGE, opacity=0.9, height=14).encode(
+          x=alt.X(
+              'point:Q', title=f'Incremental conversions ({level:.0%} CI)',
+              axis=alt.Axis(format='~s'),
+          ),
+          tooltip=[
+              alt.Tooltip('point:Q', title='Incremental', format=',.0f'),
+              alt.Tooltip('lower:Q', title='Lower', format=',.0f'),
+              alt.Tooltip('upper:Q', title='Upper', format=',.0f'),
+          ],
+      ),
+      base.mark_rule(color=charts.GREY_900, strokeWidth=2).encode(
+          x='lower:Q', x2='upper:Q'
+      ),
+      base.mark_tick(color=charts.GREY_900, thickness=1.5, size=14).encode(
+          x='lower:Q'
+      ),
+      base.mark_tick(color=charts.GREY_900, thickness=1.5, size=14).encode(
+          x='upper:Q'
+      ),
+      base.mark_text(align='left', dx=6, dy=-10, fontSize=10).encode(
+          x='upper:Q', text=alt.Text('point:Q', format='.3~s')
+      ),
+      charts.rule(pd.DataFrame({'x': [0.0]}), charts.GREY_700, x='x:Q'),
+  ).properties(
+      title='Incremental = observed − counterfactual',
+      width=_WIDTH // 2,
+      height=max(bar_height * 2, bar_height * len(effects)),
+  )
+  return alt.hconcat(left, right, spacing=40)
+
+
+def confidence_curve(
+    estimate: api.Estimate,
+    x_title: str,
+    value_format: str,
+    transform: Optional[Callable[[float], float]] = None,
+    level: float = 0.9,
+    decreasing: bool = False,
+) -> Optional[alt.LayerChart]:
+  """Plots the confidence that the effect exceeds each value.
+
+  The spread is taken from the reported (placebo-based) confidence interval,
+  so the curve passes through the interval bounds at the chosen level; the
+  placebo standard deviation is the fallback when the interval is infinite.
+
+  Args:
+    estimate: The estimate.
+    x_title: Axis title.
+    value_format: d3 format of the values.
+    transform: Optional monotone map from the estimate's scale to the
+      displayed scale (for example iCPD -> iCPA). For a decreasing map the
+      curve still shows the confidence that the displayed value is above x.
+    level: Confidence level drawn as a band.
+    decreasing: Whether `transform` is decreasing on positive values (for
+      example the reciprocal iCPD -> iCPA). The displayed value is then above
+      x exactly when the estimate is between 0 and transform^-1(x), and only
+      positive estimates are plotted.
+
+  Returns:
+    The chart, or None if the estimate has no usable standard deviation.
+  """
+  point = estimate.point_estimate
+  sd = _sd_from_interval(estimate, level)
+  if sd is None:
+    sd = estimate.standard_deviation
+  if not sd or math.isnan(sd) or sd <= 0 or math.isnan(point):
+    return None
+  low, high = point - 4 * sd, point + 4 * sd
+  if decreasing:
+    # Only positive estimates map to a finite displayed value.
+    low = max(low, sd / 50)
+    if high <= low:
+      return None
+  grid = np.linspace(low, high, 121)
+  below_zero = float(stats.norm.cdf(-point / sd))
+  rows = []
+  for x in grid:
+    value = transform(float(x)) if transform else float(x)
+    if value is None or math.isnan(value) or math.isinf(value):
+      continue
+    at_most = float(stats.norm.cdf((x - point) / sd))
+    # Increasing: P(estimate > x). Decreasing (positive estimates only):
+    # P(transform(estimate) >= transform(x)) = P(0 < estimate <= x).
+    confidence = (at_most - below_zero) if decreasing else 1 - at_most
+    rows.append({'value': value, 'confidence': max(confidence, 0.0)})
+  if not rows:
+    return None
+  frame = pd.DataFrame(rows)
+  line = (
+      alt.Chart(frame)
+      .mark_line(color=charts.OBSERVED_COLOR, strokeWidth=2)
+      .encode(
+          x=alt.X('value:Q', title=x_title, axis=alt.Axis(format=value_format)),
+          y=charts.percent_y(
+              'confidence:Q', 'Confidence the true value is above'
+          ),
+          tooltip=[
+              alt.Tooltip('value:Q', format=value_format),
+              alt.Tooltip('confidence:Q', format='.0%'),
+          ],
+      )
+  )
+  tail = (1 - level) / 2
+  rules = alt.Chart(pd.DataFrame({'y': [tail, 1 - tail]})).mark_rule(
+      color=charts.GREY_500, strokeDash=[3, 3]).encode(y='y:Q')
+  return alt.layer(rules, line).properties(width=_WIDTH // 2 + 40,
+                                           height=200)
+
+
+def _sd_from_interval(estimate: api.Estimate, level: float) -> Optional[float]:
+  """Standard deviation implied by a finite two-sided interval."""
+  lower, upper = estimate.lower_bound, estimate.upper_bound
+  if any(math.isnan(v) or math.isinf(v) for v in (lower, upper)):
+    return None
+  width = abs(upper - lower)
+  if width <= 0:
+    return None
+  return width / (2 * float(stats.norm.ppf(1 - (1 - level) / 2)))
+
+
+def spend_pacing_chart(
+    spend: pd.DataFrame,
+    window: report_data.AnalysisWindow,
+    group_labels: Sequence[str],
+    planned_change: Optional[float] = None,
+) -> Optional[alt.LayerChart]:
+  """Plots daily spend of treatment vs. control geos, pretest = 100.
+
+  Args:
+    spend: Daily spend per group (`date`, `group`, `spend`).
+    window: The analysis window.
+    group_labels: Treatment group labels (control is added by the scale).
+    planned_change: Planned relative change of treatment spend (for example
+      -1.0 for a go-dark); draws the planned treatment level.
+
+  Returns:
+    The chart, or None without spend data.
+  """
+  if spend.empty:
+    return None
+  frame = spend.copy()
+  pretest = frame[frame['date'] < window.start].groupby('group')['spend'].mean()
+  index = pd.Series(
+      [
+          100 * s / pretest[g] if pretest.get(g, 0) > 0 else np.nan
+          for g, s in zip(frame['group'], frame['spend'])
+      ],
+      index=frame.index,
+  )
+  if index.isna().all():
+    return None
+  frame['index'] = index
+  frame = frame[frame['date'] >= window.start - pd.Timedelta(days=28)]
+  line = (
+      alt.Chart(frame)
+      .mark_line(strokeWidth=1.8)
+      .encode(
+          x=charts.DATE_X,
+          y=alt.Y('index:Q', title='Daily spend (pretest = 100)'),
+          color=alt.Color(
+              'group:N', title=None,
+              # Only the groups drawn here (no excluded / not-in-test keys).
+              scale=alt.Scale(
+                  domain=[*group_labels, charts.CONTROL_LABEL],
+                  range=[
+                      *(charts.treatment_color(i)
+                        for i in range(len(group_labels))),
+                      charts.CONTROL_COLOR,
+                  ],
+              ),
+              legend=alt.Legend(orient='bottom', direction='horizontal'),
+          ),
+          tooltip=[
+              charts.DATE_TOOLTIP,
+              alt.Tooltip('group:N'),
+              alt.Tooltip('spend:Q', title='Spend', format=',.0f'),
+              alt.Tooltip('index:Q', title='Index (pretest = 100)',
+                          format='.0f'),
+          ],
+      )
+  )
+  layers = [*_phase_layers(window)]
+  if planned_change is not None:
+    level = 100 * (1 + planned_change)
+    planned = pd.DataFrame({
+        'y': [level],
+        'label': [f'Planned treatment level ({level:.0f})'],
+    })
+    layers += [
+        charts.rule(planned, charts.GREY_700, [4, 3], y='y:Q'),
+        alt.Chart(planned).mark_text(
+            align='right', baseline='bottom', dy=-3, fontSize=10,
+            color=charts.GREY_700,
+        ).encode(x=alt.value(_WIDTH), y='y:Q', text='label:N'),
+    ]
+  # Spend lines on top of the planned level, so a go-dark's 0 stays visible.
+  layers += [line, *_test_start_layers(window)]
+  return (
+      alt.layer(*layers)
+      .resolve_scale(color='independent')
+      .properties(width=_WIDTH, height=_HEIGHT)
+  )
