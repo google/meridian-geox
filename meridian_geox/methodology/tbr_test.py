@@ -866,89 +866,6 @@ class TbrTest(parameterized.TestCase):
     assert icpd is not None
     self.assertAlmostEqual(icpd.point_estimate, 1.0, delta=0.01)
 
-  def test_compute_placebo_effect_from_mask(self):
-    # Setup simple data where linear fit is perfect
-    # Geos: 0 treated (original), 1 placebo treated, 2 control
-    data_pretest = jnp.array([
-        [10.0, 10.0, 10.0],
-        [20.0, 20.0, 20.0],
-        [30.0, 30.0, 30.0],
-    ])
-    data_test = jnp.array([
-        [40.0, 40.0, 40.0],
-    ])
-    mask = jnp.array([1, 0, 0])
-    p_mask = jnp.array([0, 1, 0])
-
-    data_pretest_train = data_pretest[:-1]
-    data_pretest_val = data_pretest[-1:]
-
-    (
-        y_test,
-        y_pred,
-        rmse,
-        log_rmse,
-    ) = tbr._compute_placebo_effect_from_mask(
-        data_pretest,
-        data_pretest_train,
-        data_pretest_val,
-        data_test,
-        mask,
-        p_mask,
-        1.0,
-    )
-    effect = y_test - y_pred
-    # p_mask=1 selects G1. valid_control_mask selects G2.
-    # pre T0+T1: py = [10, 20], px = [10, 20]. alpha=0, beta=1.
-    # pre T2: py_val = [30], px_val = [30]. py_pred_val = 30. rmse = 0.
-    # test: py_test = [40], px_test = [40].
-    # py_pred = 0 + 1 * 40 = 40.
-    # effect = 40 - 40 = 0.
-    self.assertAlmostEqual(float(rmse), 0.0, delta=1e-4)
-    self.assertAlmostEqual(float(effect[0]), 0.0, delta=1e-4)
-    self.assertAlmostEqual(float(log_rmse), 0.0, delta=1e-4)
-
-  def test_compute_placebo_effect_from_mask_multicell(self):
-    # Setup simple data with 5 geos
-    data_pretest = jnp.array([
-        [10.0, 10.0, 10.0, 10.0, 10.0],
-        [20.0, 20.0, 20.0, 20.0, 20.0],
-        [30.0, 30.0, 30.0, 30.0, 30.0],
-    ])
-    data_test = jnp.array([
-        [30.0, 30.0, 50.0, 40.0, 30.0],
-    ])
-    # G0 is cell 1, G1 is cell 2, G2-G4 are control
-    mask = jnp.array([1, 2, 0, 0, 0])
-    # G2 is placebo cell 2, G3 is placebo cell 1, G4 is control
-    # Note that non-zero placebo mask entries are strictly restricted to
-    # indices originally assigned to control (where mask == 0).
-    p_mask = jnp.array([0, 0, 2, 1, 0])
-
-    data_pretest_train = data_pretest[:-1]
-    data_pretest_val = data_pretest[-1:]
-
-    (
-        y_test,
-        y_pred,
-        rmse,
-        log_rmse,
-    ) = tbr._compute_placebo_effect_from_mask(
-        data_pretest,
-        data_pretest_train,
-        data_pretest_val,
-        data_test,
-        mask,
-        p_mask,
-        2.0,
-    )
-    effect = y_test - y_pred
-    self.assertAlmostEqual(float(rmse), 0.0, delta=1e-4)
-    self.assertAlmostEqual(float(y_test[0]), 50.0, delta=1e-4)
-    self.assertAlmostEqual(float(y_pred[0]), 30.0, delta=1e-4)
-    self.assertAlmostEqual(float(effect[0]), 20.0, delta=1e-4)
-    self.assertAlmostEqual(float(log_rmse), 0.0, delta=1e-4)
-
   def test_tbr_methodology_delegation(self):
     methodology = registry.get_methodology(api.Methodology.TBR)
     self.assertIsInstance(methodology, tbr.TbrMethodology)
@@ -1133,6 +1050,50 @@ class TbrTest(parameterized.TestCase):
         atol=5e-5,
     )
 
+  def test_fit_and_predict_single(self):
+    # 3 training time points, 2 evaluation time points, 4 geos.
+    data_train = jnp.array([
+        [10.0, 20.0, 12.0, 22.0],
+        [20.0, 30.0, 18.0, 34.0],
+        [30.0, 40.0, 32.0, 42.0],
+    ])
+    data_eval = jnp.array([
+        [40.0, 50.0, 38.0, 54.0],
+        [50.0, 60.0, 52.0, 62.0],
+    ])
+    treatment_group_mask = jnp.array([1.0, 0.0, 1.0, 0.0])
+    control_group_mask = jnp.array([0.0, 1.0, 0.0, 1.0])
+
+    methodology = registry.get_methodology(api.Methodology.TBR)
+
+    y_train, y_pred_train, y_eval, y_pred_eval = (
+        methodology._fit_and_predict_single(
+            data_train, data_eval, treatment_group_mask, control_group_mask
+        )
+    )
+
+    expected_y_train = np.array([11.0, 19.0, 31.0])
+    expected_x_train = np.array([21.0, 32.0, 41.0])
+    expected_y_eval = np.array([39.0, 51.0])
+    expected_x_eval = np.array([52.0, 61.0])
+    # Independent oracle: ordinary least squares fit of the group means
+    # (closed form: beta = 298 / 301, alpha = -3217 / 301).
+    beta, alpha = np.polyfit(expected_x_train, expected_y_train, 1)
+
+    self.assertEqual(y_train.shape, (3,))
+    self.assertEqual(y_pred_train.shape, (3,))
+    self.assertEqual(y_eval.shape, (2,))
+    self.assertEqual(y_pred_eval.shape, (2,))
+    np.testing.assert_allclose(
+        y_train, expected_y_train, rtol=5e-5, atol=5e-5
+    )
+    np.testing.assert_allclose(
+        y_pred_train, alpha + beta * expected_x_train, rtol=5e-5, atol=5e-5
+    )
+    np.testing.assert_allclose(y_eval, expected_y_eval, rtol=5e-5, atol=5e-5)
+    np.testing.assert_allclose(
+        y_pred_eval, alpha + beta * expected_x_eval, rtol=5e-5, atol=5e-5
+    )
 
 if __name__ == '__main__':
   absltest.main()
