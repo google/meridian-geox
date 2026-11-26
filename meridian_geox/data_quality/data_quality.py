@@ -26,7 +26,7 @@ import pandas as pd
 # Warning thresholds as constants
 _MAX_GEOS = 500
 _MAX_ZERO_RESPONSE_PCT = 0.5
-_MAX_MISSING_DAYS_PCT = 0.3
+_MAX_MISSING_PERIODS_PCT = 0.3
 _MAX_DUPLICATE_ENTRIES = 0
 
 
@@ -83,6 +83,7 @@ def _check_data_quality(
     is_design: bool,
     experiment_types: Optional[dict[str, api.ExperimentType]] = None,
     pretest_end_date: Optional[pd.Timestamp] = None,
+    time_granularity: api.TimeGranularity = api.TimeGranularity.DAILY,
 ) -> api.QualityCheckResult:
   """Internal function to check the quality of the input data."""
   metrics = []
@@ -121,19 +122,22 @@ def _check_data_quality(
       pretest_data = data
 
   if not pretest_data.empty:
+    spec = api.GRANULARITY_SPECS[time_granularity]
     # Percentage of missing conversion days
     min_date = pretest_data[api.DATE].min()
     max_date = pretest_data[api.DATE].max()
-    expected_days = (max_date - min_date).days + 1
-    actual_days = (
+    expected_periods = (max_date - min_date).days // spec.interval_days + 1
+    actual_periods = (
         pretest_data.groupby(api.DATE)[api.CONVERSIONS].sum().gt(0).sum()
     )
-    missing_days_pct = (
-        1.0 - (actual_days / expected_days) if expected_days > 0 else 0.0
+    missing_periods_pct = (
+        1.0 - (actual_periods / expected_periods)
+        if expected_periods > 0
+        else 0.0
     )
-    missing_days_pct = round(missing_days_pct, 10)
+    missing_periods_pct = round(missing_periods_pct, 10)
 
-    if missing_days_pct > _MAX_MISSING_DAYS_PCT:
+    if missing_periods_pct > _MAX_MISSING_PERIODS_PCT:
       msg = (
           'Missing conversion days percentage exceeds 30% during the pretest'
           ' period.'
@@ -141,9 +145,9 @@ def _check_data_quality(
       logging.warning(msg)
       metrics.append({
           'metric': 'Percentage of missing conversion days',
-          'value': missing_days_pct,
+          'value': missing_periods_pct,
           'message': msg,
-          'threshold': _MAX_MISSING_DAYS_PCT,
+          'threshold': _MAX_MISSING_PERIODS_PCT,
       })
 
     # Percentage of missing spend days - only if spend is present.
@@ -167,13 +171,15 @@ def _check_data_quality(
 
           if col in pretest_data.columns:
             spend_by_date = pretest_data.groupby(api.DATE)[col].sum()
-            spend_actual_days = spend_by_date.gt(0).sum()
-            spend_missing_days_pct = 1.0 - (
-                spend_actual_days / expected_days if expected_days > 0 else 0.0
+            spend_actual_periods = spend_by_date.gt(0).sum()
+            spend_missing_periods_pct = (
+                1.0 - (spend_actual_periods / expected_periods)
+                if expected_periods > 0
+                else 0.0
             )
-            spend_missing_days_pct = round(spend_missing_days_pct, 10)
+            spend_missing_periods_pct = round(spend_missing_periods_pct, 10)
 
-            if spend_missing_days_pct > _MAX_MISSING_DAYS_PCT:
+            if spend_missing_periods_pct > _MAX_MISSING_PERIODS_PCT:
               msg = (
                   f'Missing spend days percentage for {cell_name} exceeds 30%'
                   ' during the pretest period.'
@@ -181,9 +187,9 @@ def _check_data_quality(
               logging.warning(msg)
               metrics.append({
                   'metric': f'Percentage of missing spend days ({cell_name})',
-                  'value': spend_missing_days_pct,
+                  'value': spend_missing_periods_pct,
                   'message': msg,
-                  'threshold': _MAX_MISSING_DAYS_PCT,
+                  'threshold': _MAX_MISSING_PERIODS_PCT,
               })
 
   # Duplicate Entries check (on all data)
@@ -328,6 +334,7 @@ def check_design_data_quality(
       quality_check_config=quality_check_config,
       is_design=True,
       experiment_types=design_config.experiment_types,  # pyrefly: ignore[bad-argument-type]
+      time_granularity=design_config.time_granularity,
   )
 
 
@@ -352,4 +359,5 @@ def check_analysis_data_quality(
       is_design=False,
       experiment_types=analysis_config.design.design_config.experiment_types,  # pyrefly: ignore[bad-argument-type]
       pretest_end_date=pretest_end_date,
+      time_granularity=analysis_config.design.design_config.time_granularity,
   )
