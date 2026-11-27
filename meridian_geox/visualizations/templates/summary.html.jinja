@@ -1,0 +1,80 @@
+{#
+Copyright 2026 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+#}
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>
+      {{ title }}
+    </title>
+    <link href="https://fonts.googleapis.com/css?family=Google+Sans:400,500,700&amp;subset=cyrillic,cyrillic-ext,latin-ext"
+          rel="stylesheet" />
+    <style>
+      {% include "style.css" %}
+    </style>
+  </head>
+
+  <body data-geox-view="all_views">
+    <div class="header">
+      <div>
+        <h1>{{ title }}</h1>
+        <p class="geox-subtitle">{{ subtitle }}</p>
+      </div>
+      <div class="geox-header-actions">
+        <div class="geox-view-toggle" role="group" aria-label="Report view">
+          <button type="button" data-view="all_views" aria-pressed="true">Executive summary</button>
+          <button type="button" data-view="full_only" aria-pressed="false">Full report</button>
+        </div>
+        <button type="button" class="geox-export-button" id="geox-print">Save Executive PDF</button>
+      </div>
+    </div>
+
+    {% include "chips.html.jinja" %}
+
+    <cards>
+      {% for card in cards %} {# Each card is pre-rendered Markup. #}
+        {{ card }}
+      {% endfor %}
+    </cards>
+
+  <script>
+  (function() {
+    'use strict';
+
+    function setView(view) {
+      document.body.setAttribute('data-geox-view', view);
+      document.querySelectorAll('.geox-view-toggle button').forEach(function(b) {
+        b.setAttribute('aria-pressed', String(b.getAttribute('data-view') === view));
+      });
+    }
+
+    document.querySelectorAll('.geox-view-toggle button').forEach(function(b) {
+      b.addEventListener('click', function() { setView(b.getAttribute('data-view')); });
+    });
+    document.getElementById('geox-print').addEventListener('click', function() {
+      var previous = document.body.getAttribute('data-geox-view');
+      setView('all_views');
+      window.addEventListener('afterprint', function() { setView(previous); }, {once: true});
+      window.print();
+    });
+
+    if (new URLSearchParams(window.location.search).get('view') === 'full_only') { setView('full_only'); }
+  })();
+  </script>
+</body>
+</html>
