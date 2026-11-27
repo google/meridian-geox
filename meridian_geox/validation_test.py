@@ -138,10 +138,18 @@ class ValidationTest(parameterized.TestCase):
             'conversions': 100.0,
             'spend': 10.0,
         })
-    invalid_data = pd.DataFrame(data_rows)
-    errors = validation.validate_general_checks(invalid_data)
-    self.assertNotEmpty(errors)
-    self.assertIn('Weekly patterns are not supported.', errors)
+    weekly_data = pd.DataFrame(data_rows)
+    self.assertEmpty(
+        validation.validate_general_checks(
+            weekly_data, api.TimeGranularity.WEEKLY
+        )
+    )
+    default_daily_errors = validation.validate_general_checks(weekly_data)
+    self.assertIn(
+        'Configured time_granularity is DAILY (1d), but data has a modal date'
+        ' interval of 7 days.',
+        default_daily_errors,
+    )
 
   def test_validate_design_input_success(self):
     errors = validation.validate_design_input(
@@ -564,6 +572,243 @@ class ValidationTest(parameterized.TestCase):
     )
     errors = validation.validate_analysis_input(self.data, config)
     self.assertEmpty(errors)
+
+  def _create_panel_data(
+      self, n_periods: int = 16, freq: str = '7D'
+  ) -> pd.DataFrame:
+    dates = pd.date_range('2024-01-01', periods=n_periods, freq=freq)
+    rows = []
+    for d in dates:
+      for g in self.geos:
+        rows.append({
+            'date': d,
+            'location': g,
+            'conversions': 100.0,
+            'spend': 10.0,
+        })
+    return pd.DataFrame(rows)
+
+  def test_validate_general_checks_weekly_with_missing_week_success(self):
+    weekly_data = self._create_panel_data(n_periods=6, freq='7D')
+    weekly_data = weekly_data[weekly_data['date'] != pd.Timestamp('2024-01-15')]
+    errors = validation.validate_general_checks(
+        weekly_data, api.TimeGranularity.WEEKLY
+    )
+    self.assertEmpty(errors)
+
+  def test_validate_general_checks_irregular_weekly_dates_error(self):
+    irregular_dates = pd.to_datetime([
+        '2024-01-01',
+        '2024-01-08',
+        '2024-01-10',
+        '2024-01-15',
+        '2024-01-22',
+    ])
+    rows = []
+    for d in irregular_dates:
+      for g in self.geos:
+        rows.append({
+            'date': d,
+            'location': g,
+            'conversions': 100.0,
+            'spend': 10.0,
+        })
+    errors = validation.validate_general_checks(
+        pd.DataFrame(rows), api.TimeGranularity.WEEKLY
+    )
+    self.assertLen(errors, 1)
+    self.assertIn(
+        'Irregular date intervals detected for WEEKLY data: all date gaps must'
+        ' be positive multiples of 7 days.',
+        errors[0],
+    )
+
+  def test_validate_general_checks_same_day_timestamps_error(self):
+    dates = pd.to_datetime([
+        '2024-01-01 00:00:00',
+        '2024-01-02 00:00:00',
+        '2024-01-03 00:00:00',
+        '2024-01-04 00:00:00',
+        '2024-01-04 12:00:00',
+    ])
+    rows = []
+    for d in dates:
+      for g in self.geos:
+        rows.append({
+            'date': d,
+            'location': g,
+            'conversions': 100.0,
+            'spend': 10.0,
+        })
+    errors = validation.validate_general_checks(
+        pd.DataFrame(rows), api.TimeGranularity.DAILY
+    )
+    self.assertLen(errors, 1)
+    self.assertIn(
+        'Irregular date intervals detected for DAILY data: all date gaps must'
+        ' be positive multiples of 1 day.',
+        errors[0],
+    )
+
+  def test_validate_design_input_weekly_success(self):
+    weekly_data = self._create_panel_data(n_periods=12, freq='7D')
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(weeks=4),
+        time_granularity=api.TimeGranularity.WEEKLY,
+        experiment_types=api.ExperimentType.HOLDBACK,
+    )
+    errors = validation.validate_design_input(
+        weekly_data, design_config, self.constraints
+    )
+    self.assertEmpty(errors)
+
+  def test_validate_design_input_weekly_not_enough_periods(self):
+    weekly_data = self._create_panel_data(n_periods=11, freq='7D')
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(weeks=4),
+        time_granularity=api.TimeGranularity.WEEKLY,
+        experiment_types=api.ExperimentType.HOLDBACK,
+    )
+    errors = validation.validate_design_input(
+        weekly_data, design_config, self.constraints
+    )
+    self.assertLen(errors, 1)
+    self.assertIn(
+        'Need at least 3 * experiment duration dates during design phase.'
+        ' Required: 12 dates.',
+        errors[0],
+    )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='daily_one_day',
+          granularity=api.TimeGranularity.DAILY,
+          duration=datetime.timedelta(days=1),
+          freq='1D',
+      ),
+      dict(
+          testcase_name='weekly_one_week',
+          granularity=api.TimeGranularity.WEEKLY,
+          duration=datetime.timedelta(weeks=1),
+          freq='7D',
+      ),
+  )
+  def test_validate_design_input_single_period_duration_rejected(
+      self, granularity, duration, freq
+  ):
+    data = self._create_panel_data(n_periods=12, freq=freq)
+    design_config = api.DesignConfig(
+        experiment_duration=duration,
+        time_granularity=granularity,
+        experiment_types=api.ExperimentType.HOLDBACK,
+    )
+    errors = validation.validate_design_input(
+        data, design_config, self.constraints
+    )
+    self.assertLen(errors, 1)
+    self.assertIn('less than the minimum required 2 periods', errors[0])
+
+  def test_validate_design_input_weekly_non_multiple_duration_error(self):
+    weekly_data = self._create_panel_data(n_periods=16, freq='7D')
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=10),
+        time_granularity=api.TimeGranularity.WEEKLY,
+        experiment_types=api.ExperimentType.HOLDBACK,
+    )
+    errors = validation.validate_design_input(
+        weekly_data, design_config, self.constraints
+    )
+    self.assertLen(errors, 1)
+    self.assertIn('must be a positive multiple of 7 days', errors[0])
+
+  def test_validate_design_input_default_daily_rejects_weekly_data_error(self):
+    weekly_data = self._create_panel_data(n_periods=16, freq='7D')
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(days=4),
+        experiment_types=api.ExperimentType.HOLDBACK,
+    )
+    errors = validation.validate_design_input(
+        weekly_data, design_config, self.constraints
+    )
+    self.assertLen(errors, 1)
+    self.assertIn(
+        'Configured time_granularity is DAILY (1d), but data has a modal date'
+        ' interval of 7 days.',
+        errors[0],
+    )
+
+  def test_validate_design_input_weekly_rejects_daily_data_error(self):
+    daily_data = self._create_panel_data(n_periods=12, freq='1D')
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(weeks=4),
+        time_granularity=api.TimeGranularity.WEEKLY,
+        experiment_types=api.ExperimentType.HOLDBACK,
+    )
+    errors = validation.validate_design_input(
+        daily_data, design_config, self.constraints
+    )
+    self.assertLen(errors, 1)
+    self.assertIn(
+        'Configured time_granularity is WEEKLY (7d), but data has a modal date'
+        ' interval of 1 day.',
+        errors[0],
+    )
+
+  def test_validate_analysis_input_weekly_success_and_insufficient_pretest(
+      self,
+  ):
+    weekly_data = self._create_panel_data(n_periods=16, freq='7D')
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(weeks=4),
+        time_granularity=api.TimeGranularity.WEEKLY,
+        experiment_types=api.ExperimentType.HOLDBACK,
+    )
+    weekly_design = api.Design(
+        designs=self.design.designs,
+        control_geos=self.design.control_geos,
+        excluded_geos=set(),
+        design_config=design_config,
+        constraints=self.constraints,
+    )
+    valid_analysis_config = api.AnalysisConfig(
+        design=weekly_design,
+        analysis_start_date=pd.Timestamp('2024-03-25'),
+        analysis_end_date=pd.Timestamp('2024-04-15'),
+    )
+    self.assertEmpty(
+        validation.validate_analysis_input(weekly_data, valid_analysis_config)
+    )
+
+    insufficient_analysis_config = api.AnalysisConfig(
+        design=weekly_design,
+        analysis_start_date=pd.Timestamp('2024-03-18'),
+        analysis_end_date=pd.Timestamp('2024-04-15'),
+    )
+    errors = validation.validate_analysis_input(
+        weekly_data, insufficient_analysis_config
+    )
+    self.assertLen(errors, 1)
+    self.assertIn(
+        'Need at least 3 * experiment duration pretest dates during analysis'
+        ' phase. Required: 12 pretest dates.',
+        errors[0],
+    )
+
+  def test_validate_analysis_input_without_design_config_defaults_to_daily(
+      self,
+  ):
+    weekly_data = self._create_panel_data(n_periods=16, freq='7D')
+    analysis_config = dataclasses.replace(
+        self.analysis_config,
+        design=dataclasses.replace(self.design, design_config=None),
+    )
+    errors = validation.validate_analysis_input(weekly_data, analysis_config)
+    self.assertLen(errors, 1)
+    self.assertIn(
+        'Configured time_granularity is DAILY (1d), but data has a modal date'
+        ' interval of 7 days.',
+        errors[0],
+    )
 
 
 if __name__ == '__main__':

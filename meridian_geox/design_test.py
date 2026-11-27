@@ -1764,5 +1764,79 @@ class DesignTest(parameterized.TestCase):
         mock_get_candidates.call_args.kwargs['methodology'], methodology
     )
 
+  def test_prepare_data_weekly_slicing(self):
+    dates = pd.date_range(start='2023-01-01', periods=20, freq='7D')
+    locations = ['geo_1', 'geo_2', 'geo_3', 'geo_4']
+    data_list = []
+    for d, l in itertools.product(dates, locations):
+      data_list.append({
+          api.DATE: d,
+          api.LOCATION: l,
+          api.CONVERSIONS: 100.0,
+          api.SPEND: 25.0,
+      })
+    data = pd.DataFrame(data_list)
+    constraints = api.Constraints()
+
+    processed_data = design.prepare_data(
+        data=data,
+        experiment_duration=datetime.timedelta(weeks=4),
+        constraints=constraints,
+        time_granularity=api.TimeGranularity.WEEKLY,
+    )
+
+    self.assertEqual(processed_data.selection_train.shape, (12, 4))
+    self.assertEqual(processed_data.selection_eval.shape, (4, 4))
+    self.assertEqual(processed_data.estimation_train.shape, (16, 4))
+    self.assertEqual(processed_data.estimation_eval.shape, (4, 4))
+    self.assertLen(processed_data.training_period, 12)
+    self.assertEqual(
+        processed_data.selection_train_spend[api.CELL_1].shape, (12, 4)
+    )
+    self.assertEqual(
+        processed_data.estimation_eval_spend[api.CELL_1].shape, (4, 4)
+    )
+
+  def test_run_design_weekly_data(self):
+    dates = pd.date_range(start='2023-01-01', periods=20, freq='7D')
+    locations = [f'geo_{i}' for i in range(20)]
+    data_list = []
+    for date, loc in itertools.product(dates, locations):
+      week_idx = (date - dates[0]).days // 7
+      spend = 10.0 if week_idx >= 16 else 10.0 + float(week_idx % 5) * 2.0
+      data_list.append({
+          api.DATE: date,
+          api.LOCATION: loc,
+          api.CONVERSIONS: 100.0 + float(week_idx % 5) * 10.0,
+          api.SPEND: spend,
+      })
+    data = pd.DataFrame(data_list)
+
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(weeks=4),
+        time_granularity=api.TimeGranularity.WEEKLY,
+        experiment_types=api.ExperimentType.HEAVY_UP,
+        geo_assignment_rule=api.GeoAssignmentRule.RANDOM,
+        n_candidates=10,
+        n_ranked_candidates=5,
+        design_output_count=1,
+        seed=42,
+    )
+    constraints = api.Constraints()
+
+    result = design.run_design(data, design_config, constraints)
+
+    self.assertNotEmpty(result.designs)
+    design_obj = next(iter(result.designs.values()))
+    n_treated = len(design_obj.designs[api.CELL_1].treatment_geos)
+    # Each geo has 10.0 spend per week over 4 weeks = 40.0 per treated geo.
+    expected_budget = float(n_treated) * 40.0
+    self.assertAlmostEqual(
+        float(result.design_metrics.iloc[0]['budget']),
+        expected_budget,
+        places=4,
+    )
+
+
 if __name__ == '__main__':
   absltest.main()

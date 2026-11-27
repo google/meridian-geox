@@ -479,6 +479,162 @@ class DataQualityTest(absltest.TestCase):
         'Outlier pretest dates', result.quality_metrics['metric'].values
     )
 
+  def test_check_design_data_quality_weekly_complete_no_missing_warning(self):
+    config = api.QualityCheckConfig()
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(weeks=3),
+        time_granularity=api.TimeGranularity.WEEKLY,
+        experiment_types={'cell_1': api.ExperimentType.GO_DARK},
+    )
+    dates = pd.date_range('2023-01-01', periods=12, freq='7D')
+    data = pd.DataFrame({
+        'location': ['G1'] * len(dates),
+        'date': dates,
+        'conversions': [100.0] * len(dates),
+        'spend': [25.0] * len(dates),
+    })
+    result = data_quality.check_design_data_quality(data, design_config, config)
+    self.assertNotIn(
+        'Percentage of missing conversion days',
+        result.quality_metrics['metric'].values,
+    )
+    self.assertNotIn(
+        'Percentage of missing spend days (cell_1)',
+        result.quality_metrics['metric'].values,
+    )
+
+  def test_check_design_data_quality_weekly_missing_weeks_exceeds(self):
+    config = api.QualityCheckConfig()
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(weeks=2),
+        time_granularity=api.TimeGranularity.WEEKLY,
+        experiment_types={'cell_1': api.ExperimentType.GO_DARK},
+    )
+    # 10 expected weeks (Jan 1 to Mar 5), provide only 6 weeks (40% missing).
+    all_weeks = pd.date_range('2023-01-01', periods=10, freq='7D').tolist()
+    dates = all_weeks[:5] + [all_weeks[-1]]
+    data = pd.DataFrame({
+        'location': ['G1'] * len(dates),
+        'date': dates,
+        'conversions': [100.0] * len(dates),
+        'spend': [25.0] * len(dates),
+    })
+    result = data_quality.check_design_data_quality(data, design_config, config)
+    self.assertIn(
+        'Percentage of missing conversion days',
+        result.quality_metrics['metric'].values,
+    )
+    self.assertIn(
+        'Percentage of missing spend days (cell_1)',
+        result.quality_metrics['metric'].values,
+    )
+
+  def test_check_analysis_data_quality_weekly_pretest_only(self):
+    config = api.QualityCheckConfig()
+    # 10 weeks total (indices 0..9). Pretest is weeks 0..5 (6 weeks), test is
+    # weeks 6..9 (4 weeks, with zeroed spend during GO_DARK). Complete weekly
+    # pretest should have 0% missing conversion and spend weeks.
+    dates = pd.date_range('2023-01-01', periods=10, freq='7D')
+    data = pd.DataFrame({
+        'location': ['G1'] * len(dates),
+        'date': dates,
+        'conversions': [100.0] * 6 + [0.0] * 4,
+        'spend': [25.0] * 6 + [0.0] * 4,
+    })
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(weeks=4),
+        time_granularity=api.TimeGranularity.WEEKLY,
+        experiment_types={'cell_1': api.ExperimentType.GO_DARK},
+    )
+    design_obj = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1'},
+                minimum_detectable_effect=0.5,
+                design_implied_cpic=1.0,
+                p_value=0.05,
+                budget=100.0,
+            )
+        },
+        control_geos=set(),
+        excluded_geos=set(),
+        design_config=design_config,
+    )
+    analysis_config = api.AnalysisConfig(
+        design=design_obj,
+        analysis_start_date=dates[6],
+        analysis_end_date=dates[9],
+    )
+    result = data_quality.check_analysis_data_quality(
+        data, analysis_config, config
+    )
+    self.assertNotIn(
+        'Percentage of missing conversion days',
+        result.quality_metrics['metric'].values,
+    )
+    self.assertNotIn(
+        'Percentage of missing spend days (cell_1)',
+        result.quality_metrics['metric'].values,
+    )
+
+  def test_check_design_data_quality_weekly_with_outlier_dates(self):
+    config = api.QualityCheckConfig()
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(weeks=2),
+        time_granularity=api.TimeGranularity.WEEKLY,
+    )
+    dates = pd.date_range('2023-01-01', periods=10, freq='7D')
+    conversions = [100.0] * 10
+    conversions[4] = 10000.0
+    data = pd.DataFrame({
+        'location': ['G1'] * 10,
+        'date': dates,
+        'conversions': conversions,
+    })
+    result = data_quality.check_design_data_quality(data, design_config, config)
+    self.assertIn(dates[4], result.outlier_dates)
+    self.assertIn(
+        'Outlier pretest dates', result.quality_metrics['metric'].values
+    )
+
+  def test_check_analysis_data_quality_weekly_unaligned_start_date(self):
+    config = api.QualityCheckConfig()
+    dates = pd.date_range('2023-01-01', periods=16, freq='7D')
+    conversions = [100.0] * 16
+    conversions[11] = 10000.0
+    data = pd.DataFrame({
+        'location': ['G1'] * 16,
+        'date': dates,
+        'conversions': conversions,
+    })
+    design_config = api.DesignConfig(
+        experiment_duration=datetime.timedelta(weeks=4),
+        time_granularity=api.TimeGranularity.WEEKLY,
+    )
+    design_obj = api.Design(
+        designs={
+            'cell_1': api.PerCellDesign(
+                treatment_geos={'G1'},
+                minimum_detectable_effect=0.5,
+                design_implied_cpic=1.0,
+                p_value=0.05,
+                budget=100.0,
+            )
+        },
+        control_geos=set(),
+        excluded_geos=set(),
+        design_config=design_config,
+    )
+    analysis_config = api.AnalysisConfig(
+        design=design_obj,
+        analysis_start_date=dates[11] + pd.Timedelta(days=3),
+        analysis_end_date=dates[15],
+    )
+    result = data_quality.check_analysis_data_quality(
+        data, analysis_config, config
+    )
+    self.assertIn(dates[11], result.outlier_dates)
+
 
 if __name__ == '__main__':
   absltest.main()
